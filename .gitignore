@@ -1,0 +1,10 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+*.log
+*.local
+config/profiles/*.local.toml
+.env
+.secrets/
+artifacts/
+reports/

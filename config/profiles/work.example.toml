@@ -1,0 +1,60 @@
+# Copy to <machine>.local.toml, replace every "ask", validate, then approve.
+# This file declares desired state only. Never place credentials or recovery keys here.
+schema_version = 1
+profile = "work"
+state = "draft" # Change to "approved" only after human/security review.
+
+[machine]
+id = "ai-node-01"
+platform = "linux" # linux or macos
+os_family = "ubuntu" # ubuntu or macos
+role = "shared-agent-workstation"
+
+[accounts]
+agent = "agt-ai-01"
+humans = ["srao", "jdoe"]
+admins = ["adm-srao", "adm-jdoe"]
+operators = ["srao", "jdoe"]
+viewers = []
+ssh_users = ["srao", "jdoe", "adm-srao", "adm-jdoe"]
+
+[remote]
+tailscale_tailnet = "ask"
+tailscale_tags = ["tag:agent-work"]
+nomachine_port = 4000
+kvm = "glinet-comet-rm1"
+desktop_lock_mode = "ask" # dedicated-shared or locked
+
+[tooling]
+install_agents = true
+gws = "ask" # install or skip
+secrets_provider = "ask" # 1password, bitwarden, both, or organization-vault
+antidote_ref = "ask" # Full reviewed commit SHA preferred; a reviewed tag is acceptable for a pilot.
+
+[source_control]
+gitlab_host = "gitlab.com"
+gitlab_identity = "service-account" # service-account or none
+github_host = "github.com"
+github_identity = "app" # app, machine-user, or none
+
+[model_auth]
+codex = "api-workload"
+claude = "api-workload"
+grok = "api-workload"
+
+[security]
+disk_encryption_required = true
+remote_scope = "tailscale-only"
+endpoint_management = "ask" # mdm, edr, mdm-and-edr, or not-required
+
+[resources]
+policy = "balanced"
+
+[backup]
+target = "ask" # Non-secret destination label, not a credential or URL token.
+retention_days = 30
+
+[maintenance]
+timezone = "America/Toronto"
+update_window = "ask"
+owner = "ask"

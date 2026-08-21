@@ -1,0 +1,47 @@
+# Managed baseline for agent development accounts.
+# Machine-local and secret values do not belong in this file.
+
+export EDITOR='code --wait'
+export VISUAL='code --wait'
+export PAGER=less
+export LESS='-FRX'
+
+if [[ -x "$HOME/.local/bin/mise" ]]; then
+  eval "$("$HOME/.local/bin/mise" activate zsh)"
+elif command -v mise >/dev/null 2>&1; then
+  eval "$(mise activate zsh)"
+fi
+
+if [[ -r "$HOME/.antidote/antidote.zsh" ]]; then
+  source "$HOME/.antidote/antidote.zsh"
+  antidote load "$HOME/.zsh_plugins.txt"
+fi
+
+# Antidote loads completion functions; compinit activates them after fpath has
+# been extended by the plugin bundle.
+mkdir -p "$HOME/.cache/zsh"
+autoload -Uz compinit compaudit
+typeset -a insecure_completion_dirs
+insecure_completion_dirs=(${(f)"$(compaudit 2>/dev/null)"})
+if (( ${#insecure_completion_dirs[@]} )); then
+  print -u2 'Completion disabled: compaudit found insecure directories:'
+  print -u2 -l -- "${insecure_completion_dirs[@]}"
+else
+  compinit -d "$HOME/.cache/zsh/zcompdump"
+fi
+unset insecure_completion_dirs
+
+setopt HIST_IGNORE_ALL_DUPS
+setopt SHARE_HISTORY
+# Separate brokered terminal histories by initiating operator. This is an
+# operational aid, not a tamper-proof audit boundary; direct desktop terminals
+# intentionally use the "desktop" bucket.
+history_owner=${AGENT_OPERATOR:-desktop}
+history_owner=${history_owner//[^a-zA-Z0-9_.-]/_}
+HISTFILE="$HOME/.zsh_history.$history_owner"
+HISTSIZE=50000
+SAVEHIST=50000
+unset history_owner
+
+alias ll='ls -lah'
+alias gst='git status --short --branch'

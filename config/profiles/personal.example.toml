@@ -1,0 +1,60 @@
+# Copy to <machine>.local.toml, replace every "ask", validate, then approve.
+# This file declares desired state only. Never place credentials or recovery keys here.
+schema_version = 1
+profile = "personal"
+state = "draft"
+
+[machine]
+id = "ai-node-01"
+platform = "linux"
+os_family = "ubuntu"
+role = "shared-agent-workstation"
+
+[accounts]
+agent = "agt-ai-01"
+humans = ["srao"]
+admins = ["adm-srao"]
+operators = ["srao"]
+viewers = []
+ssh_users = ["srao", "adm-srao"]
+
+[remote]
+tailscale_tailnet = "ask"
+tailscale_tags = ["tag:agent-personal"]
+nomachine_port = 4000
+kvm = "glinet-comet-rm10-pro"
+desktop_lock_mode = "ask"
+
+[tooling]
+install_agents = true
+gws = "ask"
+secrets_provider = "ask"
+antidote_ref = "ask"
+
+[source_control]
+gitlab_host = "gitlab.com"
+gitlab_identity = "none"
+github_host = "github.com"
+github_identity = "machine-user"
+
+[model_auth]
+codex = "named-human"
+claude = "named-human"
+grok = "named-human"
+
+[security]
+disk_encryption_required = true
+remote_scope = "tailscale-only"
+endpoint_management = "not-required"
+
+[resources]
+policy = "balanced"
+
+[backup]
+target = "ask"
+retention_days = 30
+
+[maintenance]
+timezone = "America/Toronto"
+update_window = "ask"
+owner = "srao"

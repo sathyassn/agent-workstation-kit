@@ -1,0 +1,60 @@
+# Work-profile example for a future Mac mini/Studio node. Copy, resolve every
+# "ask", validate, and approve. Never add credentials or recovery keys.
+schema_version = 1
+profile = "work"
+state = "draft"
+
+[machine]
+id = "mac-node-01"
+platform = "macos"
+os_family = "macos"
+role = "apple-agent-workstation"
+
+[accounts]
+agent = "agt-mac-01"
+humans = ["srao", "jdoe"]
+admins = ["adm-srao", "adm-jdoe"]
+operators = ["srao", "jdoe"]
+viewers = []
+ssh_users = ["srao", "jdoe", "adm-srao", "adm-jdoe"]
+
+[remote]
+tailscale_tailnet = "ask"
+tailscale_tags = ["tag:agent-work-macos"]
+nomachine_port = 4000
+kvm = "ask"
+desktop_lock_mode = "ask"
+
+[tooling]
+install_agents = true
+gws = "ask"
+secrets_provider = "ask"
+antidote_ref = "ask"
+
+[source_control]
+gitlab_host = "gitlab.com"
+gitlab_identity = "service-account"
+github_host = "github.com"
+github_identity = "app"
+
+[model_auth]
+codex = "api-workload"
+claude = "api-workload"
+grok = "api-workload"
+
+[security]
+disk_encryption_required = true
+remote_scope = "tailscale-only"
+endpoint_management = "ask"
+
+[resources]
+policy = "balanced"
+
+[backup]
+target = "ask"
+retention_days = 30
+
+[maintenance]
+timezone = "America/Toronto"
+update_window = "ask"
+owner = "ask"

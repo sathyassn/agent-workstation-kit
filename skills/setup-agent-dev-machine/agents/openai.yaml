@@ -1,0 +1,4 @@
+interface:
+  display_name: "Set Up Agent Dev Machine"
+  short_description: "Provision and validate secure agent workstations"
+  default_prompt: "Use $setup-agent-dev-machine to provision or audit this agent development machine safely."

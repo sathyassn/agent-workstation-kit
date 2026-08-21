@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+
+# Pure authorization predicates shared by agentctl-session and its tests.
+# Callers must provide validated local account and group names.
+
+agentctl_user_in_group() {
+  local account=$1 group=$2
+  id -nG -- "$account" 2>/dev/null | tr ' ' '\n' | grep -Fxq "$group"
+}
+
+agentctl_is_operator() {
+  agentctl_user_in_group "$1" "$AGENTCTL_OPERATOR_GROUP"
+}
+
+agentctl_is_viewer() {
+  agentctl_is_operator "$1" || agentctl_user_in_group "$1" "$AGENTCTL_VIEWER_GROUP"
+}

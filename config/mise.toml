@@ -1,0 +1,21 @@
+min_version = "2026.8.0"
+
+[settings]
+lockfile = true
+minimum_release_age = "7d"
+
+[tools]
+node = "lts"
+python = "3.13"
+bun = "latest"
+pnpm = "latest"
+gh = "latest"
+glab = "latest"
+herdr = "latest"
+
+# Provider-supported npm distributions. Grok Build uses xAI's separate
+# reviewed installer and is intentionally not represented as an npm package.
+"npm:@openai/codex" = "latest"
+"npm:@anthropic-ai/claude-code" = "latest"
+
+# Optional tools such as gws are added only after profile approval.
