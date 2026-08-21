@@ -26,6 +26,18 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def load_version(root: Path = ROOT) -> str:
+    """Return the repository version without making the CLI unstartable."""
+    try:
+        version = (root / "VERSION").read_text(encoding="utf-8").strip()
+    except OSError:
+        return "0.0.0+unknown"
+    return version or "0.0.0+unknown"
+
+
+VERSION = load_version()
 UNIX_NAME = re.compile(r"^[a-z_][a-z0-9_-]{0,30}$")
 IDENTIFIER = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$")
 RELEASE_REF = re.compile(r"^[A-Za-z0-9._/-]+$")
@@ -422,6 +434,7 @@ def actual_platform() -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Validate and apply agent-fleet onboarding profiles.")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     validate_parser = subparsers.add_parser("validate", help="validate profile structure and policy")

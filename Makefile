@@ -1,8 +1,17 @@
 SHELL := /bin/sh
 
-.PHONY: check repo-check skill-check shell-check unit-check python-check
+.PHONY: check ci-check public-check public-draft-check repo-check skill-check shell-check unit-check python-check
 
-check: shell-check python-check unit-check skill-check repo-check
+check: shell-check python-check unit-check skill-check repo-check public-draft-check
+
+ci-check: REQUIRE_SHELLCHECK=1
+ci-check: check
+
+public-check:
+	@python3 tests/check_public_release.py
+
+public-draft-check:
+	@python3 tests/check_public_release.py --allow-missing-license
 
 python-check:
 	@python3 -m py_compile scripts/*.py tests/*.py
@@ -15,8 +24,11 @@ shell-check:
 	done
 	@if command -v shellcheck >/dev/null 2>&1; then \
 		shellcheck scripts/*.sh scripts/lib/*.sh agentctl/*; \
+	elif [ "$(REQUIRE_SHELLCHECK)" = "1" ]; then \
+		echo "shellcheck is required for ci-check" >&2; \
+		exit 1; \
 	else \
-		echo "shellcheck unavailable; syntax validation only"; \
+		echo "shellcheck unavailable; syntax validation only (use make ci-check for the strict gate)"; \
 	fi
 
 skill-check:

@@ -14,4 +14,8 @@ This repository provisions development machines that run autonomous AI agents.
 - Preserve existing user configuration unless the applicable guide explicitly authorizes a managed replacement and a backup has been made.
 - Never create a GitHub/GitLab remote, push a branch, open a PR/MR, publish a release, or change repository visibility without explicit human approval for that action.
 - Any future hosted copy must remain private until the owner explicitly approves a visibility change.
-- Run `make check` and document live-machine validation gaps before proposing a rollout.
+- Run `make check` during development and `make ci-check` before proposing a
+  rollout; document every live-machine validation gap.
+- Update `VERSION` and `CHANGELOG.md` together for a release. Run the strict
+  `make public-check` and complete `docs/13-public-release-checklist.md` before
+  requesting publication approval.

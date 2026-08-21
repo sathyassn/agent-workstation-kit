@@ -4,7 +4,7 @@
 
 | Type | Pattern | Daily use | Sudo |
 |---|---|---:|---:|
-| Human | company username, such as `srao` | Yes | No |
+| Human | organization username, such as `alice` | Yes | No |
 | Administrator | `adm-<human>` | No | Yes |
 | Shared agent | `agt-ai-NN` | Through desktop or `agentctl` | No |
 | System service | `svc-<purpose>` | No | No |

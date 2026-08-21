@@ -12,7 +12,7 @@
 ## Account layers
 
 ```text
-Human identity       srao / jdoe
+Human identity       alice / bob
                            |
 OS runtime identity  agt-ai-01
                            |

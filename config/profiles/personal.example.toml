@@ -12,11 +12,11 @@ role = "shared-agent-workstation"
 
 [accounts]
 agent = "agt-ai-01"
-humans = ["srao"]
-admins = ["adm-srao"]
-operators = ["srao"]
+humans = ["alice"]
+admins = ["adm-alice"]
+operators = ["alice"]
 viewers = []
-ssh_users = ["srao", "adm-srao"]
+ssh_users = ["alice", "adm-alice"]
 
 [remote]
 tailscale_tailnet = "ask"
@@ -57,4 +57,4 @@ retention_days = 30
 [maintenance]
 timezone = "America/Toronto"
 update_window = "ask"
-owner = "srao"
+owner = "alice"

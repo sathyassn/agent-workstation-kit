@@ -12,11 +12,11 @@ role = "apple-agent-workstation"
 
 [accounts]
 agent = "agt-mac-01"
-humans = ["srao", "jdoe"]
-admins = ["adm-srao", "adm-jdoe"]
-operators = ["srao", "jdoe"]
+humans = ["alice", "bob"]
+admins = ["adm-alice", "adm-bob"]
+operators = ["alice", "bob"]
 viewers = []
-ssh_users = ["srao", "jdoe", "adm-srao", "adm-jdoe"]
+ssh_users = ["alice", "bob", "adm-alice", "adm-bob"]
 
 [remote]
 tailscale_tailnet = "ask"

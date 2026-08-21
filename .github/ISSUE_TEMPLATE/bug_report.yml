@@ -1,0 +1,45 @@
+name: Bug report
+description: Report a reproducible defect without sensitive environment data.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: Do not include credentials, private profiles, hostnames, or security vulnerabilities.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of scripts/fleetctl.py --version or the commit identifier.
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: Operating system, release, architecture, and relevant desktop.
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Observed and expected behavior
+      description: Describe what happened, what you expected, and the smallest safe reproduction.
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Redacted output
+      description: Include preview or validation output only after removing sensitive values.
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Safety checks
+      options:
+        - label: I removed credentials and private infrastructure details.
+          required: true
+        - label: This is not a security vulnerability.
+          required: true

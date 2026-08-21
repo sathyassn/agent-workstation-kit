@@ -14,8 +14,8 @@ printf '%s\n' '#!/bin/sh' 'exit 1' >"$fixture_dir/id"
 chmod 0755 "$fixture_dir/uname" "$fixture_dir/getent" "$fixture_dir/id"
 
 preview=$(PATH="$fixture_dir:$PATH" "$repo_dir/scripts/setup-accounts-linux.sh" \
-  --agent agt-ai-01 --human srao --admin adm-srao --operator srao)
-grep -Fq 'usermod --append --groups agt-ai-01-operators srao' <<<"$preview"
+  --agent agt-ai-01 --human alice --admin adm-alice --operator alice)
+grep -Fq 'usermod --append --groups agt-ai-01-operators alice' <<<"$preview"
 grep -Fq 'this script never creates, changes, or locks passwords' <<<"$preview"
 
 if PATH="$fixture_dir:$PATH" "$repo_dir/scripts/setup-accounts-linux.sh" \
@@ -25,8 +25,8 @@ if PATH="$fixture_dir:$PATH" "$repo_dir/scripts/setup-accounts-linux.sh" \
 fi
 
 hardening_preview=$(PATH="$fixture_dir:$PATH" "$repo_dir/scripts/harden-remote-access-linux.sh" \
-  --agent agt-ai-01 --ssh-user srao --ssh-user adm-srao)
-grep -Fq 'AllowUsers srao adm-srao' <<<"$hardening_preview"
+  --agent agt-ai-01 --ssh-user alice --ssh-user adm-alice)
+grep -Fq 'AllowUsers alice adm-alice' <<<"$hardening_preview"
 grep -Fq 'DenyUsers agt-ai-01' <<<"$hardening_preview"
 
 if PATH="$fixture_dir:$PATH" "$repo_dir/scripts/harden-remote-access-linux.sh" \
@@ -36,7 +36,7 @@ if PATH="$fixture_dir:$PATH" "$repo_dir/scripts/harden-remote-access-linux.sh" \
 fi
 
 if PATH="$fixture_dir:$PATH" "$repo_dir/scripts/harden-remote-access-linux.sh" \
-  --agent agt-ai-01 --ssh-user srao --ssh-user srao >/dev/null 2>&1; then
+  --agent agt-ai-01 --ssh-user alice --ssh-user alice >/dev/null 2>&1; then
   printf 'Expected duplicate SSH users to be rejected.\n' >&2
   exit 1
 fi

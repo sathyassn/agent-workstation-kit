@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import subprocess
 import sys
+import tempfile
 import unittest
 from unittest import mock
 from pathlib import Path
@@ -44,6 +46,23 @@ class FleetProfileTests(unittest.TestCase):
             profile = fleetctl.load_profile(path)
             self.assertEqual([], fleetctl.validate_profile(profile, ready=False))
 
+    def test_cli_version_matches_version_file(self) -> None:
+        result = subprocess.run(
+            [str(ROOT / "scripts/fleetctl.py"), "--version"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        expected = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
+        self.assertEqual(f"fleetctl.py {expected}", result.stdout.strip())
+
+    def test_missing_version_file_has_safe_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(
+                "0.0.0+unknown",
+                fleetctl.load_version(Path(directory)),
+            )
+
     def test_draft_cannot_be_applied(self) -> None:
         profile = self.load_work()
         profile["remote"]["kvm"] = "ask"
@@ -81,7 +100,7 @@ class FleetProfileTests(unittest.TestCase):
 
     def test_shell_metacharacter_in_account_is_rejected(self) -> None:
         profile = self.load_work()
-        profile["accounts"]["humans"] = ["srao;id"]
+        profile["accounts"]["humans"] = ["alice;id"]
         issues = fleetctl.validate_profile(profile, ready=False)
         self.assertIn("accounts.humans", {issue.path for issue in issues})
 
@@ -96,7 +115,7 @@ class FleetProfileTests(unittest.TestCase):
 
     def test_daily_and_admin_accounts_cannot_overlap(self) -> None:
         profile = self.load_work()
-        profile["accounts"]["admins"] = ["srao"]
+        profile["accounts"]["admins"] = ["alice"]
         issues = fleetctl.validate_profile(profile, ready=False)
         self.assertIn("accounts", {issue.path for issue in issues})
 
@@ -143,7 +162,7 @@ class FleetProfileTests(unittest.TestCase):
     def test_user_phase_rejects_non_agent_account(self) -> None:
         profile = self.make_ready(self.load_work())
         argv = ["fleetctl.py", "run", "ignored.toml", "shell"]
-        fake_user = type("User", (), {"pw_name": "srao"})()
+        fake_user = type("User", (), {"pw_name": "alice"})()
         with mock.patch.object(sys, "argv", argv), \
              mock.patch.object(fleetctl, "load_profile", return_value=profile), \
              mock.patch.object(fleetctl, "actual_platform", return_value="linux"), \

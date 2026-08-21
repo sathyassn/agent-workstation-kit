@@ -12,10 +12,10 @@ Start from an example; do not write a profile from memory. The examples cover pe
 | `machine.os_family` | `ubuntu`, `macos` | Must match the platform. |
 | `machine.role` | `shared-agent-workstation` | Inventory description. |
 | `accounts.agent` | `agt-ai-01` | Shared non-admin execution account. |
-| `accounts.humans` | `["srao", "jdoe"]` | Named daily-use OS accounts. |
-| `accounts.admins` | `["adm-srao"]` | Separate privileged accounts. |
-| `accounts.operators` | `["srao"]` | Humans allowed to control agent sessions. |
-| `accounts.viewers` | `["jdoe"]` | Humans limited to status/read-only observe. |
+| `accounts.humans` | `["alice", "bob"]` | Named daily-use OS accounts. |
+| `accounts.admins` | `["adm-alice"]` | Separate privileged accounts. |
+| `accounts.operators` | `["alice"]` | Humans allowed to control agent sessions. |
+| `accounts.viewers` | `["bob"]` | Humans limited to status/read-only observe. |
 | `accounts.ssh_users` | humans/admins; include an admin | Complete direct-SSH allowlist and recovery path. |
 | `remote.tailscale_tailnet` | organization/domain label | Non-secret tailnet identifier. |
 | `remote.tailscale_tags` | `["tag:agent-work"]` | Tags governed by tailnet grants. |
@@ -38,6 +38,6 @@ Start from an example; do not write a profile from memory. The examples cover pe
 | `backup.retention_days` | `30` | Positive retention target. |
 | `maintenance.timezone` | `America/Toronto` | IANA timezone. |
 | `maintenance.update_window` | `Sunday 02:00-04:00` | Human-readable approved window. |
-| `maintenance.owner` | `platform-team`, `srao` | Accountable person/team label. |
+| `maintenance.owner` | `platform-team`, `alice` | Accountable person/team label. |
 
 `ask` is valid only while a profile is a draft. `validate --ready` rejects every unresolved apply-time field. The examples’ names, domains, tags, hardware labels, and windows are patterns to replace—not environmental facts.
