@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+# This separate sudo entry point makes the viewer boundary structural: even a
+# permissive dispatch regression here cannot reach shell/attach/start/stop.
+case ${1:-help} in
+  help|list|status|observe)
+    exec /usr/local/libexec/agentctl-session "$@"
+    ;;
+  *)
+    printf 'agentctl: viewer entry point rejects action: %s\n' "${1:-}" >&2
+    exit 1
+    ;;
+esac

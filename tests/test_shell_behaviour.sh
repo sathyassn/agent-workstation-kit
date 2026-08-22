@@ -14,29 +14,39 @@ printf '%s\n' '#!/bin/sh' 'exit 1' >"$fixture_dir/id"
 chmod 0755 "$fixture_dir/uname" "$fixture_dir/getent" "$fixture_dir/id"
 
 preview=$(PATH="$fixture_dir:$PATH" "$repo_dir/scripts/setup-accounts-linux.sh" \
-  --agent agt-ai-01 --human alice --admin adm-alice --operator alice)
-grep -Fq 'usermod --append --groups agt-ai-01-operators alice' <<<"$preview"
+  --agent agent-01 --human alice --admin admin-01 --operator alice)
+grep -Fq 'usermod --append --groups agent-01-operators alice' <<<"$preview"
 grep -Fq 'this script never creates, changes, or locks passwords' <<<"$preview"
 
+# An inherited variable must never bypass the explicit --apply boundary.
+hostile_preview=$(APPLY_CHANGES=true PATH="$fixture_dir:$PATH" \
+  "$repo_dir/scripts/setup-accounts-linux.sh" --agent agent-01 --human alice \
+  --admin admin-01 --operator alice)
+grep -Fq 'useradd --create-home' <<<"$hostile_preview"
+if grep -Fq 'Apply mode requires root' <<<"$hostile_preview"; then
+  printf 'Inherited APPLY_CHANGES unexpectedly enabled apply mode.\n' >&2
+  exit 1
+fi
+
 if PATH="$fixture_dir:$PATH" "$repo_dir/scripts/setup-accounts-linux.sh" \
-  --agent agt-ai-01 --admin agt-ai-01 >/dev/null 2>&1; then
+  --agent agent-01 --admin agent-01 >/dev/null 2>&1; then
   printf 'Expected agent/admin overlap to be rejected.\n' >&2
   exit 1
 fi
 
 hardening_preview=$(PATH="$fixture_dir:$PATH" "$repo_dir/scripts/harden-remote-access-linux.sh" \
-  --agent agt-ai-01 --ssh-user alice --ssh-user adm-alice)
-grep -Fq 'AllowUsers alice adm-alice' <<<"$hardening_preview"
-grep -Fq 'DenyUsers agt-ai-01' <<<"$hardening_preview"
+  --agent agent-01 --ssh-user alice --ssh-user admin-01)
+grep -Fq 'AllowUsers alice admin-01' <<<"$hardening_preview"
+grep -Fq 'DenyUsers agent-01' <<<"$hardening_preview"
 
 if PATH="$fixture_dir:$PATH" "$repo_dir/scripts/harden-remote-access-linux.sh" \
-  --agent agt-ai-01 --ssh-user agt-ai-01 >/dev/null 2>&1; then
+  --agent agent-01 --ssh-user agent-01 >/dev/null 2>&1; then
   printf 'Expected direct SSH for the agent account to be rejected.\n' >&2
   exit 1
 fi
 
 if PATH="$fixture_dir:$PATH" "$repo_dir/scripts/harden-remote-access-linux.sh" \
-  --agent agt-ai-01 --ssh-user alice --ssh-user alice >/dev/null 2>&1; then
+  --agent agent-01 --ssh-user alice --ssh-user alice >/dev/null 2>&1; then
   printf 'Expected duplicate SSH users to be rejected.\n' >&2
   exit 1
 fi
@@ -50,11 +60,11 @@ fi
 # privileged helper. The fake id command models one operator, one viewer, and
 # one unauthorized account without requiring local account mutation.
 printf '%s\n' '#!/bin/sh' \
-  'case "${3:-}" in op) echo "op agt-ai-01-operators" ;; view) echo "view agt-ai-01-viewers" ;; *) echo "outsider" ;; esac' \
+  'case "${3:-}" in op) echo "op agent-01-operators" ;; view) echo "view agent-01-viewers" ;; *) echo "outsider" ;; esac' \
   >"$fixture_dir/id"
 chmod 0755 "$fixture_dir/id"
-AGENTCTL_OPERATOR_GROUP=agt-ai-01-operators
-AGENTCTL_VIEWER_GROUP=agt-ai-01-viewers
+AGENTCTL_OPERATOR_GROUP=agent-01-operators
+AGENTCTL_VIEWER_GROUP=agent-01-viewers
 export AGENTCTL_OPERATOR_GROUP AGENTCTL_VIEWER_GROUP
 # shellcheck source=../agentctl/agentctl-policy
 source "$repo_dir/agentctl/agentctl-policy"
@@ -72,9 +82,22 @@ printf '%s\n' '#!/bin/sh' \
 printf '%s\n' '#!/bin/sh' 'exit 0' >"$fixture_dir/getent"
 chmod 0755 "$fixture_dir/id" "$fixture_dir/getent"
 agentctl_preview=$(PATH="$fixture_dir:$PATH" "$repo_dir/scripts/install-agentctl-linux.sh" \
-  --agent agt-ai-01 --target ai-node-01)
-grep -Fq '%agt-ai-01-operators ALL=(agt-ai-01) NOPASSWD: /usr/local/libexec/agentctl-session *' <<<"$agentctl_preview"
-grep -Fq "AGENTCTL_TARGET='ai-node-01'" <<<"$agentctl_preview"
+  --agent agent-01 --target ac-ws-001)
+grep -Fq '%agent-01-operators ALL=(agent-01) NOPASSWD: /usr/local/libexec/agentctl-session *' <<<"$agentctl_preview"
+grep -Fq '%agent-01-viewers ALL=(agent-01) NOPASSWD: /usr/local/libexec/agentctl-observe *' <<<"$agentctl_preview"
+if grep -Fq '%agent-01-viewers ALL=(agent-01) NOPASSWD: /usr/local/libexec/agentctl-session *' <<<"$agentctl_preview"; then
+  printf 'Viewer group must not receive the mutating agentctl entry point.\n' >&2
+  exit 1
+fi
+grep -Fq "AGENTCTL_TARGET='ac-ws-001'" <<<"$agentctl_preview"
+grep -Fq 'help|list|status|observe)' "$repo_dir/agentctl/agentctl-observe"
+grep -Fq 'tmux attach-session -t "=$session"' "$repo_dir/agentctl/agentctl-session"
+
+# A documented helper must also resolve its repository when invoked by a bare
+# filename from scripts/, not only through a path containing a slash.
+bare_agentctl_preview=$(cd "$repo_dir/scripts" && PATH="$fixture_dir:$PATH" \
+  bash install-agentctl-linux.sh --agent agent-01 --target ac-ws-001)
+grep -Fq "AGENTCTL_TARGET='ac-ws-001'" <<<"$bare_agentctl_preview"
 
 # A local .deb path must be normalized before apt could consume it.
 touch "$fixture_dir/example.deb"
@@ -140,5 +163,19 @@ HOME="$tooling_home" PATH="$fixture_dir:$PATH" \
   "$repo_dir/scripts/install-user-tooling.sh" --agents --gws --apply >/dev/null
 cmp -s "$fixture_dir/first-mise-config.toml" "$tooling_home/.config/mise/config.toml"
 grep -Fq '"npm:@googleworkspace/cli" = "latest"' "$tooling_home/.config/mise/config.toml"
+
+# Hardware-specific driver automation must remain preview-only by default and
+# disclose its immutable source verification and Secure Boot boundary.
+driver_preview=$(PATH="$fixture_dir:$PATH" "$repo_dir/scripts/install-ms-s1-r8127-dkms.sh")
+grep -Fq '0b82eab2c29596aa5479690362544d8ce4d61d55' <<<"$driver_preview"
+grep -Fq '6f0baecb54ff88ddfd225423ce2f5a365f0755336288810e67a3b6b88dff261c' <<<"$driver_preview"
+grep -Fq 'does not disable Secure Boot' <<<"$driver_preview"
+grep -Fq 'linux-headers-generic' "$repo_dir/scripts/install-ms-s1-r8127-dkms.sh"
+grep -Fq 'mokutil --test-key' "$repo_dir/scripts/install-ms-s1-r8127-dkms.sh"
+grep -Fq 'runuser -u "$build_user"' "$repo_dir/scripts/install-ms-s1-r8127-dkms.sh"
+
+hostile_driver_preview=$(APPLY_CHANGES=true PATH="$fixture_dir:$PATH" \
+  "$repo_dir/scripts/install-ms-s1-r8127-dkms.sh")
+grep -Fq 'Preview only' <<<"$hostile_driver_preview"
 
 printf 'Shell behavior tests passed.\n'

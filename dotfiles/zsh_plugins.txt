@@ -1,3 +1,5 @@
-zsh-users/zsh-completions
-zsh-users/zsh-autosuggestions
-zsh-users/zsh-syntax-highlighting
+# Reviewed upstream release commits resolved from tags on 2026-08-22. Changes
+# require the normal dependency and source review.
+zsh-users/zsh-completions@53dd086f56f4d947be3a4b97c57f6c1f8a61900d
+zsh-users/zsh-autosuggestions@e52ee8ca55bcc56a17c828767a3f98f22a68d4eb
+zsh-users/zsh-syntax-highlighting@db085e4661f6aafd24e5acb5b2e17e4dd5dddf3e

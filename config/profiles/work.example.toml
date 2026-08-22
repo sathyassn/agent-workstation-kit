@@ -1,41 +1,54 @@
-# Copy to <machine>.local.toml, replace every "ask", validate, then approve.
-# This file declares desired state only. Never place credentials or recovery keys here.
-schema_version = 1
+# Copy to a private fleet repository or an ignored *.local.toml file.
+# Replace every "ask", validate, review, then set state to "approved".
+# Desired state only: never add passwords, tokens, keys, or recovery codes.
+schema_version = 2
 profile = "work"
-state = "draft" # Change to "approved" only after human/security review.
+state = "draft"
+
+[deployment]
+namespace = "ac"
+context = "work"
+ownership = "organization"
 
 [machine]
-id = "ai-node-01"
-platform = "linux" # linux or macos
-os_family = "ubuntu" # ubuntu or macos
-role = "shared-agent-workstation"
+hostname = "ac-ws-001"
+uuid = "11111111-1111-4111-8111-111111111111" # Generate once with fleetctl init.
+asset_tag = "ask"
+platform = "linux"
+os_family = "ubuntu"
+hardware_profile = "minisforum-ms-s1-max-64gb"
+role = "agent-workstation"
 
 [accounts]
-agent = "agt-ai-01"
-humans = ["alice", "bob"]
-admins = ["adm-alice", "adm-bob"]
+agent = "agent-01"
+humans = ["alice", "bob"] # Stable organization/IdP handles; resolve collisions centrally.
+admins = ["admin-01", "admin-02"]
+admin_assignments = { "admin-01" = "alice", "admin-02" = "bob" }
+services = []
 operators = ["alice", "bob"]
 viewers = []
-ssh_users = ["alice", "bob", "adm-alice", "adm-bob"]
+ssh_users = ["alice", "bob", "admin-01", "admin-02"]
 
 [remote]
 tailscale_tailnet = "ask"
-tailscale_tags = ["tag:agent-work"]
+tailscale_tags = ["tag:ac-workstation"]
 nomachine_port = 4000
-kvm = "glinet-comet-rm1"
-desktop_lock_mode = "ask" # dedicated-shared or locked
+kvm = "deferred"
+preferred_kvm = "glinet-comet-x-gl-rm4pe"
+fallback_kvm = "glinet-comet-poe-gl-rm1pe"
+desktop_lock_mode = "ask"
 
 [tooling]
 install_agents = true
 gws = "ask" # install or skip
 secrets_provider = "ask" # 1password, bitwarden, both, or organization-vault
-antidote_ref = "ask" # Full reviewed commit SHA preferred; a reviewed tag is acceptable for a pilot.
+antidote_ref = "ask" # Prefer a reviewed full commit SHA.
 
 [source_control]
 gitlab_host = "gitlab.com"
-gitlab_identity = "service-account" # service-account or none
+gitlab_identity = "service-account"
 github_host = "github.com"
-github_identity = "app" # app, machine-user, or none
+github_identity = "app"
 
 [model_auth]
 codex = "api-workload"
@@ -44,14 +57,17 @@ grok = "api-workload"
 
 [security]
 disk_encryption_required = true
+secure_boot_required = true
 remote_scope = "tailscale-only"
-endpoint_management = "ask" # mdm, edr, mdm-and-edr, or not-required
+endpoint_management = "ask"
 
 [resources]
-policy = "balanced"
+policy = "measured-balanced"
+os_memory_reserve_gib = 8
+os_cpu_reserve_threads = 2
 
 [backup]
-target = "ask" # Non-secret destination label, not a credential or URL token.
+target = "ask"
 retention_days = 30
 
 [maintenance]

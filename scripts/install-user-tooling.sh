@@ -27,7 +27,7 @@ EOF
   esac
 done
 
-[[ ${EUID:-$(id -u)} -ne 0 ]] || die 'Run as the target human or agt-* account, never root.'
+[[ ${EUID:-$(id -u)} -ne 0 ]] || die 'Run as the target human or agent-NN account, never root.'
 command_exists mise || die 'mise is required. Install it using the verified official installer or OS package first.'
 [[ "$install_agents" == true ]] || die '--agents is required by this baseline.'
 

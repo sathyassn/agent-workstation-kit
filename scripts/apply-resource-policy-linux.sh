@@ -8,14 +8,16 @@ script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 source "$script_dir/lib/common.sh"
 
 agent_account=''
+memory_reserve_gib=8
 remove_policy=false
 while (($#)); do
   case "$1" in
     --apply) APPLY_CHANGES=true; shift ;;
     --agent) agent_account=${2:?Missing agent account}; shift 2 ;;
+    --memory-reserve-gib) memory_reserve_gib=${2:?Missing memory reserve}; shift 2 ;;
     --remove) remove_policy=true; shift ;;
     --help|-h)
-      printf 'Usage: apply-resource-policy-linux.sh --agent agt-ai-01 [--remove] [--apply]\n'
+      printf 'Usage: apply-resource-policy-linux.sh --agent agent-01 [--memory-reserve-gib 8] [--remove] [--apply]\n'
       exit 0
       ;;
     *) die "Unknown option: $1" ;;
@@ -25,15 +27,16 @@ done
 [[ $(uname -s) == Linux ]] || die 'Linux only.'
 [[ -n "$agent_account" ]] || die '--agent is required.'
 validate_unix_name "$agent_account"
+[[ "$memory_reserve_gib" =~ ^[0-9]+$ ]] || die '--memory-reserve-gib must be an integer.'
+((memory_reserve_gib >= 4 && memory_reserve_gib <= 32)) || die '--memory-reserve-gib must be from 4 through 32.'
 id "$agent_account" >/dev/null 2>&1 || die "Unknown account: $agent_account"
 require_root_for_apply
 
 total_kib=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)
 [[ "$total_kib" =~ ^[0-9]+$ ]] || die 'Cannot read total memory.'
 gib_kib=$((1024 * 1024))
-soft_reserve=$((total_kib / 8))
-hard_reserve=$((total_kib / 16))
-((soft_reserve >= 8 * gib_kib)) || soft_reserve=$((8 * gib_kib))
+soft_reserve=$((memory_reserve_gib * gib_kib))
+hard_reserve=$((memory_reserve_gib * gib_kib / 2))
 ((hard_reserve >= 4 * gib_kib)) || hard_reserve=$((4 * gib_kib))
 memory_high=$((total_kib - soft_reserve))
 memory_max=$((total_kib - hard_reserve))
@@ -41,7 +44,12 @@ memory_max=$((total_kib - hard_reserve))
 
 uid=$(id -u "$agent_account")
 dropin_dir="/etc/systemd/system/user-$uid.slice.d"
-dropin_file="$dropin_dir/50-agent-fleet.conf"
+dropin_file="$dropin_dir/50-agent-workstation.conf"
+legacy_dropin="$dropin_dir/50-agent-fleet.conf"
+
+if [[ -e "$legacy_dropin" ]]; then
+  die "Legacy policy exists at $legacy_dropin. Review and remove it through an approved schema-v2 migration."
+fi
 
 if [[ "$remove_policy" == true ]]; then
   log "Would remove $dropin_file and reload systemd. Existing sessions keep their current limits until logout/reboot."

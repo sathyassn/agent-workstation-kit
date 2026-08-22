@@ -1,47 +1,54 @@
 # Fleet rollout and change management
 
-The repository can manage a fleet now; production rollout remains staged. A clean pilot is evidence, not permission to change every node at once.
+## Two repositories
 
 ```text
-issue + proposed profile/script change
-                  |
-                  v
-        branch --> make check --> draft PR/MR
-                  |                    |
-                  |              human/security review
-                  |                    |
-                  +<------ fix --------+
-                                       |
-                                       v
-                              one non-critical canary
-                                       |
-                         audit + 24h/multi-day burn-in
-                                       |
-                         +-------------+-------------+
-                         |                           |
-                      rollback                 staged cohorts
-                                                     |
-                                            audit every node
+public-capable agent-workstation-kit
+  generic scripts, schemas, tests, examples, guides, skill
+                    |
+                    | version pinned by kit.lock
+                    v
+private workstation-fleet
+  real machines, UUIDs, asset tags, assignments, private policy, retirement log
 ```
 
-## Profile storage
+Use this split for both personal and work fleets. Create `workstation-fleet` in
+the relevant private organization or personal namespace. Fork the toolkit only
+if local code must diverge; retain an upstream link for reviewed generic
+updates, but never merge them without the private fleet's canary tests.
 
-- Personal/pilot-only choices: ignored `config/profiles/<machine>.local.toml`.
-- Shared private fleet inventory: reviewed `config/fleet/<machine-id>.toml`; profiles contain no secrets.
-- Validate one profile with `fleetctl.py validate ... --ready` and the inventory with `validate-fleet.py config/fleet`.
+## Change flow
 
-## Change rules
+```text
+issue --> focused branch --> checks --> PR/MR --> human/security review
+                                                   |
+                                                   v
+                                         one non-critical canary
+                                                   |
+                                      audit + realistic burn-in
+                                             /             \
+                                         rollback      small cohorts
+                                                            |
+                                                     audit every node
+```
 
-1. Open an issue describing purpose, affected cohorts, rollback, and acceptance evidence.
-2. An agent may prepare a branch, commit, and draft PR/MR text. It must not create a remote, push, open the PR/MR, approve, merge, or deploy without the responsible human’s explicit authorization.
-3. CI runs `make check`; reviewers inspect rendered profile plans and privileged diffs.
-4. Apply to one non-critical node. Record exact versions, configuration diff, audit output, resource measurements, reboot/reconnect, browser/container tests, and restore evidence.
-5. Promote by small cohorts with a stop condition. Never run an opaque all-host command.
-6. Revert the reviewed change or run its documented removal path, then re-audit. Resource policy supports `--remove`; access changes require an open KVM/console recovery path.
+1. Record purpose, affected hosts, rollback, approvals, and acceptance evidence.
+2. Validate the toolkit and private fleet; inspect exact privileged previews.
+3. An agent may prepare commits and PR/MR text. It must ask before creating a
+   remote, pushing, opening the PR/MR, deploying, or changing visibility.
+4. An agent identity cannot approve or merge its own change.
+5. Canary every OS, hardware, memory, and workload class represented.
+6. Stop on security, recovery, driver, resource-pressure, or data-integrity failure.
 
-## Drift and upgrades
+## Fleet identity
 
-- Daily/weekly audits detect host drift; do not auto-remediate privileged drift.
-- Stage repository, agent CLI, browser, container, NoMachine, Tailscale, and OS upgrades on the canary.
-- Regenerate and review `mise.lock` after approved tool upgrades; do not silently follow `latest` in production.
-- The setup agent may propose repo improvements through a PR/MR. A human owns review, merge, rollout, and rollback decisions.
+- Hostname: `<namespace>-<class>-<NNN>`; never reuse a retired name.
+- Persistent UUIDv4: generated once and retained through rebuilds.
+- Asset tag, hardware serial, BIOS, and Tailscale node identity: private inventory.
+- Local account names may repeat; `hostname/account` is the unique principal.
+- `state` records final desired readiness, not temporary pilot management. Keep
+  a work node `draft` until its required MDM/EDR state is actually present.
+
+Stage toolkit, OS, kernel/DKMS, agent CLI, browser, container, NoMachine,
+Tailscale, and KVM firmware updates on one suitable node. Do not auto-remediate
+privileged drift or run opaque all-host commands.

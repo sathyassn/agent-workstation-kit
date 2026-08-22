@@ -1,8 +1,13 @@
 # Managed baseline for agent development accounts.
 # Machine-local and secret values do not belong in this file.
 
-export EDITOR='code --wait'
-export VISUAL='code --wait'
+if command -v code >/dev/null 2>&1; then
+  export EDITOR='code --wait'
+  export VISUAL='code --wait'
+else
+  export EDITOR=vi
+  export VISUAL=vi
+fi
 export PAGER=less
 export LESS='-FRX'
 

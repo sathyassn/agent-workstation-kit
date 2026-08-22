@@ -1,0 +1,1 @@
+# Append retired hostnames below. Names in this ledger cannot be reused.

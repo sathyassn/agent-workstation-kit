@@ -1,28 +1,39 @@
-# Work-profile example for a future Mac mini/Studio node. Copy, resolve every
-# "ask", validate, and approve. Never add credentials or recovery keys.
-schema_version = 1
+# Future organization-owned Apple-platform workstation example.
+schema_version = 2
 profile = "work"
 state = "draft"
 
+[deployment]
+namespace = "ac"
+context = "work"
+ownership = "organization"
+
 [machine]
-id = "mac-node-01"
+hostname = "ac-mac-001"
+uuid = "33333333-3333-4333-8333-333333333333"
+asset_tag = "ask"
 platform = "macos"
 os_family = "macos"
+hardware_profile = "mac-mini-or-studio"
 role = "apple-agent-workstation"
 
 [accounts]
-agent = "agt-mac-01"
+agent = "agent-01"
 humans = ["alice", "bob"]
-admins = ["adm-alice", "adm-bob"]
+admins = ["admin-01", "admin-02"]
+admin_assignments = { "admin-01" = "alice", "admin-02" = "bob" }
+services = []
 operators = ["alice", "bob"]
 viewers = []
-ssh_users = ["alice", "bob", "adm-alice", "adm-bob"]
+ssh_users = ["alice", "bob", "admin-01", "admin-02"]
 
 [remote]
 tailscale_tailnet = "ask"
-tailscale_tags = ["tag:agent-work-macos"]
+tailscale_tags = ["tag:ac-workstation"]
 nomachine_port = 4000
-kvm = "ask"
+kvm = "deferred"
+preferred_kvm = "glinet-comet-x-gl-rm4pe"
+fallback_kvm = "glinet-comet-poe-gl-rm1pe"
 desktop_lock_mode = "ask"
 
 [tooling]
@@ -44,11 +55,14 @@ grok = "api-workload"
 
 [security]
 disk_encryption_required = true
+secure_boot_required = true
 remote_scope = "tailscale-only"
 endpoint_management = "ask"
 
 [resources]
-policy = "balanced"
+policy = "measured-balanced"
+os_memory_reserve_gib = 8
+os_cpu_reserve_threads = 2
 
 [backup]
 target = "ask"

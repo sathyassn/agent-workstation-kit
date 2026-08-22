@@ -2,12 +2,13 @@
 
 ## Acceptance tests
 
-1. Reboot and recover through remote KVM.
+1. Reboot and recover through the currently approved console path; require remote KVM before unattended placement if policy says so.
 2. Connect through Tailscale using SSH and NoMachine from two named users.
-3. Confirm both users reach the same `agt-*` desktop without receiving its password.
+3. Confirm both users reach the same `agent-NN` desktop without receiving its password.
 4. Confirm `agentctl shell`, attach, detach, status, and authorization logging.
 5. Confirm the agent account has no `sudo`/Docker-group membership and that effective sshd policy denies its direct login.
-6. Verify `git`, `gh`, `glab`, VS Code, Ghostty, Herdr, tmux, runtimes, containers, and browsers.
+6. Verify `git`, `gh`, `glab`, VS Code, Ghostty, pinned Herdr, tmux, runtimes,
+   containers, and browsers.
 7. Create a disposable branch and draft PR/MR using the non-human source-control identity.
 8. Run headless and headed Playwright tests while observing the desktop.
 9. Run four representative agent sessions with realistic subagents, builds, browsers, and containers.
@@ -18,7 +19,7 @@
 Run the automated evidence check from a privileged named-admin session after the user-space install:
 
 ```text
-sudo ./scripts/validate-host.sh agt-ai-01
+sudo ./scripts/validate-host.sh agent-01
 ```
 
 If NoMachine uses a reviewed non-default port, pass it as the second argument.

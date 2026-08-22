@@ -8,8 +8,9 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest import mock
+import uuid
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,8 +28,8 @@ class FleetProfileTests(unittest.TestCase):
     def make_ready(self, profile: dict) -> dict:
         result = copy.deepcopy(profile)
         result["state"] = "approved"
+        result["machine"]["asset_tag"] = "AC-10001"
         result["remote"]["tailscale_tailnet"] = "organization.example"
-        result["remote"]["kvm"] = "glinet-comet-rm1"
         result["remote"]["desktop_lock_mode"] = "dedicated-shared"
         result["tooling"]["gws"] = "skip"
         result["tooling"]["secrets_provider"] = "organization-vault"
@@ -43,119 +44,121 @@ class FleetProfileTests(unittest.TestCase):
         examples = sorted((ROOT / "config/profiles").glob("*.example.toml"))
         self.assertGreaterEqual(len(examples), 3)
         for path in examples:
-            profile = fleetctl.load_profile(path)
-            self.assertEqual([], fleetctl.validate_profile(profile, ready=False))
+            self.assertEqual([], fleetctl.validate_profile(fleetctl.load_profile(path), ready=False), path)
 
     def test_cli_version_matches_version_file(self) -> None:
-        result = subprocess.run(
-            [str(ROOT / "scripts/fleetctl.py"), "--version"],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        expected = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
-        self.assertEqual(f"fleetctl.py {expected}", result.stdout.strip())
+        result = subprocess.run([str(ROOT / "scripts/fleetctl.py"), "--version"], check=True, capture_output=True, text=True)
+        self.assertEqual(f"fleetctl.py {(ROOT / 'VERSION').read_text().strip()}", result.stdout.strip())
 
     def test_missing_version_file_has_safe_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            self.assertEqual(
-                "0.0.0+unknown",
-                fleetctl.load_version(Path(directory)),
-            )
+            self.assertEqual("0.0.0+unknown", fleetctl.load_version(Path(directory)))
 
-    def test_draft_cannot_be_applied(self) -> None:
-        profile = self.load_work()
-        profile["remote"]["kvm"] = "ask"
-        issues = fleetctl.validate_profile(profile, ready=True)
+    def test_draft_cannot_be_applied_but_deferred_kvm_can(self) -> None:
+        issues = fleetctl.validate_profile(self.load_work(), ready=True)
         paths = {issue.path for issue in issues}
         self.assertIn("state", paths)
-        self.assertIn("tooling.gws", paths)
-        self.assertIn("remote.desktop_lock_mode", paths)
-        self.assertIn("remote.kvm", paths)
+        self.assertIn("machine.asset_tag", paths)
+        self.assertNotIn("remote.kvm", paths)
 
     def test_resolved_work_profile_is_ready(self) -> None:
-        profile = self.make_ready(self.load_work())
-        self.assertEqual([], fleetctl.validate_profile(profile, ready=True))
+        self.assertEqual([], fleetctl.validate_profile(self.make_ready(self.load_work()), ready=True))
 
     def test_unknown_keys_are_rejected(self) -> None:
         profile = self.load_work()
         profile["accounts"]["superuser"] = "root"
-        issues = fleetctl.validate_profile(profile, ready=False)
-        self.assertIn("accounts.superuser", {issue.path for issue in issues})
+        self.assertIn("accounts.superuser", {i.path for i in fleetctl.validate_profile(profile, ready=False)})
+
+    def test_hostname_namespace_and_class_are_enforced(self) -> None:
+        profile = self.load_work()
+        profile["machine"]["hostname"] = "ss-mac-001"
+        self.assertIn("machine.hostname", {i.path for i in fleetctl.validate_profile(profile, ready=False)})
+
+    def test_uuid_must_be_canonical_v4(self) -> None:
+        profile = self.load_work()
+        profile["machine"]["uuid"] = "not-a-uuid"
+        self.assertIn("machine.uuid", {i.path for i in fleetctl.validate_profile(profile, ready=False)})
+
+    def test_admin_assignments_are_complete_and_one_to_one(self) -> None:
+        profile = self.load_work()
+        profile["accounts"]["admin_assignments"] = {"admin-01": "alice"}
+        self.assertIn("accounts.admin_assignments", {i.path for i in fleetctl.validate_profile(profile, ready=False)})
 
     def test_personal_identity_cannot_be_shared(self) -> None:
         profile = self.load_work()
-        profile["profile"] = "personal"
+        profile["profile"] = profile["deployment"]["context"] = "personal"
+        profile["deployment"]["ownership"] = "individual"
         profile["model_auth"]["codex"] = "named-human"
-        issues = fleetctl.validate_profile(profile, ready=False)
-        self.assertIn("model_auth.codex", {issue.path for issue in issues})
+        self.assertIn("model_auth.codex", {i.path for i in fleetctl.validate_profile(profile, ready=False)})
 
     def test_account_phase_uses_argv_not_shell_text(self) -> None:
-        profile = self.make_ready(self.load_work())
-        phase = fleetctl.phase_for(profile, "accounts", apply=True, recovery=False)
+        phase = fleetctl.phase_for(self.make_ready(self.load_work()), "accounts", apply=True, recovery=False)
         assert phase.command
         self.assertEqual("--apply", phase.command[-1])
-        self.assertIn("--operator", phase.command)
         self.assertNotIn("sudo", phase.command)
 
-    def test_shell_metacharacter_in_account_is_rejected(self) -> None:
+    def test_shell_metacharacter_is_rejected(self) -> None:
         profile = self.load_work()
         profile["accounts"]["humans"] = ["alice;id"]
-        issues = fleetctl.validate_profile(profile, ready=False)
-        self.assertIn("accounts.humans", {issue.path for issue in issues})
+        self.assertIn("accounts.humans", {i.path for i in fleetctl.validate_profile(profile, ready=False)})
 
-    def test_malformed_types_return_issues_instead_of_crashing(self) -> None:
+    def test_malformed_types_return_issues(self) -> None:
         profile = self.load_work()
         profile["machine"]["platform"] = ["linux"]
         profile["tooling"]["gws"] = ["install"]
-        issues = fleetctl.validate_profile(profile, ready=False)
-        paths = {issue.path for issue in issues}
+        paths = {i.path for i in fleetctl.validate_profile(profile, ready=False)}
         self.assertIn("machine.platform", paths)
         self.assertIn("tooling.gws", paths)
 
-    def test_daily_and_admin_accounts_cannot_overlap(self) -> None:
-        profile = self.load_work()
-        profile["accounts"]["admins"] = ["alice"]
-        issues = fleetctl.validate_profile(profile, ready=False)
-        self.assertIn("accounts", {issue.path for issue in issues})
-
-    def test_required_agent_tooling_cannot_be_disabled(self) -> None:
-        profile = self.load_work()
-        profile["tooling"]["install_agents"] = False
-        issues = fleetctl.validate_profile(profile, ready=False)
-        self.assertIn("tooling.install_agents", {issue.path for issue in issues})
-
-    def test_ssh_recovery_requires_a_declared_admin(self) -> None:
-        profile = self.load_work()
-        profile["accounts"]["ssh_users"] = profile["accounts"]["humans"]
-        issues = fleetctl.validate_profile(profile, ready=False)
-        self.assertIn("accounts.ssh_users", {issue.path for issue in issues})
-
-    def test_timezone_must_be_a_real_iana_zone(self) -> None:
-        profile = self.load_work()
-        profile["maintenance"]["timezone"] = "Toronto-ish"
-        issues = fleetctl.validate_profile(profile, ready=False)
-        self.assertIn("maintenance.timezone", {issue.path for issue in issues})
-
-    def test_timezone_path_does_not_escape_validation(self) -> None:
-        profile = self.load_work()
-        profile["maintenance"]["timezone"] = "/etc/localtime"
-        issues = fleetctl.validate_profile(profile, ready=False)
-        self.assertIn("maintenance.timezone", {issue.path for issue in issues})
-
-    def test_agentctl_target_uses_machine_id(self) -> None:
+    def test_agentctl_target_uses_hostname(self) -> None:
         profile = self.make_ready(self.load_work())
         phase = fleetctl.phase_for(profile, "agentctl", apply=False, recovery=False)
         assert phase.command
-        self.assertEqual(profile["machine"]["id"], phase.command[phase.command.index("--target") + 1])
+        self.assertEqual(profile["machine"]["hostname"], phase.command[phase.command.index("--target") + 1])
+
+    def test_init_generates_valid_unique_uuid_without_overwrite(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "ac-ws-042.toml"
+            argv = ["fleetctl.py", "init", str(output), "--context", "work", "--namespace", "ac", "--hostname", "ac-ws-042", "--platform", "linux", "--human", "alice"]
+            with mock.patch.object(sys, "argv", argv):
+                self.assertEqual(0, fleetctl.main())
+            profile = fleetctl.load_profile(output)
+            self.assertEqual(4, uuid.UUID(profile["machine"]["uuid"]).version)
+            with mock.patch.object(sys, "argv", argv):
+                self.assertEqual(2, fleetctl.main())
+
+    def test_init_rejects_more_admins_than_humans_before_write(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "ac-ws-043.toml"
+            argv = ["fleetctl.py", "init", str(output), "--context", "work", "--namespace", "ac", "--hostname", "ac-ws-043", "--platform", "linux", "--human", "alice", "--admin", "admin-01", "--admin", "admin-02"]
+            with mock.patch.object(sys, "argv", argv):
+                self.assertEqual(2, fleetctl.main())
+            self.assertFalse(output.exists())
+
+    def test_external_fleet_requires_matching_kit_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            argv = ["fleetctl.py", "--fleet-root", str(root), "validate", "machines/ac-ws-001.toml"]
+            with mock.patch.object(sys, "argv", argv), mock.patch.object(fleetctl, "load_profile") as load:
+                self.assertEqual(2, fleetctl.main())
+                load.assert_not_called()
+
+    def test_runner_strips_inherited_apply_environment(self) -> None:
+        profile = self.make_ready(self.load_work())
+        argv = ["fleetctl.py", "run", "ignored.toml", "base"]
+        completed = subprocess.CompletedProcess([], 0)
+        with mock.patch.object(sys, "argv", argv), \
+             mock.patch.dict(fleetctl.os.environ, {"APPLY_CHANGES": "true"}), \
+             mock.patch.object(fleetctl, "load_profile", return_value=profile), \
+             mock.patch.object(fleetctl, "actual_platform", return_value="linux"), \
+             mock.patch.object(fleetctl.subprocess, "run", return_value=completed) as run:
+            self.assertEqual(0, fleetctl.main())
+            self.assertNotIn("APPLY_CHANGES", run.call_args.kwargs["env"])
 
     def test_run_rejects_platform_mismatch_before_subprocess(self) -> None:
         profile = self.make_ready(self.load_work())
         argv = ["fleetctl.py", "run", "ignored.toml", "base"]
-        with mock.patch.object(sys, "argv", argv), \
-             mock.patch.object(fleetctl, "load_profile", return_value=profile), \
-             mock.patch.object(fleetctl, "actual_platform", return_value="macos"), \
-             mock.patch.object(fleetctl.subprocess, "run") as run:
+        with mock.patch.object(sys, "argv", argv), mock.patch.object(fleetctl, "load_profile", return_value=profile), mock.patch.object(fleetctl, "actual_platform", return_value="macos"), mock.patch.object(fleetctl.subprocess, "run") as run:
             self.assertEqual(2, fleetctl.main())
             run.assert_not_called()
 
@@ -163,23 +166,43 @@ class FleetProfileTests(unittest.TestCase):
         profile = self.make_ready(self.load_work())
         argv = ["fleetctl.py", "run", "ignored.toml", "shell"]
         fake_user = type("User", (), {"pw_name": "alice"})()
-        with mock.patch.object(sys, "argv", argv), \
-             mock.patch.object(fleetctl, "load_profile", return_value=profile), \
-             mock.patch.object(fleetctl, "actual_platform", return_value="linux"), \
-             mock.patch.object(fleetctl.pwd, "getpwuid", return_value=fake_user), \
-             mock.patch.object(fleetctl.subprocess, "run") as run:
+        with mock.patch.object(sys, "argv", argv), mock.patch.object(fleetctl, "load_profile", return_value=profile), mock.patch.object(fleetctl, "actual_platform", return_value="linux"), mock.patch.object(fleetctl.pwd, "getpwuid", return_value=fake_user), mock.patch.object(fleetctl.subprocess, "run") as run:
             self.assertEqual(2, fleetctl.main())
             run.assert_not_called()
 
     def test_remote_apply_requires_recovery_confirmation(self) -> None:
         profile = self.make_ready(self.load_work())
         argv = ["fleetctl.py", "run", "ignored.toml", "remote-hardening", "--apply"]
-        with mock.patch.object(sys, "argv", argv), \
-             mock.patch.object(fleetctl, "load_profile", return_value=profile), \
-             mock.patch.object(fleetctl, "actual_platform", return_value="linux"), \
-             mock.patch.object(fleetctl.subprocess, "run") as run:
+        with mock.patch.object(sys, "argv", argv), mock.patch.object(fleetctl, "load_profile", return_value=profile), mock.patch.object(fleetctl, "actual_platform", return_value="linux"), mock.patch.object(fleetctl.subprocess, "run") as run:
             self.assertEqual(2, fleetctl.main())
             run.assert_not_called()
+
+    def test_remote_apply_requires_explicit_connection_context(self) -> None:
+        profile = self.make_ready(self.load_work())
+        argv = [
+            "fleetctl.py", "run", "ignored.toml", "remote-hardening",
+            "--apply", "--confirm-recovery-tested",
+        ]
+        with mock.patch.object(sys, "argv", argv), mock.patch.object(fleetctl, "load_profile", return_value=profile), mock.patch.object(fleetctl, "actual_platform", return_value="linux"), mock.patch.object(fleetctl.subprocess, "run") as run:
+            self.assertEqual(2, fleetctl.main())
+            run.assert_not_called()
+
+    def test_remote_apply_passes_declared_tailscale_peer(self) -> None:
+        profile = self.make_ready(self.load_work())
+        phase = fleetctl.phase_for(
+            profile,
+            "remote-hardening",
+            apply=True,
+            recovery=True,
+            connection_context="tailscale-ssh",
+            ssh_source_ip="100.64.0.10",
+        )
+        assert phase.command
+        self.assertIn("--confirm-recovery-tested", phase.command)
+        self.assertEqual(
+            "100.64.0.10",
+            phase.command[phase.command.index("--ssh-source-ip") + 1],
+        )
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@ script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck disable=SC1091
 source "$script_dir/lib/common.sh"
 
-printf 'Agent development fleet preflight\n'
+printf 'Agent workstation preflight\n'
 printf '=================================\n'
 printf 'Timestamp:        %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 printf 'Hostname:         %s\n' "$(hostname)"
@@ -43,7 +43,7 @@ printf '\nRoot filesystem\n'
 df -h / 2>/dev/null || true
 
 printf '\nRequired and optional commands\n'
-for command_name in git ssh zsh tmux tailscale docker mise node python3 gh glab codex claude grok chatgpt; do
+for command_name in git ssh zsh tmux herdr tailscale docker mise node python3 gh glab codex claude grok chatgpt; do
   if command_exists "$command_name"; then
     printf '%-12s %s\n' "$command_name" "$(command -v "$command_name")"
   else

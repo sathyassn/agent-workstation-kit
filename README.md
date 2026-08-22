@@ -1,87 +1,93 @@
-# Agent Development Fleet
+# Agent Workstation Kit
 
-Production-oriented guides, scripts, and an AI setup skill for dedicated Linux and macOS development machines running Codex, Claude Code, Grok Build, browsers, and long-lived agent workloads.
+Production-oriented profiles, preview-first automation, guides, and an AI setup
+skill for dedicated Linux and macOS workstations running Codex, Claude Code,
+Grok Build, headed browsers, and long-lived agent workloads.
 
-Current version: **0.1.0-rc.1 (pilot series)**. Version 0.x interfaces may
-change as live-machine evidence is incorporated. See the
-[changelog](CHANGELOG.md).
+Current version: **0.2.0-rc.1**. This remains a pilot release until the first
+physical Linux node completes the documented burn-in.
 
-## Intended architecture
+## Operating model
 
 ```text
-Operator Mac/iPad
-       |
-   Tailscale
-       |
-       +--> NoMachine --> shared agt-* desktop
-       |
-       +--> SSH --> named human shell --> agentctl --> agt-* session
-       |
-       +--> Remote KVM --> boot/BIOS/recovery
+Human Mac/iPad
+      |
+      +-- Tailscale -- NoMachine -- shared desktop owned by agent-01
+      |                                  |
+      |                                  +-- terminal / tmux / Herdr / agents
+      |
+      +-- Tailscale -- SSH -- personal shell -- agentctl -- agent-01 sessions
+      |
+      +-- Tailscale -- remote KVM -- firmware / boot / recovery (optional initially)
 ```
 
-Start with Ubuntu Linux agent nodes. Add macOS nodes later for Xcode and Apple-platform work. Pilot one node before cloning the configuration to additional machines.
+Each person signs in with an individual identity. A separate `admin-NN` account
+is assigned to that person for privileged work. Shared agent processes run as a
+non-admin `agent-NN` account. No credentials are copied between these identities.
+
+## Repository model
+
+```text
+agent-workstation-kit (this public-capable repository)
+  scripts + schemas + examples + OS/hardware guides + setup skill
+                     |
+                     +-- validates --> private workstation-fleet repository
+                                          real host inventory and policy
+                                          no credentials
+```
+
+Use a separate private fleet repository for both personal and organization
+deployments. Start from [`templates/private-fleet`](templates/private-fleet).
+An organization can fork this toolkit privately if its automation must diverge;
+otherwise pin the upstream toolkit version in `kit.lock` and keep only fleet
+data private.
 
 ## Start here
 
-1. Read [Architecture and operating model](docs/00-architecture.md).
-2. Complete the [Planning worksheet](docs/01-planning.md), choose a validated [profile example/reference](docs/01b-profile-field-reference.md), and follow [profile onboarding](docs/01a-onboarding-profile.md).
-3. Follow either [Linux setup](docs/02-linux-setup.md) or [macOS setup](docs/03-macos-setup.md).
-4. Configure [accounts and access](docs/04-accounts-and-access.md).
-5. Configure [agent and source-control identities](docs/06-agent-and-source-control-identities.md).
-6. Run [validation and burn-in](docs/08-validation-and-operations.md).
-7. For more than one node, use [fleet rollout and change management](docs/12-fleet-rollout-and-change-management.md).
+1. Read [architecture and operating model](docs/00-architecture.md).
+2. Review the [final stack and product choices](docs/00a-final-stack.md), then
+   create a draft with [profile onboarding](docs/01a-onboarding-profile.md).
+3. Follow [Linux setup](docs/02-linux-setup.md) or [macOS setup](docs/03-macos-setup.md).
+4. Configure [accounts and access](docs/04-accounts-and-access.md), then
+   [source-control/workload identities](docs/06-agent-and-source-control-identities.md).
+5. Complete [validation, burn-in, and operations](docs/08-validation-and-operations.md).
 
-For the first physical Linux machine, use the concise
-[first-node pilot runbook](docs/runbooks/first-linux-pilot.md).
+For the first Minisforum MS-S1 Max, use both the
+[first Linux pilot](docs/runbooks/first-linux-pilot.md) and
+[hardware acceptance runbook](docs/hardware/minisforum-ms-s1-max.md).
 
-Architecture decisions are recorded under [`docs/decisions`](docs/decisions),
-including the separation between reproducible setup and encrypted backup.
-
-The Python `fleetctl` validates the declarative TOML profile, renders exact phase commands, and audits live account/security state. The Bash scripts perform narrow OS-specific changes. Both default to observation/preview, contain no credentials, and do not silently authenticate external services.
-
-Check a clean checkout before use:
+## Safe command flow
 
 ```bash
-make check
-# Release/CI-equivalent check; requires ShellCheck.
-make ci-check
-./scripts/fleetctl.py --version
+./scripts/fleetctl.py init /private/fleet/machines/ac-ws-001.toml \
+  --context work --namespace ac --hostname ac-ws-001 --platform linux \
+  --hardware-profile minisforum-ms-s1-max-64gb --human alice
+
+./scripts/fleetctl.py validate /private/fleet/machines/ac-ws-001.toml
+./scripts/fleetctl.py plan /private/fleet/machines/ac-ws-001.toml
+# Resolve every "ask", review, approve, then:
+./scripts/fleetctl.py validate /private/fleet/machines/ac-ws-001.toml --ready
 ```
 
-## Automation boundary
+Scripts preview by default. `--apply`, `sudo`, account/access changes, external
+authentication, boot/security changes, and deletion always require a human gate.
+Profiles contain desired state only and never secrets.
 
-```text
-Scripts                         Setup agent
--------                         -----------
-Install known packages          Inspect the machine
-Create declared accounts        Select the correct OS path
-Write validated config          Ask optional-tool questions
-Install agentctl                Explain approvals
-Apply resource policy           Run scripts in order
-Run deterministic checks        Diagnose and summarize results
+## Quality gates
 
-Human approval is required for sudo, credentials, vendor accounts,
-disk/security changes, remote access, and destructive operations.
+```bash
+make check          # portable local checks
+make ci-check       # includes mandatory ShellCheck
+make public-check   # deterministic public-repository readiness
 ```
 
-## Repository status
+Repository checks do not certify a live machine. Record Ubuntu driver, firmware,
+endpoint-management, NoMachine, KVM, backup/restore, and realistic workload
+evidence separately before approving a node.
 
-This is a production-oriented implementation baseline, not a claim of live fleet certification. Repository checks are automated; one non-critical pilot, followed by recorded burn-in and staged rollout, is mandatory. Hardware drivers, corporate endpoint controls, identity policy, vendor licensing, and graphical recovery remain environment-specific gates.
+## License and independence
 
-See the [independent review record](docs/reviews/2026-08-20-claude-code-review.md)
-for the implementation review and the
-[public-readiness follow-up](docs/reviews/2026-08-21-public-readiness-review.md)
-for the current release gates.
-
-## Contributing and publication
-
-Read [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), and the
-[public release checklist](docs/13-public-release-checklist.md) before proposing
-or publishing changes. The repository does not yet include an open-source
-license. Until the owner selects and approves one, the source may be reviewed
-but no permission to copy, modify, or redistribute it is granted.
-
-This project configures independent vendor products and is not sponsored or
-endorsed by OpenAI, Anthropic, xAI, Tailscale, NoMachine, or other referenced
+Licensed under the [Apache License 2.0](LICENSE). This project configures
+independent vendor products and is not sponsored or endorsed by OpenAI,
+Anthropic, xAI, Tailscale, NoMachine, Minisforum, GL.iNet, or other referenced
 vendors.

@@ -5,14 +5,14 @@ Complete this before running a mutating script, then record the decisions in the
 ## Required decisions
 
 - Deployment profile: work or personal.
-- Machine identifier and physical asset owner.
+- Namespace, classed hostname, generated UUID, asset tag, and physical owner.
 - Ubuntu or macOS version supported by required applications.
-- Agent account name, normally `agt-ai-NN`.
+- Agent account (`agent-NN`), stable human handles, and assigned `admin-NN` accounts.
 - Named human accounts and separate administrator accounts.
 - Agent operators and view-only users.
 - Tailscale tailnet, ACL tags, device approval, and exit-node policy.
 - NoMachine license and trusted-user list.
-- Remote KVM model, network placement, MFA, and recovery owner.
+- Whether KVM is deferred for a supervised pilot; eventual model, network placement, MFA, and owner.
 - Disk encryption and reboot-unlock process.
 - GitLab, GitHub, model-provider, and secrets-provider ownership.
 - Backup targets, retention, restore owner, and prohibited data.
@@ -29,8 +29,8 @@ The setup agent must ask before installing organization-specific tools. Present 
 - Internal certificate authorities, package registries, proxies, and artifact stores.
 - JetBrains tools, Zed, mobile toolchains, databases, and local model runtimes.
 
-Record the answer in an ignored `config/profiles/*.local.toml` file. An `ask` value must never silently become `install` or an approved provider.
+Record the answer in an ignored local profile or private fleet repository. An `ask` value must never silently become `install` or an approved provider.
 
 ## Hardware gate
 
-Before purchase, recheck Ontario availability, warranty, memory configuration, networking, storage endurance, Linux compatibility, and return policy. Pilot one machine under realistic load before deciding the RAM size and count for later nodes.
+Before purchase, recheck regional availability, warranty, soldered memory, networking, storage endurance, Linux compatibility, and return policy. Pilot one machine under realistic load before deciding the RAM size and count for later nodes. The current MS-S1 Max-specific gate is in the [hardware runbook](hardware/minisforum-ms-s1-max.md).

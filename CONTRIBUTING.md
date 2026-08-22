@@ -4,9 +4,8 @@ Contributions should preserve the project's preview-first, fail-closed operating
 model. An automation convenience is not worth weakening identity, recovery, or
 host-security boundaries.
 
-The repository is currently pre-release and has no open-source license.
-External contributions cannot be accepted until the owner approves a license;
-after that decision, contributions are accepted under the repository license.
+Contributions are accepted under the Apache License 2.0. Do not submit private
+fleet data, organization-only policy, personal paths, or credentials.
 
 ## Before opening a change
 

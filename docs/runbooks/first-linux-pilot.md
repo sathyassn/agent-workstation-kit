@@ -9,11 +9,11 @@ not a fleet template until the evidence below is complete.
       warranty, and return deadline.
 - [ ] Have a monitor, keyboard, wired network, verified Ubuntu Desktop LTS
       installer, and a second computer available.
-- [ ] Connect the remote KVM, change its default credentials, update its
-      firmware, restrict its network path, and verify BIOS-level access.
+- [ ] Keep a monitor and keyboard attached. Record KVM as `deferred` while the
+      node is physically supervised; install/test it before unattended placement.
 - [ ] Decide the disk-encryption and unattended-reboot recovery procedure.
-- [ ] Copy `personal.example.toml` or `work.example.toml` to an ignored
-      `config/profiles/<machine>.local.toml`; fill in real, non-secret decisions.
+- [ ] Generate the draft with `fleetctl init` in a private fleet repository;
+      confirm hostname, persistent UUID, asset tag, and non-secret decisions.
 
 ## Install and establish recovery
 
@@ -23,9 +23,15 @@ not a fleet template until the evidence below is complete.
       design supports it. Create only the bootstrap administrator initially.
 - [ ] Apply OS and firmware updates, reboot twice, and check display, wired and
       wireless networking, audio, suspend policy, storage, and thermals.
-- [ ] Validate remote KVM power, BIOS, boot, disk unlock, and console input.
-- [ ] Copy this repository to the node and run `make check` and
-      `./scripts/preflight.sh` before any apply operation.
+- [ ] Validate the approved console path. If KVM is installed, also validate
+      power, BIOS, boot, disk unlock, and input through Tailscale.
+- [ ] Validate a clean named-human checkout, then place the exact reviewed
+      snapshot at `/opt/agent-workstation-kit` as root-owned and not
+      group/world writable before installing privileged helpers. Never run an
+      apply from `agent-01`'s home or another agent-writable checkout. Run
+      `make check` and `./scripts/preflight.sh` before any apply operation.
+- [ ] On an MS-S1 Max, complete `docs/hardware/minisforum-ms-s1-max.md`, retain
+      Secure Boot, and prove RTL8127 DKMS survives a kernel update.
 
 ## Provision in reviewed phases
 
@@ -36,6 +42,9 @@ not a fleet template until the evidence below is complete.
       Tailscale, NoMachine, vendor-authentication, and recovery approval.
 - [ ] Keep the KVM session open while hardening SSH. Do not close it until a
       second named-user SSH connection succeeds through Tailscale.
+- [ ] Declare `local-console` when applying locally. If applying over
+      Tailscale SSH, capture the peer before `sudo`, pass `tailscale-ssh` plus
+      `--ssh-source-ip`, and confirm the command rejects a non-tailnet peer.
 - [ ] Install the shared graphical agent account, `agentctl`, shells, runtimes,
       CLIs, rootless workloads, and remote desktop using the Linux guide.
 - [ ] Authenticate model, source-control, and secret-store identities manually;
@@ -51,9 +60,11 @@ not a fleet template until the evidence below is complete.
       routed-forward policy, the active `ssh.socket`/`ssh.service`, effective
       `sshd -T` settings, and drop-in precedence.
 - [ ] Apply user tooling twice and confirm the mise configuration and lock data
-      do not drift. Record the approved Herdr and Grok Build sources and
-      installed versions.
-- [ ] From the agent user's managed zsh, verify Chromium, Xvfb, rootless Podman,
+      do not drift. Verify pinned Herdr `0.8.2`; record the separately approved
+      Grok Build source and installed version.
+- [ ] From the agent user's managed zsh, verify Ubuntu's snap-packaged Chromium,
+      snap confinement/desktop access, Xvfb, project-owned Playwright browsers,
+      and cgroup placement under both headed and headless load; verify rootless Podman,
       the Docker-compatible command path, and the agent user's subuid/subgid
       ranges.
 - [ ] Verify read-only tmux observation and storage-encryption detection on the

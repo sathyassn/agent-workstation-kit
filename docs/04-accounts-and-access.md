@@ -1,47 +1,91 @@
 # Accounts and access
 
-## Account convention
+## Naming and privilege
 
-| Type | Pattern | Daily use | Sudo |
-|---|---|---:|---:|
-| Human | organization username, such as `alice` | Yes | No |
-| Administrator | `adm-<human>` | No | Yes |
-| Shared agent | `agt-ai-NN` | Through desktop or `agentctl` | No |
-| System service | `svc-<purpose>` | No | No |
+| Identity | Example | Normal purpose | Privileged |
+|---|---|---|---:|
+| Named human | `alice` | Personal desktop, SSH, files, audit trail | No |
+| Assigned administrator | `admin-01` → `alice` | OS changes and recovery only | Yes |
+| Shared agent runtime | `agent-01` | Agents, browser tests, builds, shared desktop | No |
+| Purpose service | `svc-backup` | One non-interactive service | Only narrowly scoped |
 
-Do not reuse email addresses as Unix usernames. Map corporate identities to short stable names in deployment records.
+Human names use the organization's stable username/IdP handle. Resolve a real
+collision centrally with a stable suffix such as `jsmith-02`; do not invent a
+different algorithm per host. `admin-NN` is independent of a person's name, but
+it is never a shared credential: the private fleet assignment maps each one to
+exactly one named human.
 
-## Desktop path
+Hostnames provide scope. `ac-ws-001/agent-01` and `ac-ws-002/agent-01` are
+different principals, so local names remain short without fleet collisions.
 
-The graphical session must already be owned by `agt-ai-NN`. Named humans authenticate to NoMachine as themselves and are authorized as trusted users for that desktop. A terminal opened there is already an agent-account shell.
-
-Test GNOME locking, NoMachine disconnect locking, screen blanking, unattended reconnect, and KVM recovery together. Do not distribute the agent password simply to bypass a lock screen.
-
-The shared graphical account needs a usable local password even though direct SSH is denied. Generate it through an interactive OS prompt, store it in 1Password/Bitwarden with audited access, and never pass it to a setup script or agent chat.
-
-Choose one explicit desktop policy during the pilot:
-
-1. **Dedicated shared desktop (recommended for this design):** after encrypted-disk unlock, start the `agt-*` desktop using the approved GDM/console procedure; disable automatic screen locking only for this dedicated account; rely on physical security, full-disk encryption, Tailscale policy, NoMachine named-user authorization, and KVM recovery. The password remains escrowed for exceptional unlock/recovery.
-2. **Locked desktop:** retain automatic locking. Authorized operators must retrieve the shared desktop password from the vault to unlock GNOME, so secret-access logs become part of the audit trail.
-
-Do not enable automatic login or disable locking for a general human account, portable machine, publicly reachable host, or node that does not meet the surrounding controls.
-
-## Terminal path
-
-`agentctl` is a repository-provided broker. It logs the human entry point and switches only the selected terminal process tree.
+## Shared work: two valid entry paths
 
 ```text
-agentctl status ai-node-01
-agentctl shell ai-node-01
-agentctl start ai-node-01 project-a claude
-agentctl attach ai-node-01 project-a
-agentctl detach
+Named-user shell
+alice@ac-ws-001
+  |
+  +-- agentctl shell ac-ws-001
+        identity: agent-01 for this child shell
+        return:   exit or Ctrl-D
+
+  +-- agentctl attach ac-ws-001 project-a
+        identity: agent-01 for this tmux client
+        detach:   agentctl detach OR Ctrl-b d
+        result:   session/processes continue; alice returns to own shell
 ```
 
-`agentctl detach` is run from an attached tmux session and detaches the current client. The normal tmux shortcut, `Ctrl-b d`, remains available. Detach does not stop agents.
+`agentctl` is not a universal or permanent login switch. Every invocation is a
+scoped delegated command. Authorization comes from `agent-01-operators` or
+`agent-01-viewers`. Operators can intentionally request an interactive shell and
+therefore arbitrary commands as `agent-01`; they do not receive root. Viewers
+can invoke only a separate, root-owned read-only entry point. Actions are logged
+with the initiating human.
 
-`agentctl stop` asks the operator to type the session name before terminating it. `--yes` is reserved for separately approved non-interactive maintenance.
+```text
+Shared graphical desktop
+alice Mac                              bob Mac
+   \                                    /
+    +-- individually authenticated ----+
+                    |
+              NoMachine server
+                    |
+            desktop owned by agent-01
+                    |
+        Terminal / VS Code / browser / agent apps
+        already execute as agent-01
+```
 
-## Audit limitations
+This is the preferred GUI flow. No `agentctl shell` is needed inside that
+desktop. Configure NoMachine so each person authenticates individually and is
+authorized for the existing agent-owned physical desktop; never distribute the
+agent password. Test the exact Enterprise Desktop release, concurrent control,
+observer behavior, lock/reconnect, clipboard, and file-transfer policy before
+production. If product behavior cannot meet that identity requirement, use
+named-user desktops plus `agentctl` instead of sharing credentials.
 
-The OS records the named person entering through SSH or NoMachine. Once inside the shared desktop or shell, ordinary processes use the shared agent UID. `AGENT_OPERATOR`, shared shell history, and local syslog improve traceability but are not tamper-proof identity controls. Use retained/central logs, agent-native logs, branch attribution, vault-access logs, and a one-controller-at-a-time policy. Fine-grained attribution of every GUI click is not guaranteed; use separate human desktops instead if that is a compliance requirement.
+Only one person should actively type in a shared graphical session at a time.
+Use tmux/Herdr sessions and project ownership to avoid conflicting actions.
+
+## `agentctl` commands
+
+```text
+agentctl list
+agentctl status ac-ws-001
+agentctl shell ac-ws-001
+agentctl start ac-ws-001 project-a claude
+agentctl attach ac-ws-001 project-a
+agentctl observe ac-ws-001 project-a
+agentctl detach
+agentctl stop ac-ws-001 project-a
+```
+
+`detach` must run inside tmux; `Ctrl-b d` is equivalent. `stop` terminates the
+session and requires confirmation. Observers attach read-only. Operators can
+start, attach, and stop.
+
+## macOS difference
+
+Future Mac nodes retain the identity names, but GUI applications must run in the
+owning `agent-01` graphical login. Do not use `sudo -u` to launch GUI apps across
+macOS sessions. Validate Apple Screen Sharing and/or NoMachine on the actual OS,
+including FileVault boot recovery and privacy permissions.

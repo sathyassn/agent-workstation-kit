@@ -1,101 +1,77 @@
 # Onboarding profile and controller
 
-Every machine starts from one reviewed, non-secret TOML profile. TOML was chosen over YAML because Python 3.11+ parses it from the standard library: profile validation works before PyYAML, `yq`, or other bootstrap dependencies exist.
-
-Ubuntu Desktop includes a suitable Python in the supported baseline, and the base package script declares `python3` explicitly. On a Mac without Python 3.11+, run the reviewed Homebrew bootstrap first, then use the profile controller for the remaining phases.
-
-## Lifecycle
+One reviewed TOML profile declares each machine's desired, non-secret state.
+Python 3.11+ parses TOML without bootstrap dependencies.
 
 ```text
-OS/work/personal example
+fleetctl init (UUID generated once)
         |
         v
-local pilot profile OR reviewed private fleet profile; never secrets
-        |
-        +--> validate draft --> render phased plan --> human/security review
-        |                                          |
-        |                                          v
-        +<-- fix all "ask" values <--------- state = "approved"
-                                                   |
-                                                   v
-                       preview one phase --> approve --> apply one phase
-                                                   |
-                                                   v
-                                  audit live host against same profile
+draft profile --> validate --> plan --> resolve every "ask" --> human review
+                                                              |
+                                                     state = approved
+                                                              |
+                         preview phase --> approve --> apply --> validate
+                                                              |
+                                                       live host audit
 ```
 
-## Create the machine profile
+## Create a draft
 
-Choose the nearest template:
+Prefer the generator to copying an example:
 
-```text
-cp config/profiles/work.example.toml config/profiles/ai-node-01.local.toml
+```bash
+./scripts/fleetctl.py init /path/to/private-fleet/machines/ac-ws-001.toml \
+  --context work --namespace ac --hostname ac-ws-001 --platform linux \
+  --hardware-profile minisforum-ms-s1-max-64gb \
+  --asset-tag AC-10001 --human alice --admin admin-01
 ```
 
-or:
+It refuses to overwrite an existing file, creates a canonical UUIDv4 once, and
+validates the draft before returning. Keep that UUID for the machine's lifetime.
+Do not regenerate it during rebuilds. Hardware serial, Tailscale node identity,
+and observed facts belong in the private asset/audit record, not this public repo.
 
-```text
-cp config/profiles/personal.example.toml config/profiles/ai-node-01.local.toml
+Profiles can live in an ignored `config/profiles/*.local.toml` during exploration.
+Production inventory belongs in a separate private repository created from
+[`templates/private-fleet`](../templates/private-fleet). A work organization
+should use its own private fleet repository and protected review workflow.
+
+## Validate and plan
+
+```bash
+./scripts/fleetctl.py validate /path/to/ac-ws-001.toml
+./scripts/fleetctl.py plan /path/to/ac-ws-001.toml
 ```
 
-For macOS work nodes, start from `config/profiles/macos-work.example.toml`. Use the [field reference](01b-profile-field-reference.md) for every allowed value and example.
+Resolve every `ask`. Review identities, privileges, recovery, endpoint controls,
+backup, resource headroom, and optional tools such as `gws`. Then set
+`state = "approved"` and run:
 
-For a shared private fleet, place approved non-secret profiles in `config/fleet/<machine-id>.toml` and review changes through PR/MR. Keep personal experiments and sensitive inventory labels in ignored `.local.toml` files. Validate all committed fleet profiles with:
-
-```text
-./scripts/validate-fleet.py config/fleet
+```bash
+./scripts/fleetctl.py validate /path/to/ac-ws-001.toml --ready
+./scripts/validate-fleet.py /path/to/private-fleet
 ```
 
-Fill in the machine, account, remote-access, tooling, identity, security, backup, and maintenance decisions. `ask` is an intentional unresolved state. Do not enter passwords, tokens, private keys, recovery keys, or secret-bearing URLs.
+`validate-fleet.py` checks toolkit compatibility, filename/hostname agreement,
+unique hostname/UUID/asset tag, host/account principals, and retired names.
+Profiles contain no passwords, tokens, private keys, recovery codes, or
+secret-bearing URLs.
 
-`tooling.install_agents` must remain `true` for this baseline: every node is expected to provide Codex, Claude Code, and Grok Build. Optional tools such as `gws` remain an explicit per-profile choice.
+## Apply one phase
 
-`accounts.ssh_users` is the complete OpenSSH allowlist. Include the temporary/bootstrap recovery administrator during the pilot if it must retain SSH access; remove it from the profile and reapply/revalidate policy when that account is retired. Any local account omitted from this list is denied SSH even if it has an authorized key.
+Never run the whole build as one opaque operation. Preview, obtain approval,
+apply one phase, and verify it before continuing:
 
-The work and personal templates share the same operating model. The work template additionally defaults to workload model identities, non-human source-control identities, endpoint-management review, and an organization-owned backup/maintenance path. Personal profiles may use a named person's model subscription only when there is one operator and vendor terms permit it.
-
-## Validate and review
-
-Draft validation catches unknown/missing keys, wrong types, malformed or overlapping account names, unsafe authentication combinations, unsupported settings, and source-control omissions:
-
-```text
-./scripts/fleetctl.py validate config/profiles/ai-node-01.local.toml
-./scripts/fleetctl.py plan config/profiles/ai-node-01.local.toml
+```bash
+./scripts/fleetctl.py run /path/to/ac-ws-001.toml accounts
+sudo ./scripts/fleetctl.py run /path/to/ac-ws-001.toml accounts --apply
 ```
 
-After every decision is resolved and the responsible human has reviewed the rendered plan, set `state = "approved"` and run:
+Remote hardening also requires an explicit recovery confirmation. The `shell`
+and `user-tooling` phases run inside the declared `agent-NN` account. External
+authentication remains a human credential ceremony.
 
-```text
-./scripts/fleetctl.py validate config/profiles/ai-node-01.local.toml --ready
-```
-
-Apply commands refuse a draft or unresolved profile. Profile approval is a configuration gate; it does not replace the separate human approval immediately before each privileged phase.
-
-## Run one phase at a time
-
-The controller never runs the whole build as one opaque operation. Preview and apply a single phase, validate it, and only then continue. For example:
-
-```text
-./scripts/fleetctl.py run config/profiles/ai-node-01.local.toml accounts
-sudo ./scripts/fleetctl.py run config/profiles/ai-node-01.local.toml accounts --apply
-```
-
-Remote hardening has an additional recovery interlock:
-
-```text
-./scripts/fleetctl.py run config/profiles/ai-node-01.local.toml remote-hardening
-sudo ./scripts/fleetctl.py run config/profiles/ai-node-01.local.toml remote-hardening \
-  --apply --confirm-recovery-tested
-```
-
-Run `shell` and `user-tooling` while logged in as the declared `agt-*` user. The Linux `workloads` phase installs rootless container compatibility, Chromium, Xvfb, and browser libraries. Project Playwright versions and browsers remain project-owned. macOS account creation, privacy permissions, FileVault, remote-access policy, workloads, and resource controls include explicit human/MDM validation gates.
-
-## Post-setup and maintenance audit
-
-On Linux, run from a separate named administrator session:
-
-```text
-sudo ./scripts/fleetctl.py run config/profiles/ai-node-01.local.toml audit
-```
-
-The profile audit checks declared account existence, home ownership, shells, role groups, and effective SSH allowlists. It then invokes the host audit, which checks hidden sudoers grants, persisted UFW rules, services, passwords, resources, tools, encryption, and updates. Both exit nonzero on failed controls. GUI authorization, KVM/disk unlock, Tailscale grants, branch protection, provider billing, backup restore, and realistic load still require the acceptance evidence in the operations guide.
+An AI setup agent can orchestrate after the OS, first named/bootstrap account,
+network, repository, and one authenticated agent CLI exist. It may run read-only
+checks and previews, but must pause at every privileged or credential gate.

@@ -24,7 +24,7 @@ while (($#)); do
     --viewer) viewers+=("${2:?Missing viewer account}"); shift 2 ;;
     --help|-h)
       cat <<'EOF'
-Usage: setup-accounts-linux.sh --agent agt-ai-01 [--human USER] [--admin USER]
+Usage: setup-accounts-linux.sh --agent agent-01 [--human USER] [--admin USER]
        [--operator USER] [--viewer USER] [--apply]
 
 Preview is the default. The script never sets passwords or installs SSH keys.

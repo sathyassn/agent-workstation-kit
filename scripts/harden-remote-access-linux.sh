@@ -9,6 +9,8 @@ source "$script_dir/lib/common.sh"
 agent_account=''
 nomachine_port=4000
 recovery_confirmed=false
+connection_context=''
+ssh_source_ip=''
 ssh_users=()
 
 while (($#)); do
@@ -18,14 +20,21 @@ while (($#)); do
     --ssh-user) ssh_users+=("${2:?Missing SSH user}"); shift 2 ;;
     --nomachine-port) nomachine_port=${2:?Missing port}; shift 2 ;;
     --confirm-recovery-tested) recovery_confirmed=true; shift ;;
+    --connection-context) connection_context=${2:?Missing connection context}; shift 2 ;;
+    --ssh-source-ip) ssh_source_ip=${2:?Missing SSH source IP}; shift 2 ;;
     --help|-h)
       cat <<'EOF'
-Usage: harden-remote-access-linux.sh --agent agt-ai-01 --ssh-user USER
+Usage: harden-remote-access-linux.sh --agent agent-01 --ssh-user USER
        [--ssh-user USER ...] [--nomachine-port 4000]
-       [--confirm-recovery-tested] [--apply]
+       [--confirm-recovery-tested]
+       [--connection-context local-console]
+       [--connection-context tailscale-ssh --ssh-source-ip ADDRESS]
+       [--apply]
 
 Preview is the default. Apply requires a tested console/KVM recovery path,
-active Tailscale, and a usable SSH public key for every named SSH user.
+active Tailscale, an explicit connection context, and a usable SSH public key
+for every named SSH user. For a remote apply, capture the SSH peer address in
+the named-user shell before invoking sudo and pass it with --ssh-source-ip.
 EOF
       exit 0
       ;;
@@ -49,8 +58,9 @@ for account in "${ssh_users[@]}"; do
 done
 require_root_for_apply
 
-dropin=/etc/ssh/sshd_config.d/00-agent-fleet.conf
-legacy_dropin=/etc/ssh/sshd_config.d/60-agent-fleet.conf
+dropin=/etc/ssh/sshd_config.d/00-agent-workstation.conf
+legacy_dropin=/etc/ssh/sshd_config.d/00-agent-fleet.conf
+older_legacy_dropin=/etc/ssh/sshd_config.d/60-agent-fleet.conf
 dropin_created=false
 tmp=''
 ufw_backup_dir=''
@@ -109,13 +119,35 @@ fi
 
 [[ "$recovery_confirmed" == true ]] || \
   die 'apply requires --confirm-recovery-tested after a live console/KVM recovery test.'
+case "$connection_context" in
+  local-console)
+    [[ -z "$ssh_source_ip" ]] || die '--ssh-source-ip is valid only with --connection-context tailscale-ssh.'
+    [[ -z ${SSH_CONNECTION:-} ]] || \
+      die 'The current shell reports an SSH connection; use tailscale-ssh and pass its source IP.'
+    ;;
+  tailscale-ssh)
+    [[ -n "$ssh_source_ip" ]] || die 'tailscale-ssh requires --ssh-source-ip captured before sudo.'
+    [[ "$ssh_source_ip" != -* && "$ssh_source_ip" != *[[:space:]]* ]] || die 'Invalid SSH source IP.'
+    if [[ -n ${SSH_CONNECTION:-} && ${SSH_CONNECTION%% *} != "$ssh_source_ip" ]]; then
+      die 'The supplied SSH source does not match SSH_CONNECTION.'
+    fi
+    ;;
+  *)
+    die 'apply requires --connection-context local-console or tailscale-ssh.'
+    ;;
+esac
 for command_name in sshd ufw tailscale systemctl; do
   command_exists "$command_name" || die "Missing required command: $command_name"
 done
 systemctl is-active --quiet tailscaled || die 'Tailscale is not active.'
 ip link show tailscale0 >/dev/null 2>&1 || die 'tailscale0 is not available.'
+if [[ "$connection_context" == tailscale-ssh ]]; then
+  tailscale whois "$ssh_source_ip" >/dev/null 2>&1 || \
+    die "Supplied SSH source ($ssh_source_ip) is not authenticated by this tailnet. Reconnect through Tailscale or apply at the tested local console."
+fi
 id "$agent_account" >/dev/null 2>&1 || die "Unknown agent account: $agent_account"
-[[ ! -e "$legacy_dropin" ]] || die "$legacy_dropin is obsolete. Review and remove/migrate it before applying the 00- drop-in."
+[[ ! -e "$legacy_dropin" && ! -e "$older_legacy_dropin" ]] || \
+  die 'A legacy agent-fleet SSH policy exists. Review and migrate it before applying schema v2.'
 
 for account in "${ssh_users[@]}"; do
   id "$account" >/dev/null 2>&1 || die "Unknown SSH user: $account"
@@ -134,7 +166,7 @@ if [[ -r "$dropin" ]]; then
 else
   tmp=$(mktemp)
   cat >"$tmp" <<EOF
-# Managed by agent-dev-fleet. Direct remote login to the shared account is denied.
+# Managed by agent-workstation-kit. Direct remote login to the shared account is denied.
 PermitRootLogin no
 PasswordAuthentication no
 KbdInteractiveAuthentication no
@@ -185,9 +217,9 @@ ufw_touched=true
 ufw default deny incoming
 ufw default allow outgoing
 ufw default deny routed
-ufw allow in on tailscale0 to any port 22 proto tcp comment 'agent-fleet ssh'
-ufw allow in on tailscale0 to any port "$nomachine_port" proto tcp comment 'agent-fleet nomachine tcp'
-ufw allow in on tailscale0 to any port "$nomachine_port" proto udp comment 'agent-fleet nomachine udp'
+ufw allow in on tailscale0 to any port 22 proto tcp comment 'agent-workstation ssh'
+ufw allow in on tailscale0 to any port "$nomachine_port" proto tcp comment 'agent-workstation nomachine tcp'
+ufw allow in on tailscale0 to any port "$nomachine_port" proto udp comment 'agent-workstation nomachine udp'
 ufw --force enable
 systemctl enable --now ssh.socket 2>/dev/null || systemctl enable --now ssh
 if systemctl is-active --quiet ssh.service; then

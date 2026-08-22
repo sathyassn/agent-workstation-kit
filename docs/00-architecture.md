@@ -2,53 +2,73 @@
 
 ## Goals
 
-- Keep sustained agent, browser, build, and container load off operator laptops.
-- Support long-lived Codex, Claude Code, and Grok Build sessions.
-- Permit multiple named people to supervise one shared agent workspace.
-- Preserve individual authentication while keeping the runtime non-administrative.
-- Recover independently of the operating system through remote KVM.
-- Use the same operating model on Linux and future macOS nodes where the OS permits it.
+- Move sustained agents, browsers, builds, and containers off operator laptops.
+- Let named people supervise a shared non-admin agent workspace.
+- Keep human, administrator, OS runtime, model-provider, and source-control
+  identities separate and auditable.
+- Start with multiple modest Linux nodes; add 128 GB and macOS nodes by measured need.
+- Preserve a recovery route outside the normal OS session.
 
-## Account layers
+## Identity layers
 
 ```text
-Human identity       alice / bob
-                           |
-OS runtime identity  agt-ai-01
-                           |
-Model identity       OpenAI / Anthropic / xAI workload identity
-                           |
-SCM identity         GitLab service account / GitHub App
+Person / IdP identity                  alice
+       |
+       +-- daily Linux account         alice             (no sudo)
+       +-- assigned admin account      admin-01         (sudo; admin work only)
+       +-- agentctl authorization      operator/viewer  (group membership)
+                    |
+Shared OS runtime   agent-01                            (no sudo; no direct SSH)
+       |
+       +-- model workload identity     OpenAI / Anthropic / xAI
+       +-- source-control identity     GitLab service account / GitHub App
 ```
 
-These identities are deliberately separate. Do not store a human's personal model or source-control session in the shared agent home.
+The complete principal is `hostname/account`, for example
+`ac-ws-001/agent-01`. Account names can therefore repeat safely on other hosts.
+Never copy a human's cached credentials into the shared agent home.
 
 ## Access paths
 
-### Primary: graphical workspace
-
 ```text
-NoMachine authentication:  named human
-Desktop owner:              agt-ai-01
-Terminal/process owner:     agt-ai-01
+Flow A — personal Linux desktop and terminal delegation
+
+Mac -- Tailscale -- NoMachine/SSH -- alice -- agentctl shell ac-ws-001
+                                                |
+                                                +-- child zsh as agent-01
+                                                    `exit` returns to alice
+
+Flow B — shared graphical agent desktop
+
+Mac -- Tailscale -- NoMachine -- desktop owned by agent-01
+                                      |
+                                      +-- Terminal is already agent-01
+                                      +-- Codex/Claude/Grok GUI or CLI
+
+Flow C — out-of-band recovery
+
+Mac -- Tailscale -- remote KVM -- display/keyboard/boot/firmware/recovery
 ```
 
-NoMachine Enterprise Desktop is the initial product because all operators share one physical desktop. Use NoMachine Workstation only when a single Linux host must provide independent concurrent graphical desktops.
+In Flow A, `agentctl` changes identity only for that child shell or tmux client;
+it is not a machine-wide switch. `exit` leaves `agentctl shell`. Inside an
+attached tmux session, `agentctl detach` or `Ctrl-b d` detaches the current
+client while the processes continue.
 
-### Secondary: terminal workspace
+Flow B is the preferred daily shared-GUI path after NoMachine behavior is tested
+on the actual release. Each person authenticates individually and is authorized
+for the agent-owned desktop; the agent account password is not shared. Directly
+launch GUI apps as another macOS user is not supported, so future Mac nodes use
+the owning `agent-01` graphical session rather than Linux-style delegation.
 
-```text
-SSH as named human
-        |
-     agentctl
-        |
-shell or tmux session as agt-ai-01
-```
+## Fleet and recovery
 
-### Recovery
+Profiles use `<namespace>-<class>-<NNN>` hostnames: `ws` Linux workstation,
+`mac` Apple workstation, `hv` hypervisor, `vws` virtual workstation, `nas`,
+`mgmt`, and `srv` only as a fallback. Keep real inventory in a private fleet
+repository and never reuse names in its retirement ledger.
 
-Remote KVM is for power, firmware, boot, disk-unlock, display, and remote-access failure. It is not required for Playwright.
-
-## Multi-node design
-
-Prefer several reasonably sized nodes to one maximum-size server. Assign projects or workload classes to nodes, keep at least one recovery path independent of the node, and validate capacity using real burn-in measurements.
+Remote KVM is not needed for headed Playwright: the real/virtual graphical
+session provides a display that NoMachine can show. KVM covers failures below
+that layer. It may be deferred during a physically supervised pilot, then added
+before office placement or unattended operation.

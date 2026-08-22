@@ -29,9 +29,14 @@ Recheck these before a fleet release because installers, supported OS versions, 
 - [Tailscale device tags](https://tailscale.com/docs/features/tags)
 - [NoMachine Enterprise Desktop physical-desktop guide](https://knowledgebase.nomachine.com/DT11R00195)
 - [NoMachine trusted users and desktop sharing](https://kb.nomachine.com/DT04U00276)
+- [Ubuntu Secure Boot and DKMS/MOK signing](https://documentation.ubuntu.com/security/docs/security-features/platform-protections/secure-boot/)
+- [Minisforum MS-S1 Max Canadian product](https://ca.minisforum.com/products/minisforum-ms-s1-max-64gb)
+- [Minisforum RTL8127 DKMS source](https://github.com/minisforum-repo/r8127-dkms)
+- [GL.iNet Comet X guide](https://docs.gl-inet.com/kvm/en/user_guide/gl-rm4pe/console_guide/)
 - [mise installation](https://mise.jdx.dev/installing-mise.html)
 - [mise lockfiles](https://mise.jdx.dev/dev-tools/mise-lock.html)
 - [Herdr installation](https://herdr.dev/docs/install/)
+- [Herdr releases](https://github.com/herdrdev/herdr/releases)
 - [Ghostty packages](https://ghostty.org/docs/install/binary)
 - [Google Workspace CLI project](https://github.com/googleworkspace/cli)
 
@@ -39,5 +44,7 @@ Recheck these before a fleet release because installers, supported OS versions, 
 
 - The Google Workspace CLI repository explicitly says `gws` is not an officially supported Google product and is pre-1.0/actively developing. Keep it optional.
 - Ghostty officially distributes macOS binaries; Ubuntu packages are community-distributed. Require a separate supply-chain decision for Linux.
-- The ChatGPT Linux desktop app is a preview and currently lacks Computer Use. Do not make it a prerequisite for browser automation.
+- The [ChatGPT Linux desktop app](https://learn.chatgpt.com/docs/linux/linux-app)
+  is a preview on specified distributions and currently lacks Computer Use. Do
+  not make it a prerequisite for Linux browser automation.
 - Prefer current Tailscale grants for a new deployment rather than starting with legacy ACL syntax.

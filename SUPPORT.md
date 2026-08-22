@@ -1,9 +1,9 @@
 # Support
 
-Once the repository is licensed and public, use the issue tracker for
-reproducible defects, documentation gaps, and feature proposals after checking
-for an existing issue. Until then, support remains private and external
-contributions are not accepted. Include the repository version, operating
+Use the issue tracker for reproducible defects, documentation gaps, and feature
+proposals after checking for an existing issue. Contributions are welcome under
+`CONTRIBUTING.md`; maintainers may close requests that cannot be reproduced or
+supported safely. Include the repository version, operating
 system and release, the preview command, redacted output, and whether the
 problem reproduces on a clean profile.
 

@@ -15,7 +15,7 @@
 
 Do not add the shared agent account to unrestricted `sudo` or the Docker group. Docker group membership is effectively root access. Prefer rootless containers for the shared account or a narrowly managed container service.
 
-On Ubuntu, `harden-remote-access-linux.sh` is the enforceable baseline: OpenSSH is limited to the profile's complete named-user allowlist, direct SSH to `agt-*` is denied, root/password/keyboard-interactive SSH is disabled, UFW defaults to deny inbound, and SSH/NoMachine are allowed only on `tailscale0`. Apply it only after named-user keys, Tailscale, and console/KVM recovery have been tested. Existing broader firewall rules cause the script to stop for human review.
+On Ubuntu, `harden-remote-access-linux.sh` is the enforceable baseline: OpenSSH is limited to the profile's complete named-user allowlist, direct SSH to `agent-NN` is denied, root/password/keyboard-interactive SSH is disabled, UFW defaults to deny inbound, and SSH/NoMachine are allowed only on `tailscale0`. Apply it only after named-user keys, Tailscale, and console recovery have been tested. Apply also requires `local-console` or a peer address captured before `sudo` under `tailscale-ssh`; the latter is verified by `tailscale whois`. Existing broader firewall rules cause the script to stop for human review.
 
 ## Resource policy
 
@@ -31,7 +31,14 @@ Use systemd/cgroup controls in this order:
 
 Do not statically reserve large amounts of RAM or cores for the OS. The balanced policy should keep the desktop, SSH, monitoring, and recovery responsive while leaving most resources available to agents.
 
-The supplied systemd policy governs the agent user's `user-UID.slice`; validate after reboot that the desktop, terminals, browsers, and tests descend from that slice. `CPUWeight=90` is a contention preference, not a core reservation. `TasksMax` scales from 4,096 to 16,384 with detected RAM (roughly 8,000 on a 64 GB-class node), so it is an emergency process ceiling rather than a normal workload throttle. Replace calculated values with burn-in evidence. Preview rollback with `apply-resource-policy-linux.sh --agent ACCOUNT --remove`; apply it only with human approval, then end all target-user sessions or reboot.
+The supplied systemd policy governs the agent user's `user-UID.slice`; validate after reboot that the desktop, terminals, browsers, and tests descend from that slice. `CPUWeight=90` is a contention preference, not a core reservation. `os_cpu_reserve_threads` is capacity-planning headroom, not CPU pinning. The configured memory reserve sets `MemoryHigh`; half of it (minimum 4 GiB) remains beyond the emergency `MemoryMax`. `TasksMax` scales from 4,096 to 16,384 with RAM. Replace defaults with burn-in evidence. Preview rollback with `apply-resource-policy-linux.sh --agent ACCOUNT --remove`; apply it only with human approval, then end all target-user sessions or reboot.
+
+Rollback is phase-specific. The resource phase has an explicit `--remove`; the
+remote-hardening script restores its prior SSH/UFW state automatically if an
+apply fails. Account/package removal is intentionally not automated because it
+can destroy homes, credentials, or project state. The pilot rollback exercise
+must therefore use the documented recovery console, reviewed package rollback,
+and backup/restore plan—not a generic destructive uninstall command.
 
 ## Human approval boundaries
 

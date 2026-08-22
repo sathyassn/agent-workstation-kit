@@ -26,7 +26,7 @@ if ! command_exists brew; then
   die 'Homebrew is required but is not installed. Install it from brew.sh after reviewing the official installer.'
 fi
 
-formulae=(git git-lfs gh glab herdr jq mise python@3.13 shellcheck tmux zsh-completions)
+formulae=(git git-lfs gh glab jq mise python@3.13 shellcheck tmux zsh-completions)
 casks=(ghostty google-chrome visual-studio-code orbstack)
 
 log "Mode: $([[ "$APPLY_CHANGES" == true ]] && printf APPLY || printf PREVIEW)"
@@ -41,6 +41,7 @@ Manual macOS checkpoints:
 1. FileVault, recovery key, Screen Sharing/NoMachine, Remote Login, firewall, and MDM.
 2. Privacy permissions for terminals, editors, browsers, and agent applications.
 3. Xcode license, runtimes, simulators, and project signing identities.
-4. Create named/admin/agt-* accounts using the macOS guide before shared operation.
-5. Start Herdr once and verify detach/reattach before relying on it for long-lived work.
+4. Create named/admin-NN/agent-NN accounts using the macOS guide before shared operation.
+5. Install the pinned Herdr release through the user-tooling phase, then verify
+   detach/reattach before relying on it for long-lived work.
 EOF

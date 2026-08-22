@@ -9,7 +9,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SKILL = ROOT / "skills/setup-agent-dev-machine/SKILL.md"
+SKILL = ROOT / "skills/setup-agent-workstation/SKILL.md"
 NAME = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 
@@ -34,6 +34,10 @@ def main() -> int:
             failures.append("skill description must be 20-1024 characters")
     if len(text.splitlines()) > 500:
         failures.append("SKILL.md exceeds the 500-line maintainability limit")
+    yaml_path = SKILL.parent / "agents/openai.yaml"
+    yaml = yaml_path.read_text(encoding="utf-8") if yaml_path.is_file() else ""
+    if '$setup-agent-workstation' not in yaml:
+        failures.append("agents/openai.yaml must mention $setup-agent-workstation")
 
     for target in re.findall(r"\[[^]]+\]\(([^)]+)\)", text):
         if "://" in target or target.startswith("mailto:"):

@@ -77,6 +77,11 @@ if [[ $(uname -s) == Linux ]]; then
       fail 'OpenSSH service and socket are inactive'
     fi
     for service in fail2ban tailscaled; do service_active "$service"; done
+    if command -v mokutil >/dev/null 2>&1 && mokutil --sb-state 2>/dev/null | grep -Fq 'SecureBoot enabled'; then
+      pass 'Secure Boot is enabled'
+    else
+      fail 'Secure Boot is not proven enabled'
+    fi
 
     if ufw_status=$(ufw status 2>/dev/null); then
       if grep -Fxq 'Status: active' <<<"$ufw_status"; then
@@ -161,7 +166,7 @@ if [[ $(uname -s) == Linux ]]; then
       fi
 
       uid=$(id -u "$agent_account")
-      resource_dropin="/etc/systemd/system/user-$uid.slice.d/50-agent-fleet.conf"
+      resource_dropin="/etc/systemd/system/user-$uid.slice.d/50-agent-workstation.conf"
       if [[ -r "$resource_dropin" ]] && \
          grep -Eq '^MemoryHigh=' "$resource_dropin" && \
          grep -Eq '^MemoryMax=' "$resource_dropin"; then
@@ -223,4 +228,5 @@ elif [[ $(uname -s) == Darwin ]]; then
 fi
 
 printf '\nValidation failures: %d; warnings: %d\n' "$failures" "$warnings"
-exit "$failures"
+((failures == 0)) && exit 0
+exit 1

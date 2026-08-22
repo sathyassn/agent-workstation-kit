@@ -1,28 +1,39 @@
-# Copy to <machine>.local.toml, replace every "ask", validate, then approve.
-# This file declares desired state only. Never place credentials or recovery keys here.
-schema_version = 1
+# Personal example. Use fleetctl init so the UUID is generated exactly once.
+schema_version = 2
 profile = "personal"
 state = "draft"
 
+[deployment]
+namespace = "ss"
+context = "personal"
+ownership = "individual"
+
 [machine]
-id = "ai-node-01"
+hostname = "ss-ws-001"
+uuid = "22222222-2222-4222-8222-222222222222"
+asset_tag = "ask"
 platform = "linux"
 os_family = "ubuntu"
-role = "shared-agent-workstation"
+hardware_profile = "generic-64gb"
+role = "agent-workstation"
 
 [accounts]
-agent = "agt-ai-01"
+agent = "agent-01"
 humans = ["alice"]
-admins = ["adm-alice"]
+admins = ["admin-01"]
+admin_assignments = { "admin-01" = "alice" }
+services = []
 operators = ["alice"]
 viewers = []
-ssh_users = ["alice", "adm-alice"]
+ssh_users = ["alice", "admin-01"]
 
 [remote]
 tailscale_tailnet = "ask"
-tailscale_tags = ["tag:agent-personal"]
+tailscale_tags = ["tag:ss-workstation"]
 nomachine_port = 4000
-kvm = "glinet-comet-rm10-pro"
+kvm = "deferred"
+preferred_kvm = "glinet-comet-x-gl-rm4pe"
+fallback_kvm = "glinet-comet-poe-gl-rm1pe"
 desktop_lock_mode = "ask"
 
 [tooling]
@@ -44,11 +55,14 @@ grok = "named-human"
 
 [security]
 disk_encryption_required = true
+secure_boot_required = true
 remote_scope = "tailscale-only"
 endpoint_management = "not-required"
 
 [resources]
-policy = "balanced"
+policy = "measured-balanced"
+os_memory_reserve_gib = 8
+os_cpu_reserve_threads = 2
 
 [backup]
 target = "ask"
@@ -57,4 +71,4 @@ retention_days = 30
 [maintenance]
 timezone = "America/Toronto"
 update_window = "ask"
-owner = "alice"
+owner = "ask"

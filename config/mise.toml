@@ -11,7 +11,10 @@ bun = "latest"
 pnpm = "latest"
 gh = "latest"
 glab = "latest"
-herdr = "latest"
+# Reviewed stable release. Herdr entered the mise registry after older mise
+# releases; an unknown key is a user-tooling error and must be resolved by
+# updating mise through the documented install path.
+herdr = "0.8.2"
 
 # Provider-supported npm distributions. Grok Build uses xAI's separate
 # reviewed installer and is intentionally not represented as an npm package.

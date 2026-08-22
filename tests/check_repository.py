@@ -11,6 +11,8 @@ ROOT = Path(__file__).resolve().parents[1]
 MARKDOWN_LINK = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 FORBIDDEN_NAMES = {".env", "id_rsa", "id_ed25519", "credentials.json", "auth.json"}
 PLACEHOLDER = re.compile(r"\b(TODO|FIXME|CHANGEME)\b")
+SECRET_LIKE = re.compile(r"(?:AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{30,}|glpat-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9_-]{24,})")
+PERSONAL_PATH = re.compile(r"/(?:Users|home)/[^/\s]+/")
 
 
 def main() -> int:
@@ -21,9 +23,17 @@ def main() -> int:
             continue
         if path.name in FORBIDDEN_NAMES or path.suffix in {".key", ".pem", ".p12"}:
             failures.append(f"forbidden credential-like file: {path.relative_to(ROOT)}")
+        try:
+            content = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            content = ""
+        if SECRET_LIKE.search(content):
+            failures.append(f"secret-like value in {path.relative_to(ROOT)}")
+        if PERSONAL_PATH.search(content):
+            failures.append(f"personal absolute path in {path.relative_to(ROOT)}")
         if path.suffix != ".md":
             continue
-        text = path.read_text(encoding="utf-8")
+        text = content
         for match in MARKDOWN_LINK.finditer(text):
             target = match.group(1).split("#", 1)[0]
             if not target or "://" in target or target.startswith("mailto:"):

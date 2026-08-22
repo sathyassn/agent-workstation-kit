@@ -18,7 +18,7 @@ Keep KVM devices in a separate tag/group and, where possible, a separate LAN/VLA
 
 ## NoMachine
 
-- Install Enterprise Desktop on a node that exposes one shared physical `agt-*` desktop.
+- Install Enterprise Desktop on a node that exposes one shared physical `agent-NN` desktop.
 - Do not expose its port publicly; connect over Tailscale.
 - Register named humans as trusted only for the intended physical desktop.
 - Use interactive control for the active operator and view-only for observers.
@@ -35,12 +35,12 @@ Keep KVM devices in a separate tag/group and, where possible, a separate LAN/VLA
 
 ## Remote KVM
 
-Use one remotely recoverable KVM path per node unless a managed multi-port KVM has redundant power/network and clear port ownership. Validate video, keyboard, BIOS, reboot, power-control accessory, encryption unlock, firmware updates, account recovery, and MFA before relying on it.
+During a supervised pilot, local monitor/keyboard is sufficient. Before unattended office placement, use a tested remote KVM. Prefer Comet X (GL-RM4PE) for up to four co-located hosts when its firmware and availability meet policy; keep a Comet PoE (GL-RM1PE) as the single-host fallback/spare. Comet X switches among four hosts but controls only one at a time and is a shared failure domain. Put it on Tailscale and a restricted management segment, disable public forwarding, require unique credentials/MFA where supported, and maintain firmware. Test WOL and AC recovery before buying power actuators; do not assume the MS-S1 cascade header is ATX-board compatible.
 
 ## Headed browser tests
 
 A remote KVM is not a Playwright dependency. For tests that must be watched,
-start the browser from a terminal inside the active `agt-*` graphical session;
+start the browser from a terminal inside the active `agent-NN` graphical session;
 NoMachine then shows the same desktop. For unattended tests, use a supported
 virtual display/compositor or Playwright's headless mode and retain traces,
 screenshots, and video. A dummy HDMI/DisplayPort EDID adapter may help a

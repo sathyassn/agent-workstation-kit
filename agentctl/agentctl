@@ -4,6 +4,7 @@ set -Eeuo pipefail
 
 config=/etc/agentctl/target.conf
 helper=/usr/local/libexec/agentctl-session
+observer=/usr/local/libexec/agentctl-observe
 
 die() {
   printf 'agentctl: %s\n' "$*" >&2
@@ -23,4 +24,11 @@ source "$config"
 
 # Set HOME to the target account. The agent CLIs, mise activation, tmux socket,
 # and credential helpers all rely on the target home rather than the caller's.
-exec sudo -H -u "$AGENTCTL_ACCOUNT" -- "$helper" "$@"
+case ${1:-help} in
+  help|list|status|observe)
+    exec sudo -H -u "$AGENTCTL_ACCOUNT" -- "$observer" "$@"
+    ;;
+  *)
+    exec sudo -H -u "$AGENTCTL_ACCOUNT" -- "$helper" "$@"
+    ;;
+esac

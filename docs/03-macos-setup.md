@@ -12,7 +12,7 @@ Use this path for future Mac mini or Mac Studio nodes. Keep Xcode/Apple-specific
 
 ## Accounts
 
-Create separate named human, `adm-*`, and non-admin `agt-*` accounts. macOS GUI session sharing differs from Linux; validate Screen Sharing/NoMachine behaviour on the actual macOS release. Do not assume a Linux `sudo -u` graphical workflow will work on macOS.
+Create separate named human, assigned `admin-NN`, and non-admin `agent-NN` accounts. macOS GUI session sharing differs from Linux; validate Screen Sharing/NoMachine behaviour on the actual macOS release. Do not assume a Linux `sudo -u` graphical workflow will work on macOS.
 
 ## Scripted setup
 

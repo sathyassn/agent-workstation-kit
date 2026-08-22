@@ -94,21 +94,22 @@ EOF
     require_viewer
     session=${3:-}
     valid_session "$session" || die 'invalid or missing session name.'
-    tmux has-session -t "$session" 2>/dev/null || die "session does not exist: $session"
-    log_action "$session"
+    tmux has-session -t "=$session" 2>/dev/null || die "session does not exist: $session"
     export AGENT_OPERATOR="$operator"
     if [[ "$action" == observe ]]; then
-      exec tmux attach-session -r -t "$session"
+      log_action "$session"
+      exec tmux attach-session -r -t "=$session"
     fi
     require_operator
-    exec tmux attach-session -t "$session"
+    log_action "$session"
+    exec tmux attach-session -t "=$session"
     ;;
   start)
     require_operator
     session=${3:-}
     tool=${4:-}
     valid_session "$session" || die 'invalid or missing session name.'
-    tmux has-session -t "$session" 2>/dev/null && die "session already exists: $session"
+    tmux has-session -t "=$session" 2>/dev/null && die "session already exists: $session"
     case "$tool" in
       shell) command=(/bin/zsh -l) ;;
       codex|claude|grok)
@@ -129,7 +130,7 @@ EOF
     require_operator
     session=${3:-}
     valid_session "$session" || die 'invalid or missing session name.'
-    tmux has-session -t "$session" 2>/dev/null || die "session does not exist: $session"
+    tmux has-session -t "=$session" 2>/dev/null || die "session does not exist: $session"
     if [[ ${4:-} != --yes ]]; then
       [[ -t 0 ]] || die 'refusing non-interactive stop without explicit --yes.'
       printf 'Stop session %s and terminate its processes? Type the session name: ' "$session" >&2
@@ -137,7 +138,7 @@ EOF
       [[ "$confirmation" == "$session" ]] || die 'stop cancelled.'
     fi
     log_action "$session"
-    tmux kill-session -t "$session"
+    tmux kill-session -t "=$session"
     ;;
   *) die "unknown action: $action" ;;
 esac

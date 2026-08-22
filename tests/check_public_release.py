@@ -14,6 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SEMVER = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
 REQUIRED = (
+    "README.md",
     "VERSION",
     "CHANGELOG.md",
     "CONTRIBUTING.md",
@@ -28,7 +29,11 @@ REQUIRED = (
     ".github/ISSUE_TEMPLATE/config.yml",
     "docs/13-public-release-checklist.md",
     "docs/runbooks/first-linux-pilot.md",
+    "docs/hardware/minisforum-ms-s1-max.md",
+    "templates/private-fleet/README.md",
+    "skills/setup-agent-workstation/SKILL.md",
 )
+CONDUCT_CONTACT_PLACEHOLDER = "owner must add a monitored private conduct-report"
 
 
 def tracked_files(root: Path) -> tuple[list[str] | None, str | None]:
@@ -68,14 +73,35 @@ def deterministic_failures(
     changelog = root / "CHANGELOG.md"
     if version and changelog.is_file() and f"## {version}" not in changelog.read_text(encoding="utf-8"):
         failures.append("CHANGELOG.md has no entry for VERSION")
+    readme = root / "README.md"
+    if version and readme.is_file() and version not in readme.read_text(encoding="utf-8"):
+        failures.append("README.md does not mention VERSION")
+    template_lock = root / "templates/private-fleet/kit.lock"
+    if version and (not template_lock.is_file() or template_lock.read_text(encoding="utf-8").strip() != version):
+        failures.append("templates/private-fleet/kit.lock does not match VERSION")
 
     if not (root / "LICENSE").is_file() and require_license:
         failures.append("LICENSE is missing; owner/legal license selection is required")
+    elif (root / "LICENSE").is_file() and "Apache License\nVersion 2.0" not in (root / "LICENSE").read_text(encoding="utf-8"):
+        failures.append("LICENSE is not the selected Apache License 2.0 text")
+
+    conduct = root / "CODE_OF_CONDUCT.md"
+    if require_license and conduct.is_file() and CONDUCT_CONTACT_PLACEHOLDER in conduct.read_text(encoding="utf-8").lower():
+        failures.append("CODE_OF_CONDUCT.md still has the private conduct-contact placeholder")
+
+    support = root / "SUPPORT.md"
+    contributing = root / "CONTRIBUTING.md"
+    if support.is_file() and contributing.is_file():
+        support_text = support.read_text(encoding="utf-8").lower()
+        if "external contributions are not accepted" in support_text:
+            failures.append("SUPPORT.md contradicts the contribution policy")
 
     if tracked is not None:
         for name in tracked:
             if name.endswith(".local.toml") or name.startswith("reports/") or name.startswith("artifacts/"):
                 failures.append(f"private/generated path is tracked: {name}")
+            if name.startswith("skills/setup-agent-dev-machine/") and (root / name).exists():
+                failures.append(f"retired skill path is tracked: {name}")
 
     return failures
 

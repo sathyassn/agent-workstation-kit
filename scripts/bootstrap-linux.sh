@@ -48,7 +48,7 @@ Manual checkpoints after this script:
    recovery. This script installs but deliberately does not enable SSH.
 2. Install the verified licensed NoMachine Enterprise Desktop package.
 3. Run setup-accounts-linux.sh and install-agentctl-linux.sh.
-4. Install user-space tooling as the agt-* account.
+4. Install user-space tooling as the agent-NN account.
 5. Preview and apply harden-remote-access-linux.sh only while a tested recovery
    path is open. It enables key-only SSH and permits SSH/NoMachine on tailscale0.
 EOF

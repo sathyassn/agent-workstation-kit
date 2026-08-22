@@ -13,7 +13,7 @@ while (($#)); do
     --apply) APPLY_CHANGES=true; shift ;;
     --agent) agent_account=${2:?Missing agent account}; shift 2 ;;
     --help|-h)
-      printf 'Usage: install-workloads-linux.sh --agent agt-ai-01 [--apply]\n'
+      printf 'Usage: install-workloads-linux.sh --agent agent-01 [--apply]\n'
       exit 0
       ;;
     *) die "Unknown option: $1" ;;
@@ -45,7 +45,7 @@ packages=(
 
 cat <<EOF
 Linux workload baseline for $agent_account
-  Browser:        Ubuntu Chromium package (headed through the agt-* desktop)
+  Browser:        Ubuntu Chromium package (headed through the agent desktop)
   Containers:     rootless Podman with Docker CLI compatibility
   Headless GUI:   Xvfb
   Playwright:     installed and pinned inside each project, not globally

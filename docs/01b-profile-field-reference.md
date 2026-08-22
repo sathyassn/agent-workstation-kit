@@ -1,43 +1,48 @@
 # Profile field reference
 
-Start from an example; do not write a profile from memory. The examples cover personal Linux, work Linux, and work macOS. Values below are illustrative and never credentials.
+Start with `fleetctl init` or an example; do not invent a profile from memory.
 
-| Field | Allowed/example | Meaning |
-|---|---|---|
-| `schema_version` | `1` | Profile schema version. |
-| `profile` | `personal`, `work` | Selects identity and management safeguards. |
-| `state` | `draft`, `approved` | Apply requires reviewed `approved`. |
-| `machine.id` | `ai-node-01` | Unique stable fleet ID; also the `agentctl` target. |
-| `machine.platform` | `linux`, `macos` | Chooses the OS path. |
-| `machine.os_family` | `ubuntu`, `macos` | Must match the platform. |
-| `machine.role` | `shared-agent-workstation` | Inventory description. |
-| `accounts.agent` | `agt-ai-01` | Shared non-admin execution account. |
-| `accounts.humans` | `["alice", "bob"]` | Named daily-use OS accounts. |
-| `accounts.admins` | `["adm-alice"]` | Separate privileged accounts. |
-| `accounts.operators` | `["alice"]` | Humans allowed to control agent sessions. |
-| `accounts.viewers` | `["bob"]` | Humans limited to status/read-only observe. |
-| `accounts.ssh_users` | humans/admins; include an admin | Complete direct-SSH allowlist and recovery path. |
-| `remote.tailscale_tailnet` | organization/domain label | Non-secret tailnet identifier. |
-| `remote.tailscale_tags` | `["tag:agent-work"]` | Tags governed by tailnet grants. |
-| `remote.nomachine_port` | `4000` | Reviewed TCP/UDP port, tailnet-only. |
-| `remote.kvm` | `glinet-comet-rm1`, `none` | Inventory label; use `none` only with another tested console. |
-| `remote.desktop_lock_mode` | `dedicated-shared`, `locked` | Explicit shared-desktop policy. |
-| `tooling.install_agents` | `true` | Codex, Claude Code, and Grok Build are required. |
-| `tooling.gws` | `install`, `skip` | Optional Google Workspace CLI decision. |
-| `tooling.secrets_provider` | `1password`, `bitwarden`, `both`, `organization-vault` | Approved secret store; no secret is placed here. |
-| `tooling.antidote_ref` | full commit SHA preferred; reviewed tag accepted | Pinned shell-plugin-manager revision. Resolve the tag to a commit during the pilot. |
-| `source_control.*_host` | `gitlab.com`, `github.com` | Hostname only, without scheme/path. |
-| `source_control.gitlab_identity` | `service-account`, `none` | Non-human GitLab identity decision. |
-| `source_control.github_identity` | `app`, `machine-user`, `none` | GitHub automation identity decision. |
-| `model_auth.codex/claude/grok` | `api-workload`, `enterprise-federated`, `named-human`, `none` | Provider billing/auth model. Shared work homes cannot use named-human auth. |
-| `security.disk_encryption_required` | `true` | Mandatory baseline. |
-| `security.remote_scope` | `tailscale-only` | No public SSH/desktop listener exposure. |
-| `security.endpoint_management` | `mdm`, `edr`, `mdm-and-edr`, `not-required` | Work/personal endpoint decision. |
-| `resources.policy` | `balanced` | Measured soft pressure plus emergency ceiling. |
-| `backup.target` | `corporate-backup`, `encrypted-nas` | Non-secret destination label. |
-| `backup.retention_days` | `30` | Positive retention target. |
-| `maintenance.timezone` | `America/Toronto` | IANA timezone. |
-| `maintenance.update_window` | `Sunday 02:00-04:00` | Human-readable approved window. |
-| `maintenance.owner` | `platform-team`, `alice` | Accountable person/team label. |
+| Field | Allowed/example | Purpose | Evidence |
+|---|---|---|---|
+| `schema_version` | `2` | Current profile contract. | Validator |
+| `profile`, `deployment.context` | `personal`, `work` | Must match. | Validator |
+| `deployment.namespace` | `ac`, `lab` | 2–8 lowercase letters/digits; hostname prefix. | Validator/fleet uniqueness |
+| `deployment.ownership` | `individual`, `organization` | Work must be organization-owned. | Validator + owner attestation |
+| `state` | `draft`, `approved` | Apply requires reviewed `approved`. | Validator + review record |
+| `machine.hostname` | `ac-ws-001` | Globally managed `<namespace>-<class>-<NNN>`. | Validator/live host/fleet |
+| `machine.uuid` | UUIDv4 | Generated once; immutable across rebuilds. | Validator/fleet |
+| `machine.asset_tag` | organization label | Unique private inventory reference. | Fleet + physical inventory |
+| `machine.platform` | `linux`, `macos` | Selects OS workflow. | Validator/live host |
+| `machine.hardware_profile` | `minisforum-ms-s1-max-64gb` | Hardware runbook selector. | Manual inventory |
+| `accounts.agent` | `agent-01` | Shared non-admin runtime account. | Live audit |
+| `accounts.humans` | `alice`, `bob` | Stable organization/IdP handles. | Live audit + IdP record |
+| `accounts.admins` | `admin-01` | Separate privileged accounts. | Live audit + assignment record |
+| `accounts.admin_assignments` | `admin-01 = alice` | One named owner per admin account. | Validator + manual attestation |
+| `accounts.services` | `svc-purpose` | Optional purpose-specific service accounts. | Live audit/manual purpose record |
+| `accounts.operators/viewers` | declared humans | Control or read-only agent-session roles. | Live audit + end-to-end test |
+| `accounts.ssh_users` | humans/admins; include an admin | Complete direct-SSH allowlist. | Live `sshd` audit |
+| `remote.tailscale_*` | tailnet + `tag:*` | Private network identity/policy. | Manual admin-console evidence |
+| `remote.kvm` | `deferred`, `installed`, `not-required` | Lifecycle state; supervised pilots may defer. | Manual recovery test |
+| `remote.preferred_kvm` | `glinet-comet-x-gl-rm4pe` | Four-host target when mature/available. | Inventory only until installed |
+| `remote.fallback_kvm` | `glinet-comet-poe-gl-rm1pe` | Per-host fallback/spare. | Inventory only until installed |
+| `remote.desktop_lock_mode` | `dedicated-shared`, `locked` | Explicit shared desktop choice. | Manual NoMachine session test |
+| `tooling.gws` | `install`, `skip` | Optional, asked during onboarding. | Live command/manual decision |
+| `tooling.secrets_provider` | `1password`, `bitwarden`, `both`, `organization-vault` | Provider name only. | Manual vault evidence; never credentials |
+| `tooling.antidote_ref` | reviewed SHA/tag | Pinned shell plugin manager revision. | Lock/config inspection |
+| `source_control.gitlab_identity` | `service-account`, `none` | GitLab workload identity. | Manual provider/API evidence |
+| `source_control.github_identity` | `app`, `machine-user`, `none` | GitHub workload identity. | Manual provider/API evidence |
+| `model_auth.*` | `api-workload`, `enterprise-federated`, `named-human`, `none` | Shared work homes cannot use named-human auth. | Manual provider evidence |
+| `security.*_required` | `true` | Disk encryption and Secure Boot baseline. | Live audit + recovery test |
+| `security.endpoint_management` | `mdm`, `edr`, `mdm-and-edr`, `not-required` | Final desired endpoint state. | Manual MDM/EDR evidence |
+| `resources.policy` | `measured-balanced` | Soft pressure plus emergency ceiling. | Live audit/load test |
+| `resources.os_memory_reserve_gib` | `8` | Headroom used to calculate agent thresholds. | Live policy/load test |
+| `resources.os_cpu_reserve_threads` | `2` | Capacity-planning headroom; not hard core pinning. | Capacity record; not enforced isolation |
 
-`ask` is valid only while a profile is a draft. `validate --ready` rejects every unresolved apply-time field. The examples’ names, domains, tags, hardware labels, and windows are patterns to replace—not environmental facts.
+`ask` is valid only in a draft and only for designated human decisions.
+`validate --ready` rejects unresolved apply-time values. Examples are fictional
+patterns, not environment facts.
+
+Evidence has three classes: validator/live checks, manual evidence captured from
+the owning service or recovery test, and inventory-only intent. A green profile
+validation proves schema and policy—not that manual desired state exists. The
+`audit` phase prints explicit `MANUAL` reminders for fields it cannot prove.

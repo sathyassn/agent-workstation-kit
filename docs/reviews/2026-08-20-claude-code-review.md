@@ -1,5 +1,8 @@
 # Independent review record — 2026-08-20
 
+> Historical record for 0.1.0-rc.1. Superseded by the 0.2.0-rc.1 reviews; do
+> not use its names or schema as current guidance.
+
 ## Review method
 
 - Reviewer: Claude Code 2.1.238 in an interactive, read-only session.

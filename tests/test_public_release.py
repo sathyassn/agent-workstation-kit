@@ -31,6 +31,8 @@ class PublicReleaseTests(unittest.TestCase):
             f"# Changelog\n\n## {version} — Unreleased\n",
             encoding="utf-8",
         )
+        (root / "README.md").write_text(f"Current version: {version}\n", encoding="utf-8")
+        (root / "templates/private-fleet/kit.lock").write_text(f"{version}\n", encoding="utf-8")
 
     def test_draft_allows_missing_license(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -51,6 +53,26 @@ class PublicReleaseTests(unittest.TestCase):
                 root, require_license=True, tracked=[]
             )
             self.assertTrue(any("LICENSE is missing" in item for item in failures))
+
+    def test_strict_check_rejects_conduct_contact_placeholder(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_repository(root)
+            (root / "LICENSE").write_text(
+                (ROOT / "LICENSE").read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            (root / "CODE_OF_CONDUCT.md").write_text(
+                "Before publication, the owner must add a monitored private conduct-report channel.\n",
+                encoding="utf-8",
+            )
+            failures = public_release.deterministic_failures(
+                root, require_license=True, tracked=[]
+            )
+            self.assertIn(
+                "CODE_OF_CONDUCT.md still has the private conduct-contact placeholder",
+                failures,
+            )
 
     def test_invalid_semver_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

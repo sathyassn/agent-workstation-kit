@@ -1,62 +1,76 @@
 # Agent and source-control identities
 
-## Model-provider rule
+The Linux `agent-01` account is only an OS runtime. Provider and Git-hosting
+identities are separate accounts with separate owners, scopes, billing, and
+revocation. A name such as `agent-01@company.example` may be created where a
+vendor requires a mailbox, but it must be organization-owned and governed like
+any other workload identity.
 
-Shared `agt-*` homes use workload or organization-approved identities, not cached personal subscriptions.
+## Model providers
 
-| Tool | Preferred shared authentication | Human gate |
+| Tool | Shared work default | Personal single-operator option |
 |---|---|---|
-| Codex CLI | OpenAI API project service account or other organization-approved API identity | API-project owner creates, scopes, budgets, and rotates identity |
-| Claude Code | Anthropic Console/API, Bedrock, Vertex, or approved gateway | Admin creates key/role and budget |
-| Grok Build | Team API key, enterprise OIDC, or external auth provider | Admin selects team and policy |
+| Codex CLI | API project service account/key or approved workload federation | Sign in with ChatGPT or an API key |
+| Claude Code | Anthropic API/enterprise cloud role/gateway | Vendor-permitted individual subscription login |
+| Grok Build | Team API/workload identity | Vendor-permitted individual login |
 
-Store credentials in 1Password, Bitwarden, an enterprise vault, OS keychain, or a short-lived credential helper. Never write them into shell startup files, repository profiles, command history, or process arguments.
+Official OpenAI documentation states that local Codex clients support either
+[ChatGPT subscription sign-in or API-key usage](https://learn.chatgpt.com/docs/auth).
+These are different billing/admin paths. Do not assume API usage is included in
+a ChatGPT subscription. OpenAI [project service accounts](https://platform.openai.com/docs/api-reference/project-service-accounts)
+are non-human API identities; scope, budget, monitor, and rotate them per project.
 
-ChatGPT, Claude, and similar user subscriptions are assigned to people and
-must not be turned into a shared login for `agt-*`. A named person may use an
-interactive subscription login in their own OS home when the vendor terms and
-organization policy allow it. A shared, unattended, or multi-operator agent
-home should use an approved API/workload identity; its usage is metered and is
-not assumed to be included in a person's desktop subscription. Confirm the
-current provider plan and terms before deployment.
+Do not put one person's subscription session in a multi-operator work home.
+Confirm each provider's current terms and organization policy. Store credentials
+in 1Password, Bitwarden, an enterprise vault, OS keychain, or short-lived broker;
+never in profiles, dotfiles, logs, command arguments, or this repository.
 
 ## GitLab service account
 
-GitLab service accounts are non-human, non-seat accounts that can perform Git operations and API actions. Use the narrowest project or group scope available.
+An organization owner creates a project/group service account for an explicit
+purpose, such as `workstation-agent-dev`. Grant only required projects and the
+minimum role—commonly Developer, subject to policy. Use an expiring token or
+dedicated SSH key stored in the approved vault. Install and authenticate `glab`
+through a hidden-input/local credential ceremony.
 
-1. A GitLab Owner/Maintainer/admin creates a project or group service account.
-2. Name it by purpose, for example `agent-ai-01-dev` rather than by a person.
-3. Add it only to required projects with the minimum role capable of pushing branches and creating merge requests. Usually this is Developer; confirm project policy.
-4. Create an expiring personal access token for the service account with only required scopes. Prefer `write_repository` plus the narrow API scope required by `glab`; do not grant admin scope.
-5. If SSH is used, add a dedicated service-account SSH key through the GitLab API and keep the private key in the secrets provider.
-6. Authenticate `glab` without exposing the token in history. Validate with read-only commands first.
-7. Protect default and release branches so the service account cannot push directly.
-8. Require human review and pipeline success. The service account may create an MR but may not approve or merge its own MR.
+Yes, the service account can push a feature branch and open a merge request if
+its repository and API scopes allow it:
 
-With explicit authorization for the external action, an agent can create a branch/commit, push, and run `glab mr create` when the service account has sufficient repository/API permission. Preparing a local branch does not authorize pushing or opening an MR.
+```text
+agent-01 process -- GitLab service account -- feature branch -- draft MR
+                                                          |
+                                      pipeline + independent human review
+                                                          |
+                                                human-approved merge
+```
+
+Protect default/release branches. The agent identity must not push directly to
+them, approve its own MR, or merge it. Opening an MR remains an external action
+requiring explicit human authorization.
 
 ## GitHub identity
 
-Prefer a GitHub App for stable non-human automation:
+Prefer an organization-owned GitHub App installed only on selected repositories.
+Start with `Metadata: read`, `Contents: read/write`, and `Pull requests:
+read/write`; add workflow permission only when explicitly required. Issue
+short-lived installation tokens through a helper/broker. A GitHub App can author
+branches and PRs within those permissions but cannot perform an interactive
+`gh auth login` like a person.
 
-1. Register an organization-owned private GitHub App.
-2. Grant access only to selected repositories.
-3. Start with repository `Contents: read/write`, `Pull requests: read/write`, and `Metadata: read`. Add `Workflows` only if editing workflow files is explicitly required.
-4. Protect default/release branches and require human review/status checks.
-5. Generate short-lived installation tokens through a credential helper or broker rather than storing the App private key in the agent home.
-6. Use HTTPS Git with the installation token and GitHub API/`gh api` for PR operations.
+Use a machine user only when an App cannot support the workflow. Give it its own
+mailbox, enforced MFA, scoped repository access, and an expiring fine-grained
+token. It may consume an organization seat. Authenticate `gh` locally without
+exposing the token.
 
-Use a machine user only when a GitHub App cannot support the required interactive workflow. The machine user needs its own email, enforced 2FA, organization membership, scoped repository access, and expiring fine-grained token. It consumes a seat where the applicable plan requires one.
+## Attribution and audit
 
-An authorized GitHub identity can create branches and PRs after the responsible human authorizes that external action. It must not approve or merge its own PR. For App-based operation, a small token helper may set `GH_TOKEN` only for the child process; for a machine user, `gh auth login` or an approved credential helper can be used.
-
-## Commit attribution
-
-Use a functional Git identity such as:
+Use a functional commit identity such as:
 
 ```text
-user.name  = Agent Workspace ai-01
+user.name  = Agent Workstation 01
 user.email = organization-approved bot or noreply address
 ```
 
-Record the initiating human in the PR/MR body and agent session metadata rather than falsifying the commit author. Consider signed commits when the provider and key-management design support non-human signing safely.
+Record the initiating human, host, and agent session in the PR/MR body or audit
+metadata. Never falsify authorship. Test read-only access first, then a branch
+push and draft PR/MR in a disposable repository before granting production use.

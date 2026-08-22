@@ -1,5 +1,8 @@
 # Public-readiness follow-up — 2026-08-21
 
+> Historical record for 0.1.0-rc.1. Superseded by the 0.2.0-rc.1 reviews and
+> current public-release checklist.
+
 ## Review method
 
 - Reviewer: Claude Code 2.1.239 in an interactive, read-only session.

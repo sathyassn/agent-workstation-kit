@@ -20,6 +20,6 @@
 
 ## Earliest useful agent point
 
-The setup agent can assist after the OS, first named/bootstrap account, network, repository, and one agent CLI are available. It can then orchestrate preview commands immediately. The shared `agt-*` account becomes the execution environment only after account creation and its user-space tools are installed.
+The setup agent can assist after the OS, first named/bootstrap account, network, repository, and one agent CLI are available. It can then orchestrate preview commands immediately. The shared `agent-NN` account becomes the execution environment only after account creation and its user-space tools are installed.
 
 On macOS, an agent cannot replace the human for Setup Assistant, FileVault recovery, MDM, privacy prompts, system extensions, Xcode agreements/signing, or graphical session approval.

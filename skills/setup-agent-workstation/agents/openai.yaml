@@ -1,0 +1,4 @@
+interface:
+  display_name: "Set Up Agent Workstation"
+  short_description: "Provision and validate secure agent workstations"
+  default_prompt: "Use $setup-agent-workstation to provision or audit this agent workstation safely."

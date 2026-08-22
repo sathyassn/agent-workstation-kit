@@ -2,18 +2,20 @@
 
 set -Eeuo pipefail
 
-APPLY_CHANGES=${APPLY_CHANGES:-false}
+# Apply mode must be reachable only through an explicit command-line flag in the
+# current process. Never inherit it from a caller's shell or fleet runner.
+APPLY_CHANGES=false
 
 log() {
-  printf '[agent-fleet] %s\n' "$*"
+  printf '[agent-workstation] %s\n' "$*"
 }
 
 warn() {
-  printf '[agent-fleet] WARNING: %s\n' "$*" >&2
+  printf '[agent-workstation] WARNING: %s\n' "$*" >&2
 }
 
 die() {
-  printf '[agent-fleet] ERROR: %s\n' "$*" >&2
+  printf '[agent-workstation] ERROR: %s\n' "$*" >&2
   exit 1
 }
 
@@ -26,7 +28,7 @@ quote_command() {
 }
 
 run() {
-  printf '[agent-fleet] RUN: '
+  printf '[agent-workstation] RUN: '
   quote_command "$@"
   if [[ "$APPLY_CHANGES" == true ]]; then
     "$@"

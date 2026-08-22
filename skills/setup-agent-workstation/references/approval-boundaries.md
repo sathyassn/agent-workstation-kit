@@ -22,7 +22,7 @@
 ## Never do implicitly
 
 - Paste, print, log, commit, or transmit a secret.
-- Add `agt-*` to unrestricted sudo or Docker group.
+- Add `agent-NN` to unrestricted sudo or the Docker group.
 - Expose SSH/RDP/KVM directly to the public internet.
 - Delete projects, branches, containers, volumes, caches, logs, accounts, or credentials merely to make space.
 - Disable encryption, endpoint protection, branch protection, audit logging, sandboxing, or approval controls.
