@@ -1,7 +1,7 @@
 # Copy to a private fleet repository or an ignored *.local.toml file.
 # Replace every "ask", validate, review, then set state to "approved".
 # Desired state only: never add passwords, tokens, keys, or recovery codes.
-schema_version = 2
+schema_version = 3
 profile = "work"
 state = "draft"
 
@@ -12,6 +12,7 @@ ownership = "organization"
 
 [machine]
 hostname = "ac-ws-001"
+display_name = "Atlas" # Human-friendly and fleet-unique; not used for authorization.
 uuid = "11111111-1111-4111-8111-111111111111" # Generate once with fleetctl init.
 asset_tag = "ask"
 platform = "linux"
@@ -47,8 +48,16 @@ antidote_ref = "ask" # Prefer a reviewed full commit SHA.
 [source_control]
 gitlab_host = "gitlab.com"
 gitlab_identity = "service-account"
+gitlab_principal = "ac-agent-dev"
 github_host = "github.com"
 github_identity = "app"
+github_principal = "ac-agent-dev"
+
+[collaboration]
+atlassian_site = "ask" # For example company.atlassian.net, without https://.
+atlassian_identity = "ask" # service-account or none for a shared work agent.
+atlassian_principal = "ask" # Prefer acagentdev when enabled; Atlassian allows 6-30 alphanumeric characters.
+atlassian_mcp_auth = "ask" # service-account-api-key when enabled.
 
 [model_auth]
 codex = "api-workload"

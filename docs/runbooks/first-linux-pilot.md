@@ -13,7 +13,9 @@ not a fleet template until the evidence below is complete.
       node is physically supervised; install/test it before unattended placement.
 - [ ] Decide the disk-encryption and unattended-reboot recovery procedure.
 - [ ] Generate the draft with `fleetctl init` in a private fleet repository;
-      confirm hostname, persistent UUID, asset tag, and non-secret decisions.
+      confirm the technical hostname, fleet-unique assigned display name,
+      persistent UUID, asset tag, and non-secret decisions. Run the whole-fleet
+      validator; profile validation alone cannot prove uniqueness.
 
 ## Install and establish recovery
 
@@ -38,6 +40,11 @@ not a fleet template until the evidence below is complete.
 - [ ] Run `fleetctl.py validate`, `validate --ready`, and `plan` against the
       completed local profile.
 - [ ] Preview and apply one phase at a time in the order rendered by the plan.
+- [ ] After `identity`, verify technical hostname, pretty/display name, UUID and
+      asset tag against both the private profile and root-owned local manifest.
+      On Linux, verify `hostnamectl --static`, `hostnamectl --transient`,
+      `hostnamectl --pretty`, `hostname`, and `getent hosts <hostname>`. Resolve
+      any reviewed `/etc/hosts` alias before proceeding, then reboot and repeat.
 - [ ] Stop for every documented sudo, account, password, key, firewall,
       Tailscale, NoMachine, vendor-authentication, and recovery approval.
 - [ ] Keep the KVM session open while hardening SSH. Do not close it until a
@@ -45,9 +52,15 @@ not a fleet template until the evidence below is complete.
 - [ ] Declare `local-console` when applying locally. If applying over
       Tailscale SSH, capture the peer before `sudo`, pass `tailscale-ssh` plus
       `--ssh-source-ip`, and confirm the command rejects a non-tailnet peer.
+- [ ] From an SSH shell whose `sudo` policy clears `SSH_CONNECTION`, prove that
+      identity and remote-hardening both reject a false `local-console` claim
+      before mutation. Then use the attached console/KVM or verified
+      `tailscale-ssh` path.
 - [ ] Install the shared graphical agent account, `agentctl`, shells, runtimes,
       CLIs, rootless workloads, and remote desktop using the Linux guide.
-- [ ] Authenticate model, source-control, and secret-store identities manually;
+- [ ] Have provider admins create GitHub/GitLab/Atlassian identities on trusted
+      admin machines, then authenticate model, provider, and secret-store
+      identities manually under `agent-NN`;
       never place their credentials in the profile or repository.
 
 ## Acceptance and capacity baseline

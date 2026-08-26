@@ -11,15 +11,17 @@ do not replace legal approval or live-machine evidence.
 - [x] Version and changelog updated together.
 - [ ] Owner confirms copyright attribution and publication rights.
 - [ ] Replace the private conduct-report placeholder with a monitored channel.
-- [ ] Scan the complete final Git history with an approved secret scanner.
+- [x] Scan the complete final Git history with an approved secret scanner.
 - [ ] Review the clean root history before its first push.
 
 ## Engineering
 
-- [ ] `make ci-check` passes on the exact clean commit and hosted CI.
+- [x] `make ci-check` passes on the exact clean local commit.
+- [ ] Hosted CI passes on the exact commit proposed for publication.
 - [ ] Replace the conduct-contact placeholder, then verify `make public-check`
       passes. It intentionally fails closed while that placeholder remains.
-- [ ] Claude and Grok independent reviews are recorded and resolved.
+- [x] Claude and Grok independent reviews are recorded and resolved for the
+      local RC and supervised Linux pilot scope.
 - [ ] Ubuntu MS-S1 Max pilot, Secure Boot/MOK, RTL8127 kernel-update test,
       NoMachine identity behavior, and realistic four-session load are recorded.
 - [ ] macOS guidance is either exercised or clearly retained as unverified future work.
@@ -42,5 +44,6 @@ do not replace legal approval or live-machine evidence.
 - [ ] Create personal and/or organization fleet repositories as private.
 - [ ] Pin `kit.lock`; protect the default branch and validate in CI.
 - [ ] Confirm profiles contain no secrets and inventory access is least-privilege.
-- [ ] Validate unique hostnames, UUIDs, asset tags, assignments, and retired names.
+- [ ] Validate unique technical hostnames, case-insensitive assigned display
+      names, UUIDs, asset tags, assignments, and retired names across the whole fleet.
 - [ ] Record toolkit revision, reviewer, tests, canary, rollback, and rollout cohort.

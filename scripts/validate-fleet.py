@@ -48,8 +48,9 @@ def validate_paths(paths: list[Path], *, fleet_root: Path | None = None) -> int:
 
     checks = {
         "machine.hostname": [p["machine"]["hostname"] for _, p in profiles],
-        "machine.uuid": [p["machine"]["uuid"] for _, p in profiles],
-        "machine.asset_tag": [p["machine"]["asset_tag"] for _, p in profiles],
+        "machine.display_name": [fleetctl.comparison_key(p["machine"]["display_name"]) for _, p in profiles],
+        "machine.uuid": [p["machine"]["uuid"].lower() for _, p in profiles],
+        "machine.asset_tag": [fleetctl.comparison_key(p["machine"]["asset_tag"]) for _, p in profiles],
     }
     for label, values in checks.items():
         repeated = duplicates(values)
@@ -68,6 +69,30 @@ def validate_paths(paths: list[Path], *, fleet_root: Path | None = None) -> int:
     if repeated:
         print(f"ERROR duplicate host/account principals: {repeated}", file=sys.stderr)
         failures += 1
+
+    provider_bindings: dict[tuple[str, str], set[tuple[str, ...]]] = {}
+    for _, profile in profiles:
+        scm, collaboration = profile["source_control"], profile["collaboration"]
+        bindings = (
+            ("gitlab", scm["gitlab_principal"], (scm["gitlab_host"], scm["gitlab_identity"])),
+            ("github", scm["github_principal"], (scm["github_host"], scm["github_identity"])),
+            (
+                "atlassian",
+                collaboration["atlassian_principal"],
+                (
+                    collaboration["atlassian_site"],
+                    collaboration["atlassian_identity"],
+                    collaboration["atlassian_mcp_auth"],
+                ),
+            ),
+        )
+        for provider, principal, definition in bindings:
+            if principal != "none":
+                provider_bindings.setdefault((provider, fleetctl.comparison_key(principal)), set()).add(definition)
+    for (provider, principal), definitions in sorted(provider_bindings.items()):
+        if len(definitions) > 1:
+            print(f"ERROR inconsistent {provider} principal {principal!r}: {sorted(definitions)}", file=sys.stderr)
+            failures += 1
 
     if fleet_root:
         lock = fleet_root / "kit.lock"
@@ -104,6 +129,11 @@ def main() -> int:
         if misplaced:
             names = ", ".join(path.name for path in misplaced)
             print(f"ERROR: machine profiles must be under machines/: {names}", file=sys.stderr)
+            return 1
+        nested = sorted(path for path in machines.rglob("*.toml") if path.parent != machines)
+        if nested:
+            names = ", ".join(str(path.relative_to(args.fleet_root)) for path in nested)
+            print(f"ERROR: nested machine profiles are unsupported and would escape the fleet gate: {names}", file=sys.stderr)
             return 1
     directory = machines if machines.is_dir() else args.fleet_root
     paths = sorted(directory.glob("*.toml")) if directory.is_dir() else []

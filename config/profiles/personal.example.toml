@@ -1,5 +1,5 @@
 # Personal example. Use fleetctl init so the UUID is generated exactly once.
-schema_version = 2
+schema_version = 3
 profile = "personal"
 state = "draft"
 
@@ -10,6 +10,7 @@ ownership = "individual"
 
 [machine]
 hostname = "ss-ws-001"
+display_name = "Juniper"
 uuid = "22222222-2222-4222-8222-222222222222"
 asset_tag = "ask"
 platform = "linux"
@@ -45,8 +46,16 @@ antidote_ref = "ask"
 [source_control]
 gitlab_host = "gitlab.com"
 gitlab_identity = "none"
+gitlab_principal = "none"
 github_host = "github.com"
 github_identity = "machine-user"
+github_principal = "personal-agent-dev"
+
+[collaboration]
+atlassian_site = "none"
+atlassian_identity = "none"
+atlassian_principal = "none"
+atlassian_mcp_auth = "none"
 
 [model_auth]
 codex = "named-human"

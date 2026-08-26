@@ -1,6 +1,8 @@
 # Primary source register
 
-Recheck these before a fleet release because installers, supported OS versions, pricing, authentication, and product maturity change.
+Recheck these before a fleet release because installers, supported OS versions,
+pricing, authentication, and product maturity change. Provider identity and MCP
+claims in release candidate 0.2.0-rc.2 were last checked on 2026-08-25.
 
 ## Agents
 
@@ -16,11 +18,20 @@ Recheck these before a fleet release because installers, supported OS versions, 
 ## Source control
 
 - [GitLab service accounts](https://docs.gitlab.com/user/profile/service_accounts/)
+- [GitLab CLI authentication and credential storage](https://docs.gitlab.com/cli/authentication/)
 - [GitLab merge-request creation](https://docs.gitlab.com/user/project/merge_requests/creating_merge_requests/)
 - [GitLab CLI](https://gitlab.com/gitlab-org/cli)
 - [GitHub App permissions](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/choosing-permissions-for-a-github-app)
 - [GitHub Apps](https://docs.github.com/en/apps/using-github-apps/about-using-github-apps)
+- [GitHub credential types](https://docs.github.com/en/organizations/managing-programmatic-access-to-your-organization/github-credential-types)
 - [GitHub CLI manual](https://cli.github.com/manual/)
+
+## Collaboration systems
+
+- [Atlassian service accounts](https://support.atlassian.com/user-management/docs/understand-service-accounts/)
+- [Atlassian service-account API tokens](https://support.atlassian.com/user-management/docs/manage-api-tokens-for-service-accounts/)
+- [Atlassian Rovo MCP setup](https://developer.atlassian.com/cloud/rovo-mcp/guides/getting-started/)
+- [Atlassian Rovo MCP service-account authentication](https://developer.atlassian.com/cloud/rovo-mcp/guides/configuring-authentication-via-api-token/)
 
 ## Host tooling
 

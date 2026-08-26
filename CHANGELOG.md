@@ -3,6 +3,27 @@
 This project follows Semantic Versioning. Version 0.x interfaces may change
 between minor releases while live-machine evidence is incorporated.
 
+## 0.2.0-rc.2 — Unreleased
+
+- Added a fleet-unique, human-friendly `machine.display_name` without weakening
+  the stable technical hostname and UUID conventions.
+- Added a preview-first identity phase that sets Linux pretty names or macOS
+  Computer Names and atomically installs a root-owned local identity manifest.
+- Added local identity drift, runtime-hostname, and NSS-resolution checks plus
+  serialized, case-insensitive fleet display-name collision prevention. The
+  canonical ASCII label alphabet rejects mixed-script and whitespace lookalikes;
+  local resolution must terminate on a host interface or loopback address.
+- Added explicit GitHub, GitLab, and Atlassian provider-principal inputs plus
+  service-account creation, credential-brokering, CLI, MCP, and recertification
+  guidance.
+- Added schema v3 and a read-only schema-2 migration checker/runbook. Hardened
+  the privileged identity directory, hostname-resolution preflight, credential-
+  shaped input rejection, no-follow allocation locking, retirement/nested-profile
+  gates, multi-operator identity rules, error recovery, and audit coverage.
+  Privileged identity and remote-hardening applies now verify Tailscale peers or
+  inspect process ancestry, so `sudo` cannot turn an SSH session into an
+  apparent local-console session merely by clearing `SSH_CONNECTION`.
+
 ## 0.2.0-rc.1 — Unreleased
 
 - Renamed the toolkit to `agent-workstation-kit` and adopted the final

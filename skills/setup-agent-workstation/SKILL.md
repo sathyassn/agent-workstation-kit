@@ -35,11 +35,13 @@ phases only in that account. Never copy bootstrap credentials into it.
 
 Ask one concise set of unresolved questions:
 
-- Work/personal context, namespace, hostname/class, ownership, asset tag, hardware.
+- Work/personal context, namespace, hostname/class, fleet-unique display name,
+  ownership, asset tag, and hardware.
 - Stable human handles, one assigned `admin-NN` per administrator, `agent-NN`,
   operators, viewers, recovery SSH users, and any `svc-purpose` accounts.
 - Tailscale policy, NoMachine license/mode, KVM lifecycle/model, and recovery.
-- GitLab/GitHub non-human identity and model-provider billing/auth owner.
+- GitHub/GitLab non-human identities, optional Atlassian identity/MCP mode, and
+  model-provider billing/auth owner.
 - 1Password, Bitwarden, or organization vault.
 - Optional `gws`, cloud, Kubernetes/IaC, database, IDE, VPN, endpoint, proxy,
   registry, certificate, and internal tooling.
@@ -48,6 +50,10 @@ Ask one concise set of unresolved questions:
 Generate a draft with `fleetctl init`; do not hand-create a UUID. Record no
 secrets. Keep experiments in ignored `*.local.toml`; keep production inventory
 in a private fleet repository created from `templates/private-fleet`.
+Treat both the technical hostname and assigned display name as fleet-wide
+allocations: never bypass the serialized initializer or whole-fleet validator.
+For schema-2 inventory, follow `docs/runbooks/migrate-v2-to-v3.md` and run its
+read-only preservation checker before reviewing any identity apply.
 
 Run draft validation and plan. Resolve every `ask`, obtain review, set approved,
 then run `validate --ready` and `validate-fleet.py`. Never turn an unanswered
@@ -61,15 +67,17 @@ Read [Ubuntu workflow](references/linux-workflow.md) or
 1. Human OS, encryption, firmware, recovery, and initial administrator.
 2. Read-only preflight and hardware acceptance.
 3. Base packages and security prerequisites.
-4. Named human, assigned admin, agent, and optional service accounts.
-5. Tailscale, console/KVM recovery, SSH/firewall hardening, then NoMachine.
-6. `agentctl` on Linux.
-7. Zsh/Antidote, Ghostty, Herdr, tmux, VS Code, mise, runtimes, containers.
-8. Chrome/Chromium, Xvfb, and project-pinned Playwright browsers.
-9. `gh`, `glab`, selected optional CLIs, then Codex/Claude/Grok binaries.
-10. Human-approved provider and source-control credential ceremonies.
-11. Resource observation, measured safeguards, monitoring, and alerts.
-12. Acceptance tests, kernel/reboot tests, burn-in, backup/restore, and handoff.
+4. Preview and apply the privileged machine-identity phase; verify hostname,
+   display name, durable identity record, and local hostname resolution.
+5. Named human, assigned admin, agent, and optional service accounts.
+6. Tailscale, console/KVM recovery, SSH/firewall hardening, then NoMachine.
+7. `agentctl` on Linux.
+8. Zsh/Antidote, Ghostty, Herdr, tmux, VS Code, mise, runtimes, containers.
+9. Chrome/Chromium, Xvfb, and project-pinned Playwright browsers.
+10. `gh`, `glab`, selected optional CLIs, then Codex/Claude/Grok binaries.
+11. Human-approved model, GitHub, GitLab, Atlassian, and vault ceremonies.
+12. Resource observation, measured safeguards, monitoring, and alerts.
+13. Acceptance tests, kernel/reboot tests, burn-in, backup/restore, and handoff.
 
 Validate after every phase. Stop at the first unknown or failed security,
 recovery, driver, identity, or data-integrity condition.

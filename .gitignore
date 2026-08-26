@@ -8,3 +8,4 @@ config/profiles/*.local.toml
 .secrets/
 artifacts/
 reports/
+.fleetctl-identity.lock

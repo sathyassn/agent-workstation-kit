@@ -24,7 +24,14 @@ sudo ./scripts/validate-host.sh agent-01
 
 If NoMachine uses a reviewed non-default port, pass it as the second argument.
 
-The host script checks machine controls and tooling. `fleetctl ... audit` first compares the same host to its approved account/profile declarations, then invokes that host script. Neither prints credentials. A pass remains necessary but insufficient: NoMachine authorization, GUI locking, Tailscale grants, KVM/LUKS recovery, provider billing, branch protection, headed tests, and restore evidence remain human acceptance tests.
+The host script checks machine controls and tooling. `fleetctl ... audit` first
+compares the static and runtime technical hostname, display name, local NSS
+resolution, and root-owned local identity record with the approved profile,
+then checks account declarations and invokes the host script. Neither prints
+credentials. A pass remains necessary but insufficient: repeat the identity
+checks after reboot; NoMachine authorization, GUI locking, Tailscale grants,
+KVM/LUKS recovery, provider billing, branch protection, headed tests, and
+restore evidence remain human acceptance tests.
 
 ## Burn-in
 

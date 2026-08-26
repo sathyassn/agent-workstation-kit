@@ -13,6 +13,7 @@
 - Any command using `sudo` or administrator authentication.
 - Package installation or removal.
 - Account, group, shell, password, SSH-key, login, or sudoers changes.
+- Technical hostname, display/computer name, `/etc/hosts`, or the root-owned local identity record.
 - Firewall, SSH, Tailscale, NoMachine, Screen Sharing, KVM, DNS, proxy, VPN, or certificate changes.
 - Encryption, boot, firmware, recovery, MDM, endpoint, Keychain, or privacy changes.
 - Creating vendor accounts, API keys, tokens, Apps, OAuth clients, repository memberships, or branch-policy changes.

@@ -16,7 +16,13 @@ Create separate named human, assigned `admin-NN`, and non-admin `agent-NN` accou
 
 ## Scripted setup
 
-Create a macOS [onboarding profile](01a-onboarding-profile.md). Run the `fleetctl` `base` phase first in preview mode and then with `--apply` as the intended Homebrew package owner, not root. The underlying script verifies prerequisites and installs the declared Homebrew baseline. The plan marks FileVault, account creation, remote-login, screen-sharing, privacy permissions, MDM, and resource policy as human/managed phases.
+Create a macOS [onboarding profile](01a-onboarding-profile.md). Run the `fleetctl` `base` phase first in preview mode and then with `--apply` as the intended Homebrew package owner, not root. The underlying script verifies prerequisites and installs the declared Homebrew baseline. Next, preview the privileged `identity` phase and apply it with `--confirm-recovery-tested --connection-context local-console` (or the documented `tailscale-ssh` context and peer address); it sets HostName/LocalHostName, the friendly Computer Name, and a root-owned identity record under `/Library/Application Support/Agent Workstation Kit`. The audit checks all three macOS names. The plan marks FileVault, account creation, remote-login, screen-sharing, privacy permissions, MDM, and resource policy as human/managed phases.
+
+The identity installer checks process ancestry as well as SSH environment
+variables before accepting `local-console`, and fails closed when it cannot
+inspect that ancestry. This prevents a normal `sudo` environment reset from
+disguising an SSH session. Treat the macOS path as unverified until it is
+exercised on the future Mac mini/Studio pilot in the release checklist.
 
 ## Tooling
 
@@ -28,3 +34,7 @@ Create a macOS [onboarding profile](01a-onboarding-profile.md). Run the `fleetct
 - Codex and Claude Code through reviewed mise/npm entries; Grok Build through xAI's reviewed installer; all authenticated separately with approved identities.
 
 macOS privacy prompts, system extensions, Xcode licenses, Keychain access, Screen Recording, Accessibility, and Developer Tools permissions require a named human at the console or approved MDM policy.
+
+Provider identities are created by their organization administrators on trusted
+administrative machines. Follow the [provider identity ceremony](06-agent-and-source-control-identities.md)
+before authenticating anything under the shared `agent-NN` account.

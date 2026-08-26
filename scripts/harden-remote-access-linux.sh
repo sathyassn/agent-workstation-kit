@@ -96,6 +96,25 @@ cleanup() {
 }
 trap cleanup EXIT
 
+remote_login_ancestor_present() {
+  local pid=$$ process_name stat_line remainder parent depth
+  for ((depth = 0; depth < 128; depth++)); do
+    ((pid > 1)) || return 1
+    [[ -r "/proc/$pid/comm" && -r "/proc/$pid/stat" ]] || return 2
+    IFS= read -r process_name <"/proc/$pid/comm" || return 2
+    case "${process_name,,}" in
+      sshd|tailscaled|mosh-server) return 0 ;;
+    esac
+    IFS= read -r stat_line <"/proc/$pid/stat" || return 2
+    [[ "$stat_line" == *') '* ]] || return 2
+    remainder=${stat_line##*) }
+    read -r _ parent _ <<<"$remainder"
+    [[ "$parent" =~ ^[0-9]+$ && "$parent" != "$pid" ]] || return 2
+    pid=$parent
+  done
+  return 2
+}
+
 cat <<EOF
 Remote-access hardening preview
   Direct SSH users:  ${ssh_users[*]}
@@ -124,6 +143,13 @@ case "$connection_context" in
     [[ -z "$ssh_source_ip" ]] || die '--ssh-source-ip is valid only with --connection-context tailscale-ssh.'
     [[ -z ${SSH_CONNECTION:-} ]] || \
       die 'The current shell reports an SSH connection; use tailscale-ssh and pass its source IP.'
+    if remote_login_ancestor_present; then
+      die 'The process ancestry reports a remote login even though sudo removed SSH_CONNECTION; use tailscale-ssh and pass its source IP.'
+    else
+      ancestor_status=$?
+      ((ancestor_status == 1)) || \
+        die 'Cannot prove a local-console process ancestry; apply at the physical console/KVM or use the tailscale-ssh context.'
+    fi
     ;;
   tailscale-ssh)
     [[ -n "$ssh_source_ip" ]] || die 'tailscale-ssh requires --ssh-source-ip captured before sudo.'

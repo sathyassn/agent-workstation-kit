@@ -4,7 +4,7 @@ Production-oriented profiles, preview-first automation, guides, and an AI setup
 skill for dedicated Linux and macOS workstations running Codex, Claude Code,
 Grok Build, headed browsers, and long-lived agent workloads.
 
-Current version: **0.2.0-rc.1**. This remains a pilot release until the first
+Current version: **0.2.0-rc.2**. This remains a pilot release until the first
 physical Linux node completes the documented burn-in.
 
 ## Operating model
@@ -59,8 +59,9 @@ For the first Minisforum MS-S1 Max, use both the
 ## Safe command flow
 
 ```bash
-./scripts/fleetctl.py init /private/fleet/machines/ac-ws-001.toml \
-  --context work --namespace ac --hostname ac-ws-001 --platform linux \
+./scripts/fleetctl.py --fleet-root /private/fleet init machines/ac-ws-001.toml \
+  --context work --namespace ac --hostname ac-ws-001 --display-name Atlas \
+  --platform linux \
   --hardware-profile minisforum-ms-s1-max-64gb --human alice
 
 ./scripts/fleetctl.py validate /private/fleet/machines/ac-ws-001.toml
@@ -68,6 +69,14 @@ For the first Minisforum MS-S1 Max, use both the
 # Resolve every "ask", review, approve, then:
 ./scripts/fleetctl.py validate /private/fleet/machines/ac-ws-001.toml --ready
 ```
+
+`machine.hostname` remains the stable technical identifier. The optional
+`--display-name` supplies a human-friendly assigned name; when omitted it
+defaults to the hostname. Both names must be unique across the complete fleet.
+Always use `--fleet-root` when allocating into a private fleet so its version
+pin and retired-hostname ledger are enforced. Creation is serialized locally,
+and `validate-fleet.py` is the required
+cross-profile pre-merge check. The identity phase persists both names on the live host.
 
 Scripts preview by default. `--apply`, `sudo`, account/access changes, external
 authentication, boot/security changes, and deletion always require a human gate.

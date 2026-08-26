@@ -9,16 +9,22 @@ credentials. Mutating phases remain preview-only unless explicitly approved.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import grp
+import ipaddress
 import os
 import pwd
 import re
 import shlex
 import shutil
+import socket
+import stat
 import subprocess
 import sys
 import tomllib
+import unicodedata
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -37,23 +43,24 @@ def load_version(root: Path = ROOT) -> str:
 
 
 VERSION = load_version()
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 UNIX_NAME = re.compile(r"^[a-z_][a-z0-9_-]{0,30}$")
 HOSTNAME = re.compile(r"^(?P<namespace>[a-z0-9]{2,8})-(?P<class>ws|mac|hv|vws|nas|mgmt|srv)-[0-9]{3}$")
 RELEASE_REF = re.compile(r"^[A-Za-z0-9._/-]+$")
 
 TOP_LEVEL = {
     "schema_version", "profile", "state", "deployment", "machine", "accounts",
-    "remote", "tooling", "source_control", "model_auth", "security", "resources",
+    "remote", "tooling", "source_control", "collaboration", "model_auth", "security", "resources",
     "backup", "maintenance",
 }
 SECTION_KEYS = {
     "deployment": {"namespace", "context", "ownership"},
-    "machine": {"hostname", "uuid", "asset_tag", "platform", "os_family", "hardware_profile", "role"},
+    "machine": {"hostname", "display_name", "uuid", "asset_tag", "platform", "os_family", "hardware_profile", "role"},
     "accounts": {"agent", "humans", "admins", "admin_assignments", "services", "operators", "viewers", "ssh_users"},
     "remote": {"tailscale_tailnet", "tailscale_tags", "nomachine_port", "kvm", "preferred_kvm", "fallback_kvm", "desktop_lock_mode"},
     "tooling": {"install_agents", "gws", "secrets_provider", "antidote_ref"},
-    "source_control": {"gitlab_host", "gitlab_identity", "github_host", "github_identity"},
+    "source_control": {"gitlab_host", "gitlab_identity", "gitlab_principal", "github_host", "github_identity", "github_principal"},
+    "collaboration": {"atlassian_site", "atlassian_identity", "atlassian_principal", "atlassian_mcp_auth"},
     "model_auth": {"codex", "claude", "grok"},
     "security": {"disk_encryption_required", "secure_boot_required", "remote_scope", "endpoint_management"},
     "resources": {"policy", "os_memory_reserve_gib", "os_cpu_reserve_threads"},
@@ -63,6 +70,9 @@ SECTION_KEYS = {
 READY_FIELDS = {
     "machine.asset_tag", "remote.tailscale_tailnet", "remote.desktop_lock_mode",
     "tooling.gws", "tooling.secrets_provider", "tooling.antidote_ref",
+    "source_control.gitlab_principal", "source_control.github_principal",
+    "collaboration.atlassian_site", "collaboration.atlassian_identity",
+    "collaboration.atlassian_principal", "collaboration.atlassian_mcp_auth",
     "security.endpoint_management", "backup.target", "maintenance.update_window",
     "maintenance.owner",
 }
@@ -113,7 +123,67 @@ def valid_uuid4(value: Any) -> bool:
         parsed = uuid.UUID(value)
     except (ValueError, AttributeError):
         return False
-    return parsed.version == 4 and str(parsed) == value.lower()
+    return parsed.version == 4 and str(parsed) == value
+
+
+def valid_display_name(value: Any) -> bool:
+    """Accept a readable ASCII label without mixed-script lookalikes."""
+    return (
+        isinstance(value, str)
+        and value == value.strip()
+        and "  " not in value
+        and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}", value) is not None
+    )
+
+
+def comparison_key(value: str) -> str:
+    """Normalize a human-assigned identifier for fleet-wide comparison."""
+    normalized = unicodedata.normalize("NFKC", value).strip()
+    return re.sub(r"\s+", " ", normalized).casefold()
+
+
+def valid_plain_value(value: Any, *, max_length: int = 128) -> bool:
+    return (
+        isinstance(value, str)
+        and value == value.strip()
+        and not value.startswith("-")
+        and 1 <= len(value) <= max_length
+        and value == unicodedata.normalize("NFKC", value)
+        and all(
+            character.isprintable() and not unicodedata.category(character).startswith("C")
+            for character in value
+        )
+    )
+
+
+def looks_like_credential(value: str) -> bool:
+    """Reject recognizable provider-secret prefixes from non-secret profiles."""
+    lowered = value.casefold()
+    prefixes = (
+        "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_",
+        "glpat-", "glptt-", "glcbt-", "gldt-", "glrt-", "atatt",
+        "sk-", "sk-ant-", "xai-",
+    )
+    return lowered.startswith(prefixes)
+
+
+def valid_principal(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{1,99}", value) is not None
+        and not looks_like_credential(value)
+    )
+
+
+def valid_named_human_principal(value: Any) -> bool:
+    if valid_principal(value):
+        return True
+    if not isinstance(value, str) or len(value) > 254 or looks_like_credential(value):
+        return False
+    return re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9._%+-]{0,63}@[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?",
+        value,
+    ) is not None
 
 
 def validate_profile(profile: dict[str, Any], *, ready: bool) -> list[Issue]:
@@ -145,6 +215,7 @@ def validate_profile(profile: dict[str, Any], *, ready: bool) -> list[Issue]:
     remote = profile["remote"]
     tooling = profile["tooling"]
     scm = profile["source_control"]
+    collaboration = profile["collaboration"]
     auth = profile["model_auth"]
     security = profile["security"]
     resources = profile["resources"]
@@ -166,11 +237,18 @@ def validate_profile(profile: dict[str, Any], *, ready: bool) -> list[Issue]:
         issues.append(Issue("machine.hostname", "must be <namespace>-<class>-<NNN>, for example ac-ws-001"))
     elif match.group("namespace") != namespace:
         issues.append(Issue("machine.hostname", "namespace prefix must match deployment.namespace"))
+    if not valid_display_name(machine["display_name"]):
+        issues.append(
+            Issue(
+                "machine.display_name",
+                "must be 1-64 trimmed ASCII letters, digits, single spaces, dots, underscores, or hyphens and start with a letter or digit",
+            )
+        )
     if not valid_uuid4(machine["uuid"]):
         issues.append(Issue("machine.uuid", "must be a canonical UUIDv4 generated once per machine"))
     for key in ("asset_tag", "hardware_profile", "role"):
-        if not isinstance(machine[key], str) or not machine[key].strip():
-            issues.append(Issue(f"machine.{key}", "must be a non-empty string"))
+        if not valid_plain_value(machine[key]):
+            issues.append(Issue(f"machine.{key}", "must be a canonical, trimmed printable value and cannot start with '-'"))
     if not one_of(machine["platform"], {"linux", "macos"}):
         issues.append(Issue("machine.platform", "must be linux or macos"))
     expected_os = {"linux": "ubuntu", "macos": "macos"}.get(machine["platform"]) if isinstance(machine["platform"], str) else None
@@ -263,6 +341,49 @@ def validate_profile(profile: dict[str, Any], *, ready: bool) -> list[Issue]:
     for key in ("gitlab_host", "github_host"):
         if not isinstance(scm[key], str) or not scm[key] or "://" in scm[key] or "/" in scm[key]:
             issues.append(Issue(f"source_control.{key}", "must be a hostname without a URL scheme/path"))
+    for provider in ("gitlab", "github"):
+        identity, principal = scm[f"{provider}_identity"], scm[f"{provider}_principal"]
+        if identity == "none" and principal != "none":
+            issues.append(Issue(f"source_control.{provider}_principal", "must be none when the provider identity is none"))
+        if identity != "none" and (principal == "none" or not valid_principal(principal)):
+            issues.append(Issue(f"source_control.{provider}_principal", "must be an approved non-secret principal label, not none or a URL"))
+
+    if not one_of(collaboration["atlassian_identity"], {"ask", "service-account", "named-human", "none"}):
+        issues.append(Issue("collaboration.atlassian_identity", "must be ask, service-account, named-human, or none"))
+    if not one_of(collaboration["atlassian_mcp_auth"], {"ask", "service-account-api-key", "oauth-2.1", "none"}):
+        issues.append(Issue("collaboration.atlassian_mcp_auth", "unsupported Atlassian MCP authentication mode"))
+    atlassian_identity = collaboration["atlassian_identity"]
+    if profile["profile"] == "work" and atlassian_identity == "named-human":
+        issues.append(Issue("collaboration.atlassian_identity", "a shared work agent cannot use a named-human Atlassian identity"))
+    if len(humans) > 1 and atlassian_identity == "named-human":
+        issues.append(Issue("collaboration.atlassian_identity", "a multi-operator agent cannot use one person's Atlassian identity"))
+    if atlassian_identity == "service-account" and collaboration["atlassian_mcp_auth"] != "service-account-api-key":
+        issues.append(Issue("collaboration.atlassian_mcp_auth", "a service account must use service-account-api-key"))
+    if atlassian_identity == "named-human" and collaboration["atlassian_mcp_auth"] != "oauth-2.1":
+        issues.append(Issue("collaboration.atlassian_mcp_auth", "a named human must use oauth-2.1"))
+    if atlassian_identity == "none" and (collaboration["atlassian_principal"] != "none" or collaboration["atlassian_mcp_auth"] != "none"):
+        issues.append(Issue("collaboration", "an unused Atlassian integration must set principal and MCP auth to none"))
+    atlassian_principal = collaboration["atlassian_principal"]
+    if atlassian_identity == "named-human":
+        atlassian_principal_ok = valid_named_human_principal(atlassian_principal)
+    elif atlassian_identity == "service-account":
+        atlassian_principal_ok = (
+            valid_principal(atlassian_principal)
+            and re.fullmatch(r"[A-Za-z0-9]{6,30}", atlassian_principal) is not None
+        )
+    else:
+        atlassian_principal_ok = valid_principal(atlassian_principal)
+    if atlassian_identity not in {"ask", "none"} and (
+        atlassian_principal == "none" or not atlassian_principal_ok
+    ):
+        issues.append(Issue("collaboration.atlassian_principal", "must be a 6-30 character alphanumeric service-account name or, for named-human, an approved label/email address"))
+    site = collaboration["atlassian_site"]
+    if site not in {"ask", "none"} and (not isinstance(site, str) or not site or "://" in site or "/" in site):
+        issues.append(Issue("collaboration.atlassian_site", "must be a hostname without a URL scheme/path"))
+    if atlassian_identity == "none" and site != "none":
+        issues.append(Issue("collaboration.atlassian_site", "must be none when Atlassian is unused"))
+    if atlassian_identity not in {"ask", "none"} and site in {"ask", "none"}:
+        issues.append(Issue("collaboration.atlassian_site", "an enabled Atlassian identity requires a site hostname"))
 
     allowed_auth = {"api-workload", "enterprise-federated", "named-human", "none"}
     for key in ("codex", "claude", "grok"):
@@ -326,6 +447,27 @@ def phase_for(
     if name == "base":
         script = "bootstrap-linux.sh" if machine["platform"] == "linux" else "bootstrap-macos.sh"
         return Phase(name, (str(ROOT / "scripts" / script), *suffix), machine["platform"] == "linux", "Base packages; external authentication remains manual.")
+    if name == "identity":
+        safety: list[str] = []
+        if apply and recovery:
+            safety.append("--confirm-recovery-tested")
+        if apply and connection_context:
+            safety.extend(("--connection-context", connection_context))
+            if ssh_source_ip:
+                safety.extend(("--ssh-source-ip", ssh_source_ip))
+        command = (
+            str(ROOT / "scripts/install-machine-identity.py"),
+            "--hostname", machine["hostname"],
+            "--display-name", machine["display_name"],
+            "--uuid", machine["uuid"],
+            "--asset-tag", machine["asset_tag"],
+            "--namespace", profile["deployment"]["namespace"],
+            "--platform", machine["platform"],
+            "--role", machine["role"],
+            *safety,
+            *suffix,
+        )
+        return Phase(name, command, True, "Sets stable OS names and installs a root-owned, non-secret local identity record.")
     if name == "accounts":
         if machine["platform"] == "macos":
             return Phase(name, None, True, "Create macOS accounts through the documented human/MDM workflow.")
@@ -375,7 +517,7 @@ def phase_for(
     raise ValueError(f"unknown phase: {name}")
 
 
-PHASES = ("base", "accounts", "remote-hardening", "agentctl", "shell", "user-tooling", "workloads", "resources", "audit")
+PHASES = ("base", "identity", "accounts", "remote-hardening", "agentctl", "shell", "user-tooling", "workloads", "resources", "audit")
 
 
 def account_groups(account: str) -> set[str]:
@@ -437,6 +579,141 @@ def audit_declared_accounts(profile: dict[str, Any]) -> int:
     return failures
 
 
+def local_identity_path(platform: str) -> Path:
+    if platform == "linux":
+        return Path("/etc/agent-workstation-kit/identity.toml")
+    return Path("/Library/Application Support/Agent Workstation Kit/identity.toml")
+
+
+def live_machine_names(platform: str) -> tuple[str | None, str | None, str | None]:
+    def read(command: list[str]) -> str | None:
+        try:
+            result = subprocess.run(command, check=False, text=True, capture_output=True)
+        except OSError:
+            return None
+        return result.stdout.strip() if result.returncode == 0 else None
+
+    if platform == "linux":
+        try:
+            runtime_hostname = socket.gethostname().split(".", 1)[0]
+        except OSError:
+            runtime_hostname = None
+        return (
+            read(["hostnamectl", "--static"]) or runtime_hostname,
+            read(["hostnamectl", "--pretty"]),
+            runtime_hostname,
+        )
+    return (
+        read(["scutil", "--get", "HostName"]) or socket.gethostname(),
+        read(["scutil", "--get", "ComputerName"]),
+        read(["scutil", "--get", "LocalHostName"]),
+    )
+
+
+def linux_hostname_resolves(hostname: str) -> bool:
+    """Prove NSS resolves the hostname to this host or a loopback address."""
+    try:
+        resolved = subprocess.run(
+            ["getent", "hosts", hostname],
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+        interfaces = subprocess.run(
+            ["ip", "-o", "addr", "show"],
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+    except OSError:
+        return False
+    if resolved.returncode != 0 or interfaces.returncode != 0:
+        return False
+
+    local_addresses: set[ipaddress.IPv4Address | ipaddress.IPv6Address] = set()
+    try:
+        for line in interfaces.stdout.splitlines():
+            fields = line.split()
+            for family in ("inet", "inet6"):
+                if family in fields:
+                    local_addresses.add(ipaddress.ip_address(fields[fields.index(family) + 1].split("/", 1)[0]))
+        resolved_addresses = [
+            ipaddress.ip_address(line.split()[0])
+            for line in resolved.stdout.splitlines()
+            if line.split()
+        ]
+    except (ValueError, IndexError):
+        return False
+    return bool(resolved_addresses) and any(
+        address.is_loopback or address in local_addresses
+        for address in resolved_addresses
+    )
+
+
+def audit_machine_identity(profile: dict[str, Any]) -> int:
+    machine, deployment, failures = profile["machine"], profile["deployment"], 0
+
+    def check(condition: bool, message: str) -> None:
+        nonlocal failures
+        print(("PASS " if condition else "FAIL ") + message)
+        failures += 0 if condition else 1
+
+    target = local_identity_path(machine["platform"])
+    record_ok = target.is_file() and not target.is_symlink()
+    check(record_ok, f"local identity record exists as a regular, non-symlink file at {target}")
+    parent = target.parent
+    try:
+        parent_stat = parent.stat()
+        parent_ok = parent.is_dir() and not parent.is_symlink()
+        parent_secure = (
+            parent_stat.st_uid == 0
+            and parent_stat.st_gid == 0
+            and parent_stat.st_mode & 0o777 == 0o755
+        )
+    except OSError:
+        parent_ok = parent_secure = False
+    check(parent_ok and parent_secure, "local identity directory is root-owned mode 0755 and is not a symlink")
+    if record_ok:
+        try:
+            with target.open("rb") as handle:
+                document = tomllib.load(handle)
+            identity = document.get("identity", {})
+        except (OSError, tomllib.TOMLDecodeError):
+            identity = {}
+        expected = {
+            "hostname": machine["hostname"],
+            "display_name": machine["display_name"],
+            "uuid": machine["uuid"],
+            "asset_tag": machine["asset_tag"],
+            "namespace": deployment["namespace"],
+            "platform": machine["platform"],
+            "role": machine["role"],
+        }
+        check(identity == expected, "local identity record exactly matches the approved profile")
+        try:
+            record_stat = target.stat()
+            record_secure = (
+                record_stat.st_uid == 0
+                and record_stat.st_gid == 0
+                and record_stat.st_mode & 0o777 == 0o644
+            )
+        except OSError:
+            record_secure = False
+        check(record_secure, "local identity record is root-owned mode 0644")
+    live_hostname, live_display, live_local_hostname = live_machine_names(machine["platform"])
+    check(live_hostname == machine["hostname"], "live technical hostname matches machine.hostname")
+    check(live_display == machine["display_name"], "live pretty/computer name matches machine.display_name")
+    if machine["platform"] == "macos":
+        check(live_local_hostname == machine["hostname"], "live LocalHostName matches machine.hostname")
+    else:
+        check(live_local_hostname == machine["hostname"], "live kernel/runtime hostname matches machine.hostname")
+        check(
+            linux_hostname_resolves(machine["hostname"]),
+            "machine.hostname resolves through host NSS to a local or loopback address",
+        )
+    return failures
+
+
 def actual_platform() -> str:
     if sys.platform.startswith("linux"):
         return "linux"
@@ -464,11 +741,12 @@ def render_profile(args: argparse.Namespace) -> str:
     return f'''# Generated by fleetctl init. Contains desired state only; never add secrets.\n\
 schema_version = {SCHEMA_VERSION}\nprofile = {toml_string(args.context)}\nstate = "draft"\n\n\
 [deployment]\nnamespace = {toml_string(namespace)}\ncontext = {toml_string(args.context)}\nownership = {toml_string(ownership)}\n\n\
-[machine]\nhostname = {toml_string(hostname)}\nuuid = {toml_string(str(uuid.uuid4()))}\nasset_tag = {toml_string(args.asset_tag)}\nplatform = {toml_string(platform)}\nos_family = {toml_string(os_family)}\nhardware_profile = {toml_string(args.hardware_profile)}\nrole = "agent-workstation"\n\n\
+[machine]\nhostname = {toml_string(hostname)}\ndisplay_name = {toml_string(args.display_name or hostname)}\nuuid = {toml_string(str(uuid.uuid4()))}\nasset_tag = {toml_string(args.asset_tag)}\nplatform = {toml_string(platform)}\nos_family = {toml_string(os_family)}\nhardware_profile = {toml_string(args.hardware_profile)}\nrole = "agent-workstation"\n\n\
 [accounts]\nagent = {toml_string(args.agent)}\nhumans = {arr(people)}\nadmins = {arr(admins)}\nadmin_assignments = {mapping}\nservices = []\noperators = {arr(people)}\nviewers = []\nssh_users = {arr([*people, *admins])}\n\n\
 [remote]\ntailscale_tailnet = "ask"\ntailscale_tags = {arr([f"tag:{namespace}-workstation"])}\nnomachine_port = 4000\nkvm = "deferred"\npreferred_kvm = "glinet-comet-x-gl-rm4pe"\nfallback_kvm = "glinet-comet-poe-gl-rm1pe"\ndesktop_lock_mode = "ask"\n\n\
 [tooling]\ninstall_agents = true\ngws = "ask"\nsecrets_provider = "ask"\nantidote_ref = "ask"\n\n\
-[source_control]\ngitlab_host = "gitlab.com"\ngitlab_identity = "service-account"\ngithub_host = "github.com"\ngithub_identity = "app"\n\n\
+[source_control]\ngitlab_host = "gitlab.com"\ngitlab_identity = "service-account"\ngitlab_principal = {toml_string(f"{namespace}-agent-dev")}\ngithub_host = "github.com"\ngithub_identity = "app"\ngithub_principal = {toml_string(f"{namespace}-agent-dev")}\n\n\
+[collaboration]\natlassian_site = "ask"\natlassian_identity = "ask"\natlassian_principal = "ask"\natlassian_mcp_auth = "ask"\n\n\
 [model_auth]\ncodex = "api-workload"\nclaude = "api-workload"\ngrok = "api-workload"\n\n\
 [security]\ndisk_encryption_required = true\nsecure_boot_required = true\nremote_scope = "tailscale-only"\nendpoint_management = {toml_string(endpoint)}\n\n\
 [resources]\npolicy = "measured-balanced"\nos_memory_reserve_gib = 8\nos_cpu_reserve_threads = 2\n\n\
@@ -498,6 +776,75 @@ def fleet_lock_issue(fleet_root: Path | None) -> str | None:
     return None
 
 
+@contextmanager
+def fleet_identity_lock(lock_path: Path):
+    """Serialize identity allocation so concurrent init calls cannot collide."""
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(lock_path, flags, 0o600)
+    with os.fdopen(descriptor, "a+", encoding="utf-8") as handle:
+        metadata = os.fstat(handle.fileno())
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.geteuid():
+            raise OSError(f"allocation lock must be a regular file owned by uid {os.geteuid()}: {lock_path}")
+        os.fchmod(handle.fileno(), 0o600)
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def allocate_profile(args: argparse.Namespace, output: Path, scan_directory: Path) -> Issue | None:
+    """Reserve a unique machine identity and create its draft atomically."""
+    lock_path = (args.fleet_root if args.fleet_root else scan_directory) / ".fleetctl-identity.lock"
+    with fleet_identity_lock(lock_path):
+        nested_profiles = sorted(
+            path for path in scan_directory.rglob("*.toml") if path.parent != scan_directory
+        )
+        if nested_profiles:
+            names = ", ".join(str(path) for path in nested_profiles)
+            return Issue("machine identity", f"nested profiles are unsupported and escape uniqueness checks: {names}")
+        inferred_fleet_root = (
+            scan_directory.parent
+            if not args.fleet_root and scan_directory.name == "machines"
+            else None
+        )
+        retirement_root = args.fleet_root or inferred_fleet_root
+        if retirement_root:
+            retired_path = retirement_root / "retired-hostnames.txt"
+            try:
+                retired = {
+                    line.strip()
+                    for line in retired_path.read_text(encoding="utf-8").splitlines()
+                    if line.strip() and not line.lstrip().startswith("#")
+                } if retired_path.is_file() else set()
+            except OSError as exc:
+                return Issue("machine.hostname", f"cannot prove retirement status from {retired_path}: {exc}")
+            if args.hostname in retired:
+                return Issue("machine.hostname", f"{args.hostname!r} is retired and cannot be reused")
+
+        for sibling in sorted(scan_directory.glob("*.toml")):
+            try:
+                existing = load_profile(sibling)
+                existing_hostname = existing["machine"]["hostname"]
+                existing_display = existing["machine"]["display_name"]
+            except (ValueError, KeyError, TypeError) as exc:
+                return Issue("machine identity", f"cannot prove uniqueness because {sibling} is unreadable/incomplete: {exc}")
+            if not isinstance(existing_hostname, str) or not valid_display_name(existing_display):
+                return Issue("machine identity", f"cannot prove uniqueness because {sibling} has invalid hostname/display_name types or values")
+            if existing_hostname == args.hostname:
+                return Issue("machine.hostname", f"{args.hostname!r} duplicates the technical name in {sibling}")
+            if comparison_key(existing_display) == comparison_key(args.display_name):
+                return Issue("machine.display_name", f"{args.display_name!r} duplicates the assigned name in {sibling}")
+
+        try:
+            with output.open("x", encoding="utf-8") as handle:
+                handle.write(render_profile(args))
+        except FileExistsError:
+            return Issue("output", f"refusing to overwrite {output}")
+    return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Manage agent-workstation-kit profiles.")
     parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
@@ -508,6 +855,7 @@ def main() -> int:
     init.add_argument("--context", choices=("work", "personal"), required=True)
     init.add_argument("--namespace", required=True)
     init.add_argument("--hostname", required=True)
+    init.add_argument("--display-name", help="human-friendly name; defaults to the technical hostname")
     init.add_argument("--platform", choices=("linux", "macos"), required=True)
     init.add_argument("--hardware-profile", default="generic")
     init.add_argument("--asset-tag", default="ask")
@@ -527,7 +875,7 @@ def main() -> int:
     run.add_argument(
         "--connection-context",
         choices=("local-console", "tailscale-ssh"),
-        help="required for remote-hardening apply; states how this shell reaches the host",
+        help="required for identity/remote-hardening apply; states how this shell reaches the host",
     )
     run.add_argument(
         "--ssh-source-ip",
@@ -536,24 +884,47 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.command == "init":
-        if args.output.exists():
-            print(f"ERROR output: refusing to overwrite {args.output}", file=sys.stderr)
+        if lock_error := fleet_lock_issue(args.fleet_root):
+            print(f"ERROR kit.lock: {lock_error}", file=sys.stderr)
+            return 2
+        output = resolve_profile(args.output, args.fleet_root)
+        if output.exists():
+            print(f"ERROR output: refusing to overwrite {output}", file=sys.stderr)
             return 2
         people = args.human or ["operator"]
         admins = args.admin or ["admin-01"]
         if len(admins) > len(people):
             print("ERROR accounts.admin_assignments: init requires at least one distinct human per admin account", file=sys.stderr)
             return 2
-        rendered = render_profile(args)
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(rendered, encoding="utf-8")
-        profile = load_profile(args.output)
+        display_name = args.display_name or args.hostname
+        if not valid_display_name(display_name):
+            print(
+                "ERROR machine.display_name: must be 1-64 trimmed ASCII letters, digits, single spaces, dots, underscores, or hyphens and start with a letter or digit",
+                file=sys.stderr,
+            )
+            return 2
+        args.display_name = display_name
+        scan_directory = (args.fleet_root / "machines") if args.fleet_root else output.parent
+        try:
+            allocation_issue = allocate_profile(args, output, scan_directory)
+        except OSError as exc:
+            print(f"ERROR allocation lock: {exc}", file=sys.stderr)
+            return 2
+        if allocation_issue:
+            print(f"ERROR {allocation_issue.path}: {allocation_issue.message}", file=sys.stderr)
+            return 2
+        try:
+            profile = load_profile(output)
+        except ValueError as exc:
+            output.unlink(missing_ok=True)
+            print(f"ERROR profile: {exc}", file=sys.stderr)
+            return 2
         issues = validate_profile(profile, ready=False)
         if issues:
-            args.output.unlink(missing_ok=True)
+            output.unlink(missing_ok=True)
             show_issues(issues)
             return 2
-        print(f"CREATED draft {args.output} ({profile['machine']['hostname']}, uuid={profile['machine']['uuid']})")
+        print(f"CREATED draft {output} ({profile['machine']['hostname']}, uuid={profile['machine']['uuid']})")
         print("NEXT resolve every 'ask', review, change state to approved, then validate --ready")
         return 0
 
@@ -584,18 +955,18 @@ def main() -> int:
     if profile["machine"]["platform"] != actual_platform():
         print(f"ERROR machine.platform: profile is {profile['machine']['platform']}, host is {actual_platform()}", file=sys.stderr)
         return 2
-    if args.phase == "remote-hardening" and args.apply and not args.confirm_recovery_tested:
-        print("ERROR remote-hardening: --apply also requires --confirm-recovery-tested", file=sys.stderr)
+    if args.phase in {"identity", "remote-hardening"} and args.apply and not args.confirm_recovery_tested:
+        print(f"ERROR {args.phase}: --apply also requires --confirm-recovery-tested", file=sys.stderr)
         return 2
-    if args.phase == "remote-hardening" and args.apply:
+    if args.phase in {"identity", "remote-hardening"} and args.apply:
         if not args.connection_context:
-            print("ERROR remote-hardening: --apply also requires --connection-context", file=sys.stderr)
+            print(f"ERROR {args.phase}: --apply also requires --connection-context", file=sys.stderr)
             return 2
         if args.connection_context == "tailscale-ssh" and not args.ssh_source_ip:
-            print("ERROR remote-hardening: tailscale-ssh also requires --ssh-source-ip", file=sys.stderr)
+            print(f"ERROR {args.phase}: tailscale-ssh also requires --ssh-source-ip", file=sys.stderr)
             return 2
         if args.connection_context == "local-console" and args.ssh_source_ip:
-            print("ERROR remote-hardening: local-console must not include --ssh-source-ip", file=sys.stderr)
+            print(f"ERROR {args.phase}: local-console must not include --ssh-source-ip", file=sys.stderr)
             return 2
     if args.phase in {"shell", "user-tooling"} and pwd.getpwuid(os.getuid()).pw_name != profile["accounts"]["agent"]:
         print(f"ERROR {args.phase}: run this phase as {profile['accounts']['agent']}, not root or a human account", file=sys.stderr)
@@ -613,7 +984,7 @@ def main() -> int:
         print("MANUAL phase: follow the applicable guide; no generic command will be executed.")
         return 0
     if args.phase == "audit":
-        failures = audit_declared_accounts(profile)
+        failures = audit_machine_identity(profile) + audit_declared_accounts(profile)
         child_env = os.environ.copy()
         child_env.pop("APPLY_CHANGES", None)
         result = subprocess.run(phase.command, check=False, env=child_env)

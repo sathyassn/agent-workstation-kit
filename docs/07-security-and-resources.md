@@ -17,6 +17,11 @@ Do not add the shared agent account to unrestricted `sudo` or the Docker group. 
 
 On Ubuntu, `harden-remote-access-linux.sh` is the enforceable baseline: OpenSSH is limited to the profile's complete named-user allowlist, direct SSH to `agent-NN` is denied, root/password/keyboard-interactive SSH is disabled, UFW defaults to deny inbound, and SSH/NoMachine are allowed only on `tailscale0`. Apply it only after named-user keys, Tailscale, and console recovery have been tested. Apply also requires `local-console` or a peer address captured before `sudo` under `tailscale-ssh`; the latter is verified by `tailscale whois`. Existing broader firewall rules cause the script to stop for human review.
 
+For `local-console`, the privileged scripts also walk the process ancestry and
+stop on SSH, Tailscale SSH, or Mosh ancestors. They fail closed when ancestry
+cannot be inspected. This check is independent of `SSH_CONNECTION`, which
+`sudo` may remove.
+
 ## Resource policy
 
 Start with observation. Measure idle OS use and realistic peak workloads before enforcing ceilings.

@@ -5,7 +5,7 @@ Complete this before running a mutating script, then record the decisions in the
 ## Required decisions
 
 - Deployment profile: work or personal.
-- Namespace, classed hostname, generated UUID, asset tag, and physical owner.
+- Namespace, classed hostname, fleet-unique display name, generated UUID, asset tag, and physical owner.
 - Ubuntu or macOS version supported by required applications.
 - Agent account (`agent-NN`), stable human handles, and assigned `admin-NN` accounts.
 - Named human accounts and separate administrator accounts.
@@ -14,7 +14,7 @@ Complete this before running a mutating script, then record the decisions in the
 - NoMachine license and trusted-user list.
 - Whether KVM is deferred for a supervised pilot; eventual model, network placement, MFA, and owner.
 - Disk encryption and reboot-unlock process.
-- GitLab, GitHub, model-provider, and secrets-provider ownership.
+- GitLab, GitHub, Atlassian, model-provider, and secrets-provider ownership.
 - Backup targets, retention, restore owner, and prohibited data.
 - Corporate endpoint, VPN, proxy, certificate, and compliance requirements.
 

@@ -1,5 +1,5 @@
-# Future organization-owned Apple-platform workstation example.
-schema_version = 3
+# Historical schema-2 fixture retained for migration compatibility tests.
+schema_version = 2
 profile = "work"
 state = "draft"
 
@@ -9,14 +9,13 @@ context = "work"
 ownership = "organization"
 
 [machine]
-hostname = "ac-mac-001"
-display_name = "Orchard"
-uuid = "33333333-3333-4333-8333-333333333333"
+hostname = "ac-ws-001"
+uuid = "11111111-1111-4111-8111-111111111111"
 asset_tag = "ask"
-platform = "macos"
-os_family = "macos"
-hardware_profile = "mac-mini-or-studio"
-role = "apple-agent-workstation"
+platform = "linux"
+os_family = "ubuntu"
+hardware_profile = "minisforum-ms-s1-max-64gb"
+role = "agent-workstation"
 
 [accounts]
 agent = "agent-01"
@@ -46,16 +45,8 @@ antidote_ref = "ask"
 [source_control]
 gitlab_host = "gitlab.com"
 gitlab_identity = "service-account"
-gitlab_principal = "ac-agent-dev"
 github_host = "github.com"
 github_identity = "app"
-github_principal = "ac-agent-dev"
-
-[collaboration]
-atlassian_site = "ask"
-atlassian_identity = "ask"
-atlassian_principal = "ask" # Prefer acagentdev when enabled; Atlassian allows 6-30 alphanumeric characters.
-atlassian_mcp_auth = "ask"
 
 [model_auth]
 codex = "api-workload"

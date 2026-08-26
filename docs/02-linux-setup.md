@@ -51,7 +51,36 @@ sudo ./scripts/bootstrap-linux.sh --apply
 
 The base script installs stable OS packages and security/diagnostic prerequisites. It deliberately does not start SSH, authenticate external services, or install NoMachine. On MS-S1 Max hardware, complete the separate [RTL8127/Secure Boot runbook](hardware/minisforum-ms-s1-max.md).
 
-## Phase 3: accounts and access
+## Phase 3: machine identity
+
+Preview and then apply the profile's `identity` phase from the root-owned toolkit
+snapshot. It sets the stable technical hostname, the human-friendly pretty name,
+and `/etc/agent-workstation-kit/identity.toml`. Confirm the audit can read the
+record and that it exactly matches the approved private profile.
+
+Before apply, inspect `/etc/hosts`. If it contains the current short hostname,
+replace only that existing alias with the approved new technical hostname in a
+separately reviewed privileged change. The identity script fails closed while an
+old mapping remains; it does not rewrite an organization-managed hosts file.
+Keep console or KVM access open, then verify `hostnamectl`, local hostname
+resolution, `sudo`, and the identity audit before continuing.
+
+Apply only after recovery is open and tested:
+
+```bash
+sudo ./scripts/fleetctl.py run /path/to/ac-ws-001.toml identity \
+  --apply --confirm-recovery-tested --connection-context local-console
+```
+
+When applying through a named-user Tailscale SSH session, use
+`--connection-context tailscale-ssh --ssh-source-ip "$ssh_peer"` as shown for
+remote hardening below. The explicit context prevents a privileged identity
+change from being applied without recording a tested recovery path. The
+local-console form checks both the SSH environment and the full process ancestry
+for SSH, Tailscale SSH, and Mosh; it fails closed if ancestry cannot be inspected,
+including after `sudo` strips the SSH environment.
+
+## Phase 4: accounts and access
 
 Run the account script with explicit names, first without and then with `--apply`. Set passwords or SSH keys through the organization-approved process; do not put them on the command line or in a profile. The script never changes an existing password and leaves a newly created account without one.
 
@@ -76,7 +105,9 @@ remote form verifies the supplied peer with `tailscale whois`; a missing
 context fails closed even when `sudo` strips SSH environment variables. The
 phase enforces key-only SSH, denies direct SSH for `agent-NN`, restricts SSH
 and NoMachine to `tailscale0`, and starts SSH only after the firewall is
-active. Keep recovery open until a second named-user SSH session succeeds.
+active. The local-console form independently checks process ancestry and fails
+closed if it cannot prove the absence of a remote-login ancestor. Keep recovery
+open until a second named-user SSH session succeeds.
 
 Set a long random local password for `agent-NN` using an interactive prompt and store it in the approved vault; it is for graphical login/unlock and recovery, not SSH. Install NoMachine Enterprise Desktop from a verified package, create the agent-owned physical desktop, and authorize named users without sharing that password. Choose a lock mode and test identity, reconnect, observer/controller, clipboard, and file-transfer behavior.
 
@@ -88,11 +119,16 @@ another account or node blindly.
 
 For vendor `.deb` files such as NoMachine, Chrome, VS Code, the ChatGPT Linux preview, or an approved Ghostty build, use `scripts/install-local-deb-linux.sh`. Preview the package metadata/checksum first and require an independently obtained expected SHA-256 for apply. Do not pipe community installers directly into a shell on work nodes.
 
-## Phase 4: user-space tooling and agents
+## Phase 5: user-space tooling and agents
 
 Log in as the agent account through the graphical workspace or controlled local setup session. Install version-managed runtimes, `gh`, `glab`, Codex, Claude Code, and Grok Build. Authentication is a separate human-approved phase.
 
-## Phase 5: controls and validation
+Authenticate GitLab, GitHub, and Atlassian only after following the separate
+[provider identity ceremony](06-agent-and-source-control-identities.md). Provider
+admins create identities from their own trusted machines; only the scoped
+runtime credential is brokered to `agent-NN`.
+
+## Phase 6: controls and validation
 
 Run the profile `workloads` phase as a named administrator. It installs rootless Podman with Docker CLI compatibility, Chromium, Xvfb, and supporting packages without adding `agent-NN` to the Docker group. Pin Playwright in each project and install that project's matching browser build. Install Grok Build from xAI's reviewed installer, then record its version.
 
