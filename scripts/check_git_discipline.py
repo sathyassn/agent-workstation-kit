@@ -517,7 +517,11 @@ def build_parser() -> argparse.ArgumentParser:
     commit_msg = subparsers.add_parser("commit-msg", help="validate a message file")
     commit_msg.add_argument("message_file")
     subparsers.add_parser("pre-merge-commit", help="block merges on protected branches")
-    subparsers.add_parser("pre-push", help="validate ref updates and run the full gate")
+    pre_push = subparsers.add_parser(
+        "pre-push", help="validate ref updates and run the full gate"
+    )
+    pre_push.add_argument("remote_name", nargs="?")
+    pre_push.add_argument("remote_location", nargs="?")
     reference = subparsers.add_parser(
         "reference-transaction", help="protect local branch refs"
     )

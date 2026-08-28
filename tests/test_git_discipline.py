@@ -99,6 +99,23 @@ class GitDisciplineTests(unittest.TestCase):
         self.assertTrue(discipline._is_zero_oid("0" * 64))
         self.assertFalse(discipline._is_zero_oid("1" + "0" * 39))
 
+    def test_pre_push_cli_accepts_git_remote_arguments(self) -> None:
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "pre-push",
+                "origin",
+                "https://github.com/example/project.git",
+            ],
+            cwd=ROOT,
+            input="",
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
 
 class GitDisciplineIntegrationTests(unittest.TestCase):
     def setUp(self) -> None:
