@@ -42,6 +42,9 @@ class GitDisciplineTests(unittest.TestCase):
         discipline.validate_branch(
             "dependabot/github_actions/actions/checkout-7.0.1", self.policy
         )
+        discipline.validate_branch(
+            "dependabot/npm_and_yarn/types/Node+DOM-1.0", self.policy
+        )
         with self.assertRaisesRegex(discipline.DisciplineError, "protected branch"):
             discipline.validate_branch("main", self.policy)
         with self.assertRaisesRegex(discipline.DisciplineError, "must start"):
@@ -244,6 +247,38 @@ class GitDisciplineIntegrationTests(unittest.TestCase):
             discipline.command_ci(arguments, self.policy)
             arguments.actor = "untrusted-user"
             with self.assertRaisesRegex(discipline.DisciplineError, "Summary"):
+                discipline.command_ci(arguments, self.policy)
+
+    def test_dependabot_generated_commit_body_is_bot_only(self) -> None:
+        self._git("switch", "-q", "-c", "build/dependabot-commit-fixture")
+        head = self._commit(
+            "dependency.txt",
+            "updated\n",
+            (
+                "build(deps): bump fixture from 1.0 to 2.0\n\n"
+                "Bumps [fixture](https://example.invalid) from 1.0 to 2.0.\n"
+                "- Release notes: https://example.invalid/releases\n\n"
+                "---\nupdated-dependencies:\n"
+                "- dependency-name: fixture\n"
+                "  dependency-version: 2.0\n...\n\n"
+                "Signed-off-by: dependabot[bot] <support@github.com>"
+            ),
+        )
+        arguments = Namespace(
+            base=self.base,
+            head=head,
+            branch="dependabot/npm_and_yarn/types/Node+DOM-2.0",
+            actor="dependabot[bot]",
+            pr_body_env="PR_BODY",
+        )
+        body = (
+            "## Summary\nFixture.\n\n## Changes\n- Update a dependency.\n\n"
+            "## Testing\n- `make ci-check` passed.\n"
+        )
+        with mock.patch.dict(os.environ, {"PR_BODY": body}, clear=False):
+            discipline.command_ci(arguments, self.policy)
+            arguments.actor = "untrusted-user"
+            with self.assertRaisesRegex(discipline.DisciplineError, "only short"):
                 discipline.command_ci(arguments, self.policy)
 
     def test_pre_push_runs_gate_and_rejects_non_fast_forward(self) -> None:

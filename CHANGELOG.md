@@ -9,8 +9,8 @@ between minor releases while live-machine evidence is incorporated.
   macOS identity/runtime consistency, remote-access hardening, agent session
   delegation, pilot validation, public CI and contributor/security guidance.
 - Added regression coverage for the corrected first-use and policy paths.
-- Allowed GitHub-authenticated Dependabot updates through the custom branch and
-  generated-body policy while retaining commit, secret, and test enforcement.
+- Allowed GitHub-authenticated Dependabot branch names and generated PR/commit
+  bodies while retaining conventional subjects, secret scans, and test gates.
 
 ## 0.2.0-rc.4 — Unreleased
 

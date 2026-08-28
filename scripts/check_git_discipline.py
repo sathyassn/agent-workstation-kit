@@ -179,9 +179,10 @@ def validate_branch(
     remainder = branch.split("/", 1)[1]
     if branch.startswith("dependabot/"):
         if (
-            re.fullmatch(r"[a-z0-9][a-z0-9._/-]*", remainder)
+            re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+@~/-]*", remainder)
             and ".." not in remainder
             and "//" not in remainder
+            and "@{" not in remainder
         ):
             return
         raise DisciplineError("Dependabot branch description is invalid")
@@ -193,7 +194,9 @@ def _visible_message_lines(message: str) -> list[str]:
     return [line.rstrip() for line in message.splitlines() if not line.startswith("#")]
 
 
-def validate_message(message: str, policy: Policy) -> None:
+def validate_message(
+    message: str, policy: Policy, *, allow_generated_body: bool = False
+) -> None:
     """Validate one non-merge commit message."""
     lines = _visible_message_lines(message)
     while lines and not lines[-1]:
@@ -225,6 +228,13 @@ def validate_message(message: str, policy: Policy) -> None:
         raise DisciplineError("AI attribution is not allowed in commit messages")
     if EMOJI.search(visible_message):
         raise DisciplineError("emoji is not allowed in commit messages")
+
+    if allow_generated_body:
+        if match.group("breaking") and "BREAKING CHANGE:" not in visible_message:
+            raise DisciplineError(
+                "a breaking subject requires a BREAKING CHANGE: footer"
+            )
+        return
 
     body = lines[1:]
     while body and not body[0]:
@@ -354,7 +364,13 @@ def _is_docs_only(paths: list[str]) -> bool:
     )
 
 
-def validate_commit_range(base: str, head: str, policy: Policy) -> None:
+def validate_commit_range(
+    base: str,
+    head: str,
+    policy: Policy,
+    *,
+    allow_generated_body: bool = False,
+) -> None:
     """Validate every non-merge commit in an explicit, bounded range."""
     commits = [
         item
@@ -368,7 +384,9 @@ def validate_commit_range(base: str, head: str, policy: Policy) -> None:
     for commit in commits:
         message = git("show", "-s", "--format=%B", commit)
         try:
-            validate_message(message, policy)
+            validate_message(
+                message, policy, allow_generated_body=allow_generated_body
+            )
         except DisciplineError as exc:
             short = git("rev-parse", "--short", commit).strip()
             raise DisciplineError(f"commit {short}: {exc}") from exc
@@ -517,7 +535,12 @@ def command_ci(args: argparse.Namespace, policy: Policy) -> None:
         "dependabot/"
     )
     validate_branch(args.branch, policy, allow_protected=is_fork)
-    validate_commit_range(args.base, args.head, policy)
+    validate_commit_range(
+        args.base,
+        args.head,
+        policy,
+        allow_generated_body=is_dependabot,
+    )
     body = os.environ.get(args.pr_body_env)
     if body is None:
         raise DisciplineError(f"environment variable is missing: {args.pr_body_env}")
