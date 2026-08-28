@@ -77,7 +77,7 @@ It is not a fleet template until the evidence below is complete.
 
 ## Acceptance and capacity baseline
 
-- [ ] Run the complete acceptance list in `docs/08-validation-and-operations.md`.
+- [ ] Run the complete acceptance list in `docs/09-validation-and-operations.md`.
 - [ ] Apply remote hardening twice and confirm the second run is a no-op. Keep
       KVM access until a second named-user SSH session succeeds through
       Tailscale.

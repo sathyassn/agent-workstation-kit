@@ -1,6 +1,6 @@
 # Security and resource controls
 
-[Previous: provider identities](06-agent-and-source-control-identities.md) · [Documentation home](README.md) · [Next: validation](08-validation-and-operations.md)
+[Previous: provider identities](06-agent-and-source-control-identities.md) · [Documentation home](README.md) · [Next: remote access](08-network-remote-access-and-files.md)
 
 ## Security baseline
 
@@ -52,7 +52,7 @@ and backup/restore plan—not a generic destructive uninstall command.
 Always pause before:
 
 - `sudo` or administrator authentication.
-- Account, group, login, firewall, SSH, VPN, RDP, KVM, encryption, or boot changes.
+- Account, group, login, firewall, SSH, VPN, remote-desktop, KVM, encryption, or boot changes.
 - Installing kernel modules, system extensions, MDM profiles, or endpoint software.
 - Creating or granting vendor identities, tokens, OAuth scopes, or repository roles.
 - Deleting data, pruning containers, removing caches outside declared paths, or rotating credentials.

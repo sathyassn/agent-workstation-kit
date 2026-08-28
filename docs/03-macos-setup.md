@@ -167,7 +167,7 @@ Requirements:
 
 ## Phase 5: network and remote access
 
-Follow the [cross-platform access matrix](09-network-remote-access-and-files.md):
+Follow the [cross-platform access matrix](08-network-remote-access-and-files.md):
 
 1. Install Tailscale using the approved macOS distribution path.
 2. Enroll the target as a tagged non-human node; each operator uses an individual

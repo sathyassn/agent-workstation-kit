@@ -42,7 +42,8 @@ contains serial numbers and must not be committed to the public toolkit.
 ## Ubuntu and 10GbE
 
 Install Ubuntu 24.04.4 LTS using Wi-Fi, a USB Ethernet adapter, or local media.
-The RTL8127 may require Minisforum's out-of-tree DKMS driver. Preview:
+The RTL8127 may require Minisforum's out-of-tree Dynamic Kernel Module Support
+(DKMS) driver. Preview:
 
 ```bash
 ./scripts/install-ms-s1-r8127-dkms.sh
@@ -57,7 +58,8 @@ Recheck that pin before a later rollout. After explicit
 approval, run it with `sudo ... --apply` from an alternate working connection.
 
 Keep Secure Boot enabled. Ubuntu can sign DKMS modules with a machine-specific
-MOK. The script explicitly tests whether that key is enrolled and stops with an
+Machine Owner Key (MOK). The script explicitly tests whether that key is
+enrolled and stops with an
 interactive `mokutil --import`/console-reboot gate if it is not. The setup agent
 must pause.
 Do not work around a failure by disabling Secure Boot or blindly blacklisting a

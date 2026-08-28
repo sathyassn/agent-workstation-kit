@@ -16,6 +16,7 @@ FORBIDDEN_NAMES = {".env", "id_rsa", "id_ed25519", "credentials.json", "auth.jso
 PLACEHOLDER = re.compile(r"\b(TODO|FIXME|CHANGEME)\b")
 SECRET_LIKE = re.compile(r"(?:AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{30,}|glpat-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9_-]{24,})")
 PERSONAL_PATH = re.compile(r"/(?:Users|home)/[^/\s]+/")
+BARE_KVM_MODEL = re.compile(r"(?<!GL-)\bRM(?:1|1PE|4PE)\b")
 HOSTNAME_EXAMPLE = re.compile(
     r"\b([a-z0-9]{2,8})-(?:ws|mac|hv|vws|nas|mgmt|srv)-[0-9]{3}\b",
     re.IGNORECASE,
@@ -66,6 +67,10 @@ def main() -> int:
                 f"non-neutral hostname namespace(s) in {path.relative_to(ROOT)}: "
                 + ", ".join(sorted(non_neutral))
             )
+        if path.suffix == ".md" and BARE_KVM_MODEL.search(content):
+            failures.append(
+                f"bare remote-KVM model shorthand in {path.relative_to(ROOT)}"
+            )
         if path.suffix != ".md":
             continue
         text = content
@@ -96,6 +101,7 @@ def main() -> int:
         *ROOT.glob("scripts/*.sh"),
         *ROOT.glob("scripts/*.py"),
         *ROOT.glob("agentctl/*"),
+        *ROOT.glob(".codeflow/git-hooks/*"),
     ]
     for path in required_executables:
         if path.is_file() and not path.stat().st_mode & 0o111:
@@ -117,7 +123,9 @@ def main() -> int:
     docs_home_path = ROOT / "docs/README.md"
     docs_home = docs_home_path.read_text(encoding="utf-8") if docs_home_path.is_file() else ""
     if not docs_home:
-        failures.append("documentation map is missing or empty: docs/README.md")
+        failures.append("documentation home is missing or empty: docs/README.md")
+    elif "## One authoritative page per topic" not in docs_home:
+        failures.append("documentation home has no authoritative topic index")
     for document in sorted((ROOT / "docs").rglob("*.md")):
         if document == ROOT / "docs/README.md":
             continue
@@ -126,6 +134,37 @@ def main() -> int:
             failures.append(f"documentation map does not link: docs/{relative}")
         if not DOCS_HOME_LINK.search(document.read_text(encoding="utf-8")):
             failures.append(f"documentation page has no home navigation: docs/{relative}")
+
+    reviews = ROOT / "docs/reviews"
+    if reviews.is_dir() and any(reviews.glob("*.md")):
+        failures.append("historical review transcripts must not be user documentation")
+
+    fleet_scratch = ROOT / "config/fleet"
+    if fleet_scratch.is_dir() and any(fleet_scratch.rglob("*")):
+        failures.append(
+            "config/fleet duplicates the separate private-fleet repository boundary"
+        )
+
+    for required in (
+        ".codeflow/policy.json",
+        ".codeflow/git-hooks/pre-commit",
+        ".codeflow/git-hooks/commit-msg",
+        ".codeflow/git-hooks/pre-push",
+        ".codeflow/git-hooks/pre-merge-commit",
+        ".codeflow/git-hooks/reference-transaction",
+        "scripts/check_git_discipline.py",
+    ):
+        if not (ROOT / required).is_file():
+            failures.append(f"Codeflow discipline file is missing: {required}")
+
+    workflow = ROOT / ".github/workflows/ci.yml"
+    workflow_text = workflow.read_text(encoding="utf-8") if workflow.is_file() else ""
+    if "run: make ci-check" not in workflow_text:
+        failures.append("hosted CI has no independent make ci-check gate")
+    if "sathyassn/codeflow" in workflow_text:
+        failures.append("hosted CI depends on a private Codeflow release")
+    if "./gitleaks git" not in workflow_text:
+        failures.append("hosted secret scan does not use the supported Gitleaks git command")
 
     if failures:
         print("Repository checks failed:")

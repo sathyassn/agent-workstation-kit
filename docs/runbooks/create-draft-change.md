@@ -1,6 +1,6 @@
 # Create a draft PR or MR as the agent identity
 
-[Documentation home](../README.md) · [Provider identities](../06-agent-and-source-control-identities.md) · [Validation](../08-validation-and-operations.md)
+[Documentation home](../README.md) · [Provider identities](../06-agent-and-source-control-identities.md) · [Validation](../09-validation-and-operations.md)
 
 Use a disposable repository or approved branch for the first test. Never target a protected branch directly.
 

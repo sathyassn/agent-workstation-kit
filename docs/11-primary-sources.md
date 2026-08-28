@@ -1,12 +1,15 @@
 # Primary source register
 
-[Previous: responsibility matrix](10-human-script-agent-matrix.md) · [Documentation home](README.md) · [Next: fleet rollout](12-fleet-rollout-and-change-management.md)
+[Documentation home](README.md) · [Topic ownership](README.md#one-authoritative-page-per-topic)
 
 Recheck these before a fleet release because installers, supported OS versions,
-pricing, authentication, and product maturity change. Provider identity and MCP
+pricing, authentication, and product maturity change. Provider identity and
+Model Context Protocol (MCP)
 claims in release candidate 0.2.0-rc.2 were last checked on 2026-08-25. The
 Codex CLI installation and authentication path added in 0.2.0-rc.3 was checked
 against the official OpenAI documentation on 2026-08-27.
+The GL.iNet remote-KVM product names and guides used in release candidate
+0.2.0-rc.4 were checked on 2026-08-28.
 
 ## Agents
 
@@ -58,7 +61,10 @@ against the official OpenAI documentation on 2026-08-27.
 - [Ubuntu Secure Boot and DKMS/MOK signing](https://documentation.ubuntu.com/security/docs/security-features/platform-protections/secure-boot/)
 - [Minisforum MS-S1 Max Canadian product](https://ca.minisforum.com/products/minisforum-ms-s1-max-64gb)
 - [Minisforum RTL8127 DKMS source](https://github.com/minisforum-repo/r8127-dkms)
-- [GL.iNet Comet X guide](https://docs.gl-inet.com/kvm/en/user_guide/gl-rm4pe/console_guide/)
+- [GL.iNet Comet X (`GL-RM4PE`) product page](https://www.gl-inet.com/products/gl-rm4pe/)
+- [GL.iNet Comet X (`GL-RM4PE`) console guide](https://docs.gl-inet.com/kvm/en/user_guide/gl-rm4pe/console_guide/)
+- [GL.iNet Comet PoE (`GL-RM1PE`) product page](https://www.gl-inet.com/products/gl-rm1pe/)
+- [GL.iNet Comet PoE (`GL-RM1PE`) user guide](https://docs.gl-inet.com/kvm/en/user_guide/gl-rm1pe/)
 - [mise installation](https://mise.jdx.dev/installing-mise.html)
 - [mise lockfiles](https://mise.jdx.dev/dev-tools/mise-lock.html)
 - [Herdr installation](https://herdr.dev/docs/install/)

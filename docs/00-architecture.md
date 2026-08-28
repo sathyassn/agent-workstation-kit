@@ -13,8 +13,12 @@
 
 ## Identity layers
 
+An identity provider (IdP) is the organization or service that authenticates a
+person. A remote keyboard-video-mouse (KVM) device is the recovery console that
+does not depend on the target operating system.
+
 ```text
-Person / IdP identity                  alice
+Person / identity-provider account     alice
        |
        +-- daily Linux account         alice             (no sudo)
        +-- assigned admin account      admin-01         (sudo; admin work only)

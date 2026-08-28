@@ -1,6 +1,6 @@
 # Validation and operations
 
-[Previous: security and resources](07-security-and-resources.md) · [Documentation home](README.md) · [Next: network and remote access](09-network-remote-access-and-files.md)
+[Previous: remote access](08-network-remote-access-and-files.md) · [Documentation home](README.md) · [Next: fleet rollout](12-fleet-rollout-and-change-management.md)
 
 ## Acceptance tests
 

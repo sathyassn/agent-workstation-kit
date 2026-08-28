@@ -44,6 +44,16 @@ class DocumentationCheckTests(unittest.TestCase):
             ),
         )
 
+    def test_kvm_model_codes_require_the_full_gl_model(self) -> None:
+        self.assertIsNotNone(
+            check_repository.BARE_KVM_MODEL.search("buy RM1PE later")
+        )
+        self.assertIsNone(
+            check_repository.BARE_KVM_MODEL.search(
+                "GL.iNet Comet PoE (GL-RM1PE)"
+            )
+        )
+
     def test_privileged_linux_examples_use_staged_inputs(self) -> None:
         linux_guide = (ROOT / "docs/02-linux-setup.md").read_text(encoding="utf-8")
         self.assertNotIn("/path/to/ac-ws-001.toml", linux_guide)
@@ -83,7 +93,7 @@ class DocumentationCheckTests(unittest.TestCase):
         staging = (
             ROOT / "docs/runbooks/stage-approved-macos-snapshots.md"
         ).read_text(encoding="utf-8")
-        remote = (ROOT / "docs/09-network-remote-access-and-files.md").read_text(
+        remote = (ROOT / "docs/08-network-remote-access-and-files.md").read_text(
             encoding="utf-8"
         )
         self.assertIn("scripts/start-macos-pilot.py", day_zero)

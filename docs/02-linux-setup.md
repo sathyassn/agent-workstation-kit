@@ -164,4 +164,4 @@ runtime credential is brokered to `agent-NN`.
 
 Run the profile `workloads` phase as a named administrator. It installs rootless Podman with Docker CLI compatibility, Chromium, Xvfb, and supporting packages without adding `agent-NN` to the Docker group. Pin Playwright in each project and install that project's matching browser build. Install Grok Build from xAI's reviewed installer, then record its version.
 
-Apply the balanced resource policy only after measuring the node. Run browser, container, build, multi-agent, reconnect, reboot, backup, and restore tests described in [validation and operations](08-validation-and-operations.md).
+Apply the balanced resource policy only after measuring the node. Run browser, container, build, multi-agent, reconnect, reboot, backup, and restore tests described in [validation and operations](09-validation-and-operations.md).

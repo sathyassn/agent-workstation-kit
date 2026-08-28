@@ -12,7 +12,7 @@ Complete this before running a mutating script, then record the decisions in the
 - Agent account (`agent-NN`), stable human handles, and assigned `admin-NN` accounts.
 - Named human accounts and separate administrator accounts.
 - Agent operators and view-only users.
-- Tailscale tailnet, ACL tags, device approval, and exit-node policy.
+- Tailscale tailnet, access-control tags, device approval, and exit-node policy.
 - NoMachine license and trusted-user list.
 - Whether KVM is deferred for a supervised pilot; eventual model, network placement, MFA, and owner.
 - Disk encryption and reboot-unlock process.

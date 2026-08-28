@@ -13,6 +13,12 @@ between minor releases while live-machine evidence is incorporated.
   added release checks that reject non-neutral concrete hostname examples.
 - Hardened macOS snapshot staging, readiness runtime/profile checks and
   privileged trust boundaries after interactive Claude and Grok reviews.
+- Reworked the documentation into one explicit entry path and one authoritative
+  page per topic; removed historical model-review transcripts from user docs and
+  fully introduced the selected remote KVM products.
+- Adopted Codeflow's Git discipline as a self-contained branch, commit,
+  pull-request, protected-ref, secret, and pre-push policy with local hooks and
+  hosted enforcement; the public toolkit has no private Codeflow dependency.
 
 ## 0.2.0-rc.3 — Unreleased
 

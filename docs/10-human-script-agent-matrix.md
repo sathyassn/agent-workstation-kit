@@ -1,6 +1,6 @@
 # Human, script, and setup-agent responsibilities
 
-[Previous: network and remote access](09-network-remote-access-and-files.md) · [Documentation home](README.md) · [Next: sources](11-primary-sources.md)
+[Documentation home](README.md) · [New-machine sequence](README.md#new-machine-sequence)
 
 | Phase | Human | Script | Setup agent |
 |---|---|---|---|
@@ -13,7 +13,7 @@
 | Base packages | Approves `sudo` | `bootstrap-*.sh` | Previews, explains, requests approval, validates |
 | Machine identity | Approves technical/display names and local record | `install-machine-identity.py` | Compares profile, OS names, ownership, and contents |
 | Accounts | Confirms names/roles and approves admin change | `setup-accounts-linux.sh` or managed macOS process | Builds exact plan and checks least privilege |
-| Network/RDP/KVM | Completes MFA, vendor login, physical cabling | Vendor/managed installers | Guides and tests without exposing credentials |
+| Network/remote desktop/KVM | Completes MFA, vendor login, physical cabling | Vendor/managed installers | Guides and tests without exposing credentials |
 | `agentctl` | Approves sudoers delegation | `install-agentctl-linux.sh` | Previews, applies after approval, tests roles |
 | User tooling | Selects optional tools | `install-user-tooling.sh`, `install-shell-baseline.sh` | Asks once, installs selection, preserves conflicts |
 | Agent CLIs | Selects billing/auth model | User-space installer | Installs binaries and runs non-secret checks |

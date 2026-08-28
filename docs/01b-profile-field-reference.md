@@ -42,7 +42,7 @@ Start with `fleetctl init` or an example; do not invent a profile from memory.
 | `collaboration.atlassian_mcp_auth` | `ask`, `service-account-api-key`, `oauth-2.1`, `none` | `ask` is draft-only; non-interactive versus interactive MCP path. | Manual MCP authentication test |
 | `model_auth.*` | `api-workload`, `enterprise-federated`, `named-human`, `none` | Shared work homes cannot use named-human auth. | Manual provider evidence |
 | `security.*_required` | `true` | Disk encryption and Secure Boot baseline. | Live audit + recovery test |
-| `security.endpoint_management` | `mdm`, `edr`, `mdm-and-edr`, `not-required` | Final desired endpoint state. | Manual MDM/EDR evidence |
+| `security.endpoint_management` | `mdm`, `edr`, `mdm-and-edr`, `not-required` | Final mobile-device-management (MDM) and endpoint-detection-and-response (EDR) state. | Manual MDM/EDR evidence |
 | `resources.policy` | `measured-balanced` | Soft pressure plus emergency ceiling. | Live audit/load test |
 | `resources.os_memory_reserve_gib` | `8` | Headroom used to calculate agent thresholds. | Live policy/load test |
 | `resources.os_cpu_reserve_threads` | `2` | Capacity-planning headroom; not hard core pinning. | Capacity record; not enforced isolation |

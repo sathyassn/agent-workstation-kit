@@ -1,4 +1,4 @@
-# Final workstation stack
+# Selected workstation stack
 
 [Previous: architecture](00-architecture.md) · [Documentation home](README.md) · [Next: planning](01-planning.md)
 
@@ -14,7 +14,7 @@ and organization policy at purchase time.
 | Paid SaaS alternative | Splashtop Remote Access Pro | TeamViewer business | Polished team/mobile UX; introduces vendor cloud and per-user cost. |
 | Terminal/session | OpenSSH + `agentctl` + tmux | Eternal Terminal/Mosh where policy allows | Auditable human entry and durable agent sessions. Herdr remains a user-facing workspace. |
 | Files | Git + Taildrop/SFTP | scoped Syncthing or SMB over Tailscale | Avoids synchronizing credentials or entire homes. |
-| Recovery | Comet X for four hosts, later | Comet PoE RM1PE per host; JetKVM alternative | BIOS/boot recovery; separate from daily desktop. |
+| Recovery | GL.iNet Comet X (`GL-RM4PE`) for up to four co-located hosts | GL.iNet Comet PoE (`GL-RM1PE`) for one host; JetKVM alternative | Out-of-band firmware, boot, unlock, and recovery access; separate from the daily desktop. |
 | Shell | Zsh + Antidote | Oh My Zsh | Antidote is a small plugin manager; OMZ is a larger framework/theme bundle. |
 | Terminal/editor | Ghostty + VS Code | platform terminal; Zed optional | Same core editor on Linux/macOS; no need to mandate Zed. |
 | Runtime versions | mise | asdf | Fast multi-runtime manager with project config/lock support. |
@@ -40,19 +40,27 @@ does not require Workstation; the server edition determines host capability,
 not whether an iPad can connect.
 
 RustDesk Pro is a credible runner-up when open-source/self-hosted control and a
-central address book/2FA/audit/ACL system matter more than NoMachine's physical
+central address book, two-factor authentication, audit, and access-control
+system matter more than NoMachine's physical
 desktop model. Its Individual self-hosted plan was listed at USD 11.88/month and
 Basic at USD 23.88/month when checked; validate concurrent shared-session and
 Linux display behavior in a pilot. [RustDesk pricing](https://rustdesk.com/pricing/).
 
-## Remote desktop versus KVM
+## Remote desktop versus remote KVM
+
+A keyboard-video-mouse (KVM) device provides out-of-band console access even
+when the workstation operating system or remote-desktop service is unavailable.
+It complements NoMachine; it does not replace the daily desktop connection.
 
 ```text
 NoMachine: OS is healthy --> high-quality daily GUI, clipboard, files, audio
 KVM:       OS may be down --> firmware, boot menu, encryption unlock, recovery
 ```
 
-Keep both eventually. Do not buy RM1 only as a temporary test while the machine
-is physically beside you. Buy RM1PE now only if office/unattended placement is
-imminent or it will remain a useful spare. Comet X can connect four hosts but
-controls one at a time; protect it as a high-privilege shared device.
+Defer a hardware KVM while a pilot remains physically supervised. Before
+unattended placement, choose the **GL.iNet Comet X (`GL-RM4PE`)** when up to four
+co-located hosts should share one device, or the single-host **GL.iNet Comet PoE
+(`GL-RM1PE`)** as a fallback or spare. The original single-host GL.iNet Comet
+(`GL-RM1`) is not the recommendation in this kit. Comet X controls only one
+target at a time and is a shared failure domain. Deployment and access rules
+belong in [Network, remote access, and files](08-network-remote-access-and-files.md).

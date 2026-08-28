@@ -14,6 +14,7 @@ are complete.
 - [Start a new machine](#start-a-new-machine)
 - [Normal profile workflow](#normal-profile-workflow)
 - [Documentation](#documentation)
+- [Repository layout](#repository-layout)
 - [Safety and quality](#safety-and-quality)
 - [License and independence](#license-and-independence)
 
@@ -47,6 +48,10 @@ operator on macOS / Windows / Linux / iPadOS / mobile
       +-- Tailscale + KVM --> firmware / boot / recovery (when deployed)
 ```
 
+Here, a remote keyboard-video-mouse (KVM) device is the out-of-band recovery
+console. It remains useful when the target operating system or NoMachine is
+unavailable.
+
 ```text
 agent-workstation-kit                 private workstation-fleet
 generic code and documentation       real hosts and approved desired state
@@ -63,19 +68,25 @@ must diverge; otherwise pin and review upstream releases.
 
 ## Start a new machine
 
-For a fresh Ubuntu machine, follow one entry point:
+For the first Ubuntu machine or a newly introduced hardware model:
 
-1. Open [Day-zero Linux startup and agent handoff](docs/runbooks/day-zero-linux.md).
-2. Complete the linked hardware and first-pilot evidence for the machine model.
-3. Hand control to the setup agent only at the readiness gate in that guide.
-4. Finish live-host validation before treating the node as operational.
+1. Open the [first Linux pilot checklist](docs/runbooks/first-linux-pilot.md)
+   before power-on.
+2. Use [day-zero Linux](docs/runbooks/day-zero-linux.md) as the controlling
+   procedure after its **Before power-on** items are complete.
+3. Hand control to the setup agent only at the readiness gate in day zero.
+4. Finish the pilot evidence before treating the node or model as approved.
+
+For a later host on already approved hardware, start directly with day-zero
+Linux and record the host-specific acceptance evidence it links.
 
 For a Mac mini or Mac Studio, start with
 [Day-zero macOS startup and agent handoff](docs/runbooks/day-zero-macos.md), then
 continue through the [macOS setup path](docs/03-macos-setup.md).
 
 ```text
-physical setup -> OS -> bootstrap account -> toolkit + private fleet
+platform + recovery preparation -> physical setup -> OS -> bootstrap account
+       -> toolkit + private fleet
        -> readiness check -> supervised setup agent -> operational agent-NN
        -> burn-in -> approve or remediate
 ```
@@ -122,7 +133,7 @@ or untracked fleet input.
 
 ## Documentation
 
-Use the [documentation map](docs/README.md) as the complete, ordered table of
+Use the [documentation home](docs/README.md) as the complete, ordered table of
 contents. Key entry points are:
 
 | Need | Guide |
@@ -135,7 +146,29 @@ contents. Key entry points are:
 | Create machine input | [Profile onboarding](docs/01a-onboarding-profile.md) |
 | Accept the MS-S1 Max | [Hardware runbook](docs/hardware/minisforum-ms-s1-max.md) |
 | Prove the first pilot | [First Linux pilot](docs/runbooks/first-linux-pilot.md) |
-| Operate or expand the fleet | [Validation](docs/08-validation-and-operations.md) and [rollout](docs/12-fleet-rollout-and-change-management.md) |
+| Operate or expand the fleet | [Validation](docs/09-validation-and-operations.md) and [rollout](docs/12-fleet-rollout-and-change-management.md) |
+
+The documentation home identifies the one authoritative page for each topic.
+Day-zero runbooks control new-machine sequencing; topic pages provide decisions
+and reference detail rather than competing setup paths.
+
+## Repository layout
+
+| Path | Purpose |
+|---|---|
+| [`docs/`](docs/README.md) | Ordered entry points, operating guides, runbooks, decisions, and vendor sources |
+| [`config/profiles/`](config/profiles) | Generic, non-secret example machine profiles |
+| [`templates/private-fleet/`](templates/private-fleet) | Starting structure for a separate private inventory repository |
+| [`scripts/`](scripts) | Preview-first setup, validation, identity, security, and maintenance automation |
+| [`agentctl/`](agentctl) | Delegated shared-agent sessions with named-human attribution |
+| [`skills/setup-agent-workstation/`](skills/setup-agent-workstation/SKILL.md) | Setup-agent instructions and approval boundaries |
+| [`tests/`](tests) | Repository, documentation, profile, security, and repeatability checks |
+| [`.codeflow/`](.codeflow/README.md) | Branch, commit, pull-request, secret, and pre-push test policy |
+| [`.github/`](.github) | Issue forms, pull-request requirements, dependency updates, and CI |
+
+Real profiles, fleet assignments, serial numbers, asset tags, and deployment
+evidence never belong in this repository. Put them in the private fleet created
+from the template.
 
 ## Safety and quality
 
@@ -151,6 +184,11 @@ make public-check   # deterministic public-readiness checks
 Repository checks do not certify a live host. Record firmware, drivers,
 endpoint management, remote access, backup/restore and realistic workload
 evidence separately before approving a node.
+
+Contributions follow the branch, commit, review, and test rules in
+[CONTRIBUTING.md](CONTRIBUTING.md). Local hooks and hosted checks enforce the
+repository's Codeflow-derived policy through the self-contained checker; no
+Codeflow installation is required.
 
 ## License and independence
 

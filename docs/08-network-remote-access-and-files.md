@@ -1,6 +1,6 @@
 # Network, remote access, and files
 
-[Previous: validation](08-validation-and-operations.md) · [Documentation home](README.md) · [Next: responsibility matrix](10-human-script-agent-matrix.md)
+[Previous: security and resources](07-security-and-resources.md) · [Documentation home](README.md) · [Next: validation](09-validation-and-operations.md)
 
 The operator does not need a Mac. The baseline works from macOS, Windows and
 Linux workstations, with iPadOS/iOS/Android suitable for monitoring and
@@ -93,14 +93,20 @@ backup or a reviewed shared-directory policy.
 
 ## Remote KVM
 
+A remote keyboard-video-mouse (KVM) device is a small out-of-band console. It
+captures the target's display output and sends keyboard and mouse input without
+depending on Ubuntu, macOS, Tailscale on the target, or NoMachine. It is for
+firmware, boot selection, disk unlock, recovery, and OS/network failures—not
+normal development or Playwright display creation.
+
 During a supervised pilot, local monitor and keyboard are sufficient. Before
 unattended office placement, use a tested remote KVM:
 
-- Prefer Comet X (GL-RM4PE) for up to four co-located hosts when its firmware
-  and availability meet policy.
-- Keep a Comet PoE (GL-RM1PE) as a single-host fallback or spare.
-- Remember that Comet X controls one host at a time and is a shared failure
-  domain.
+- Use the current single-host or multi-host choice from the
+  [selected workstation stack](00a-final-stack.md); recheck firmware,
+  availability, video resolution, and power requirements before purchase.
+- A multi-input KVM controls one host at a time. It reduces device count but
+  creates one shared recovery dependency for several hosts.
 - Put the KVM on Tailscale and a restricted management segment. Disable public
   forwarding, use unique credentials and MFA where supported, and maintain it.
 - Test WOL and AC recovery before buying power actuators. Do not assume the
@@ -115,3 +121,7 @@ virtual display/compositor or Playwright's headless mode and retain traces,
 screenshots, and video. A dummy HDMI/DisplayPort EDID adapter may help a
 particular GPU expose a stable physical desktop, but it is hardware-specific
 and must be burn-in tested. The KVM remains the out-of-band recovery path.
+
+Current product links and guides are in the
+[primary-source register](11-primary-sources.md). Recheck them before purchase
+or deployment.

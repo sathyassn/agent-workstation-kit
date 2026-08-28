@@ -1,6 +1,6 @@
 # Day-zero macOS startup and agent handoff
 
-[Documentation home](../README.md) · [macOS setup phases](../03-macos-setup.md) · [Profile onboarding](../01a-onboarding-profile.md) · [Access from every operator OS](../09-network-remote-access-and-files.md)
+[Documentation home](../README.md) · [macOS setup phases](../03-macos-setup.md) · [Profile onboarding](../01a-onboarding-profile.md) · [Access from every operator OS](../08-network-remote-access-and-files.md)
 
 Use this guide for a fresh Mac mini or Mac Studio, from first power-on until a
 setup agent can safely continue. The human completes security and recovery
@@ -286,4 +286,4 @@ Stop rather than improvise when:
 - Remote access is about to be exposed outside Tailscale.
 - A command differs from its reviewed preview.
 
-[Documentation home](../README.md) · [Next: macOS setup phases](../03-macos-setup.md) · [Operator access matrix](../09-network-remote-access-and-files.md)
+[Documentation home](../README.md) · [Next: macOS setup phases](../03-macos-setup.md) · [Operator access matrix](../08-network-remote-access-and-files.md)
