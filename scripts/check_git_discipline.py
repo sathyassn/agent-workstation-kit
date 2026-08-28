@@ -177,6 +177,14 @@ def validate_branch(
         allowed = ", ".join(policy.branch_prefixes)
         raise DisciplineError(f"branch '{branch}' must start with one of: {allowed}")
     remainder = branch.split("/", 1)[1]
+    if branch.startswith("dependabot/"):
+        if (
+            re.fullmatch(r"[a-z0-9][a-z0-9._/-]*", remainder)
+            and ".." not in remainder
+            and "//" not in remainder
+        ):
+            return
+        raise DisciplineError("Dependabot branch description is invalid")
     if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", remainder):
         raise DisciplineError("branch description must be lower-case kebab-case")
 
@@ -504,16 +512,21 @@ def command_ci(args: argparse.Namespace, policy: Policy) -> None:
         and base_repository
         and head_repository != base_repository
     )
+    actor = getattr(args, "actor", "")
+    is_dependabot = actor == "dependabot[bot]" and args.branch.startswith(
+        "dependabot/"
+    )
     validate_branch(args.branch, policy, allow_protected=is_fork)
     validate_commit_range(args.base, args.head, policy)
     body = os.environ.get(args.pr_body_env)
     if body is None:
         raise DisciplineError(f"environment variable is missing: {args.pr_body_env}")
-    validate_pr_body(
-        body,
-        policy,
-        code_change=not _is_docs_only(_changed_paths(args.base, args.head)),
-    )
+    if not is_dependabot:
+        validate_pr_body(
+            body,
+            policy,
+            code_change=not _is_docs_only(_changed_paths(args.base, args.head)),
+        )
     print(f"Git discipline passed for {args.base}..{args.head} on {args.branch}")
 
 
@@ -540,6 +553,7 @@ def build_parser() -> argparse.ArgumentParser:
     ci.add_argument("--branch", required=True)
     ci.add_argument("--head-repository", default="")
     ci.add_argument("--base-repository", default="")
+    ci.add_argument("--actor", default="")
     ci.add_argument("--pr-body-env", required=True)
     return parser
 

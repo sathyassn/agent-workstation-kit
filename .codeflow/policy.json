@@ -54,6 +54,7 @@
       "ci/",
       "perf/",
       "build/",
+      "dependabot/",
       "revert/"
     ],
     "secret_scan": "block",

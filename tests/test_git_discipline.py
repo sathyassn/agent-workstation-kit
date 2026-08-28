@@ -39,6 +39,9 @@ class GitDisciplineTests(unittest.TestCase):
 
     def test_branch_policy_accepts_only_kebab_contribution_branches(self) -> None:
         discipline.validate_branch("docs/clarify-day-zero", self.policy)
+        discipline.validate_branch(
+            "dependabot/github_actions/actions/checkout-7.0.1", self.policy
+        )
         with self.assertRaisesRegex(discipline.DisciplineError, "protected branch"):
             discipline.validate_branch("main", self.policy)
         with self.assertRaisesRegex(discipline.DisciplineError, "must start"):
@@ -224,6 +227,24 @@ class GitDisciplineIntegrationTests(unittest.TestCase):
                 ),
                 self.policy,
             )
+
+    def test_dependabot_generated_body_is_allowed_only_for_bot_actor(self) -> None:
+        self._git("switch", "-q", "-c", "build/dependabot-fixture")
+        head = self._commit(
+            "dependency.txt", "updated\n", "build(deps): bump fixture"
+        )
+        arguments = Namespace(
+            base=self.base,
+            head=head,
+            branch="dependabot/pip/fixture-2.0",
+            actor="dependabot[bot]",
+            pr_body_env="PR_BODY",
+        )
+        with mock.patch.dict(os.environ, {"PR_BODY": "Generated update."}, clear=False):
+            discipline.command_ci(arguments, self.policy)
+            arguments.actor = "untrusted-user"
+            with self.assertRaisesRegex(discipline.DisciplineError, "Summary"):
+                discipline.command_ci(arguments, self.policy)
 
     def test_pre_push_runs_gate_and_rejects_non_fast_forward(self) -> None:
         self._git("switch", "-q", "-c", "docs/pre-push-check")

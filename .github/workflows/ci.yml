@@ -45,6 +45,7 @@ jobs:
           GIT_DISCIPLINE_BRANCH: ${{ github.head_ref }}
           GIT_DISCIPLINE_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
           GIT_DISCIPLINE_BASE_REPOSITORY: ${{ github.repository }}
+          GIT_DISCIPLINE_ACTOR: ${{ github.actor }}
           GIT_DISCIPLINE_PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           python3 scripts/check_git_discipline.py ci \
@@ -53,6 +54,7 @@ jobs:
             --branch "$GIT_DISCIPLINE_BRANCH" \
             --head-repository "$GIT_DISCIPLINE_HEAD_REPOSITORY" \
             --base-repository "$GIT_DISCIPLINE_BASE_REPOSITORY" \
+            --actor "$GIT_DISCIPLINE_ACTOR" \
             --pr-body-env GIT_DISCIPLINE_PR_BODY
 
   secret-scan:
