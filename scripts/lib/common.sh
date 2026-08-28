@@ -98,6 +98,11 @@ sudo_policy_has_command_grants() {
   grep -Fq 'may run the following commands' <<<"$1"
 }
 
+authorized_keys_has_usable_key() {
+  local path=$1
+  grep -Eq '^[[:space:]]*([^#].*[[:space:]])?((ssh-(rsa|ed25519)|ecdsa-sha2-nistp(256|384|521))(-cert-v01@openssh\.com)?|sk-(ssh-ed25519|ecdsa-sha2-nistp256)(-cert-v01)?@openssh\.com)[[:space:]]' "$path"
+}
+
 calculate_tasks_max() {
   local total_kib=$1 gib_kib=$((1024 * 1024)) result
   [[ "$total_kib" =~ ^[0-9]+$ ]] || return 2
@@ -105,6 +110,21 @@ calculate_tasks_max() {
   ((result >= 4096)) || result=4096
   ((result <= 16384)) || result=16384
   printf '%d\n' "$result"
+}
+
+calculate_memory_limits() {
+  local total_kib=$1 reserve_gib=$2 gib_kib=$((1024 * 1024))
+  local soft_reserve hard_reserve memory_high memory_max
+  [[ "$total_kib" =~ ^[0-9]+$ && "$reserve_gib" =~ ^[0-9]+$ ]] || return 2
+  soft_reserve=$((reserve_gib * gib_kib))
+  hard_reserve=$((reserve_gib * gib_kib / 2))
+  if ((soft_reserve > 4 * gib_kib && hard_reserve < 4 * gib_kib)); then
+    hard_reserve=$((4 * gib_kib))
+  fi
+  memory_high=$((total_kib - soft_reserve))
+  memory_max=$((total_kib - hard_reserve))
+  ((memory_high > 0 && memory_max > memory_high)) || return 1
+  printf '%d %d\n' "$memory_high" "$memory_max"
 }
 
 usage_mode() {

@@ -9,7 +9,14 @@ fleet data, organization-only policy, personal paths, or credentials.
 
 ## Before opening a change
 
-1. Enable the checked-in hooks for this clone and validate the self-contained
+1. Install Python 3.11+, Make, Git, and ShellCheck. On Ubuntu:
+
+   ```bash
+   sudo apt-get update
+   sudo apt-get install --yes git make python3 shellcheck
+   ```
+
+2. Enable the checked-in hooks for this clone and validate the self-contained
    policy checker:
 
    ```bash
@@ -17,22 +24,23 @@ fleet data, organization-only policy, personal paths, or credentials.
    python3 scripts/check_git_discipline.py policy
    ```
 
-2. Create a focused `{type}/{kebab-name}` branch from the current default
+3. Create a focused `{type}/{kebab-name}` branch from the current default
    branch. Allowed prefixes are defined in `.codeflow/policy.json`; examples
    include `docs/clarify-day-zero` and `fix/profile-validation`.
-3. Use a Conventional Commit subject such as `docs: clarify Linux handoff`.
+4. Use a Conventional Commit subject such as `docs: clarify Linux handoff`.
    Keep the description to 50 characters and the full subject to 72. A body, if
    needed, contains no more than three single-line `-` bullets. Do not add AI
    attribution or emoji.
-4. Do not commit credentials, local profiles, infrastructure identifiers, test
+5. Do not commit credentials, local profiles, infrastructure identifiers, test
    artifacts, or copied vendor packages.
-5. Keep deterministic OS changes in idempotent scripts. Keep discovery,
+6. Keep deterministic OS changes in idempotent scripts. Keep discovery,
    sequencing, approvals, and explanations in the setup skill or documentation.
-6. Preserve preview behavior. A mutating path must require explicit `--apply`;
+7. Preserve preview behavior. A mutating path must require explicit `--apply`;
    privileged or recovery-sensitive changes need the documented human gate.
-7. Update examples, tests, documentation, and `CHANGELOG.md` when behavior or
+8. Update examples, tests, documentation, and `CHANGELOG.md` when behavior or
    profile fields change.
-8. Run `make ci-check` before requesting review. Include the result plus any
+9. Run `make ci-check` and `make public-check` before requesting review. Include
+   the result plus any
    untested live-machine assumptions in the pull request. Hosted CI validates
    the exact commit range and pull-request body with the same policy.
 

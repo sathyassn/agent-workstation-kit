@@ -167,6 +167,7 @@ def fleet_checks(fleet_root: Path, profile: Path | None) -> list[Check]:
         return checks
     validation = run(
         [
+            sys.executable,
             str(ROOT / "scripts/fleetctl.py"),
             "--fleet-root",
             str(fleet_root),

@@ -212,9 +212,10 @@ def validate_message(message: str, policy: Policy) -> None:
         )
     if description.endswith("."):
         raise DisciplineError("commit description must not end with a period")
-    if AI_ATTRIBUTION.search(message):
+    visible_message = "\n".join(lines)
+    if AI_ATTRIBUTION.search(visible_message):
         raise DisciplineError("AI attribution is not allowed in commit messages")
-    if EMOJI.search(message):
+    if EMOJI.search(visible_message):
         raise DisciplineError("emoji is not allowed in commit messages")
 
     body = lines[1:]
@@ -496,7 +497,14 @@ def command_reference(args: argparse.Namespace, policy: Policy) -> None:
 
 
 def command_ci(args: argparse.Namespace, policy: Policy) -> None:
-    validate_branch(args.branch, policy)
+    head_repository = getattr(args, "head_repository", "")
+    base_repository = getattr(args, "base_repository", "")
+    is_fork = bool(
+        head_repository
+        and base_repository
+        and head_repository != base_repository
+    )
+    validate_branch(args.branch, policy, allow_protected=is_fork)
     validate_commit_range(args.base, args.head, policy)
     body = os.environ.get(args.pr_body_env)
     if body is None:
@@ -530,6 +538,8 @@ def build_parser() -> argparse.ArgumentParser:
     ci.add_argument("--base", required=True)
     ci.add_argument("--head", required=True)
     ci.add_argument("--branch", required=True)
+    ci.add_argument("--head-repository", default="")
+    ci.add_argument("--base-repository", default="")
     ci.add_argument("--pr-body-env", required=True)
     return parser
 

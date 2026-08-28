@@ -22,7 +22,7 @@ do not replace legal approval or live-machine evidence.
 
 - [x] `make ci-check` passes on the exact clean local commit.
 - [ ] Hosted CI passes on the exact commit proposed for publication.
-- [x] Private conduct reporting is configured and `make public-check` passes.
+- [x] The private conduct-report path is configured and `make public-check` passes.
 - [x] Claude and Grok independent reviews are completed and resolved for the
       local RC and supervised pilot scope; durable review evidence belongs in
       the applicable PR or private assurance record, not user documentation.
@@ -42,8 +42,9 @@ do not replace legal approval or live-machine evidence.
       commit, branch, and PR-body policy blocks a deliberately invalid test
       branch before publication.
 - [ ] Prevent force pushes/deletion; keep Actions read-only by default.
-- [ ] Enable secret scanning, push protection, Dependabot, and private
-      vulnerability reporting where the plan supports them.
+- [x] Enable private vulnerability reporting and verify its repository API state.
+- [ ] Enable secret scanning, push protection, and Dependabot where the GitHub
+      plan supports them.
 - [ ] Confirm agent identities cannot approve or merge their own work.
 - [ ] Clone from the hosted source into a clean directory and rerun all checks.
 

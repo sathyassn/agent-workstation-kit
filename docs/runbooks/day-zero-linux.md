@@ -90,7 +90,7 @@ Ubuntu may not include Git or Make. Review, then run at the physical console:
 
 ```bash
 sudo apt-get update
-sudo apt-get install --yes ca-certificates curl git make python3 unzip
+sudo apt-get install --yes ca-certificates curl git make python3 shellcheck unzip
 ```
 
 These packages only establish the reviewed checkout and readiness path. The

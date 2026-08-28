@@ -56,6 +56,8 @@ for account in "${ssh_users[@]}"; do
   [[ -z "${seen_ssh_users[$account]:-}" ]] || die "Duplicate SSH user: $account"
   seen_ssh_users[$account]=1
 done
+# Write a canonical order so equivalent profiles produce the same drop-in.
+mapfile -t ssh_users < <(printf '%s\n' "${ssh_users[@]}" | LC_ALL=C sort)
 require_root_for_apply
 
 dropin=/etc/ssh/sshd_config.d/00-agent-workstation.conf
@@ -180,12 +182,15 @@ for account in "${ssh_users[@]}"; do
   account_home=$(getent passwd "$account" | cut -d: -f6)
   authorized_keys="$account_home/.ssh/authorized_keys"
   [[ -r "$authorized_keys" ]] || die "No readable authorized_keys for $account"
-  grep -Eq '^[[:space:]]*(ssh-|ecdsa-|sk-|cert-authority)' "$authorized_keys" || \
+  authorized_keys_has_usable_key "$authorized_keys" || \
     die "No usable public key found for $account"
 done
 
 if [[ -r "$dropin" ]]; then
-  if ! grep -Fxq "AllowUsers ${ssh_users[*]}" "$dropin" || \
+  existing_allow=$(awk '$1 == "AllowUsers" {$1=""; sub(/^ /, ""); print}' "$dropin")
+  existing_allow_sorted=$(tr ' ' '\n' <<<"$existing_allow" | sed '/^$/d' | LC_ALL=C sort | paste -sd' ' -)
+  requested_allow_sorted=$(printf '%s\n' "${ssh_users[@]}" | LC_ALL=C sort | paste -sd' ' -)
+  if [[ "$existing_allow_sorted" != "$requested_allow_sorted" ]] || \
      ! grep -Fxq "DenyUsers $agent_account" "$dropin"; then
     die "$dropin already exists with different policy; merge it manually."
   fi

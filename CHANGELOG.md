@@ -3,6 +3,13 @@
 This project follows Semantic Versioning. Version 0.x interfaces may change
 between minor releases while live-machine evidence is incorporated.
 
+## 0.2.0-rc.5 — Unreleased
+
+- Closed final cross-model release-review gaps in resource-limit boundaries,
+  macOS identity/runtime consistency, remote-access hardening, agent session
+  delegation, pilot validation, public CI and contributor/security guidance.
+- Added regression coverage for the corrected first-use and policy paths.
+
 ## 0.2.0-rc.4 — Unreleased
 
 - Promoted macOS to a first-class documented target with an ordered day-zero

@@ -90,8 +90,15 @@ apply one phase, and verify it before continuing:
 
 ```bash
 ./scripts/fleetctl.py run /path/to/acme-ws-001.toml accounts
-sudo ./scripts/fleetctl.py run /path/to/acme-ws-001.toml accounts --apply
+cd /opt/agent-workstation-kit
+sudo ./scripts/fleetctl.py \
+  --fleet-root /opt/agent-workstation-fleet \
+  run machines/acme-ws-001.toml accounts --apply
 ```
+
+The apply command is valid only after the reviewed toolkit and fleet snapshots
+have been staged as root-owned, non-writable trees. Follow the Linux or macOS
+staging runbook; never apply from an ordinary user checkout.
 
 Machine identity and remote hardening also require an explicit recovery
 confirmation when applying. The `shell`

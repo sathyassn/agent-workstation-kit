@@ -36,7 +36,7 @@ fi
 
 hardening_preview=$(PATH="$fixture_dir:$PATH" "$repo_dir/scripts/harden-remote-access-linux.sh" \
   --agent agent-01 --ssh-user alice --ssh-user admin-01)
-grep -Fq 'AllowUsers alice admin-01' <<<"$hardening_preview"
+grep -Fq 'AllowUsers admin-01 alice' <<<"$hardening_preview"
 grep -Fq 'DenyUsers agent-01' <<<"$hardening_preview"
 
 if PATH="$fixture_dir:$PATH" "$repo_dir/scripts/harden-remote-access-linux.sh" \
@@ -91,6 +91,8 @@ if grep -Fq '%agent-01-viewers ALL=(agent-01) NOPASSWD: /usr/local/libexec/agent
 fi
 grep -Fq "AGENTCTL_TARGET='ac-ws-001'" <<<"$agentctl_preview"
 grep -Fq 'help|list|status|observe)' "$repo_dir/agentctl/agentctl-observe"
+grep -Fq 'action=${1:-help}' "$repo_dir/agentctl/agentctl"
+grep -Fq '"$observer" "$action" "$@"' "$repo_dir/agentctl/agentctl"
 grep -Fq 'tmux attach-session -t "=$session"' "$repo_dir/agentctl/agentctl-session"
 
 # A documented helper must also resolve its repository when invoked by a bare
@@ -149,6 +151,34 @@ fi
 [[ $(calculate_tasks_max $((16 * 1024 * 1024))) == 4096 ]]
 [[ $(calculate_tasks_max $((64 * 1024 * 1024))) == 8192 ]]
 [[ $(calculate_tasks_max $((256 * 1024 * 1024))) == 16384 ]]
+read -r memory_high memory_max < <(
+  calculate_memory_limits $((64 * 1024 * 1024)) 4
+)
+((memory_high == 60 * 1024 * 1024))
+((memory_max == 62 * 1024 * 1024))
+((memory_max > memory_high))
+
+cat >"$fixture_dir/authorized_keys" <<'EOF'
+# ignored ssh-ed25519 AAAA-comment
+restrict,pty ssh-ed25519 AAAA-optioned
+EOF
+authorized_keys_has_usable_key "$fixture_dir/authorized_keys"
+printf '%s\n' 'ssh-ed25519 AAAA-direct' >"$fixture_dir/authorized_keys"
+authorized_keys_has_usable_key "$fixture_dir/authorized_keys"
+for key_type in \
+  sk-ssh-ed25519@openssh.com \
+  sk-ecdsa-sha2-nistp256@openssh.com \
+  ssh-ed25519-cert-v01@openssh.com \
+  ecdsa-sha2-nistp256-cert-v01@openssh.com \
+  sk-ssh-ed25519-cert-v01@openssh.com; do
+  printf '%s %s\n' "$key_type" 'AAAA-key' >"$fixture_dir/authorized_keys"
+  authorized_keys_has_usable_key "$fixture_dir/authorized_keys"
+done
+printf '%s\n' '# ssh-ed25519 AAAA-comment-only' >"$fixture_dir/authorized_keys"
+if authorized_keys_has_usable_key "$fixture_dir/authorized_keys"; then
+  printf 'Expected a comment-only authorized_keys file to be rejected.\n' >&2
+  exit 1
+fi
 
 # The optional-tool selection is part of the desired mise configuration and
 # must remain idempotent on a second apply.

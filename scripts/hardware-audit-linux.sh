@@ -16,7 +16,7 @@ for field in sys_vendor product_name product_version product_serial board_name b
 done
 printf '\nCPU and memory\n'
 lscpu | sed -n -e '/^Architecture:/p' -e '/^CPU(s):/p' -e '/^Model name:/p'
-awk '/^MemTotal:/ {printf "MemTotal: %.1f GiB\\n", $2/1024/1024}' /proc/meminfo
+awk '/^MemTotal:/ {printf "MemTotal: %.1f GiB\n", $2/1024/1024}' /proc/meminfo
 printf '\nNetwork controllers and drivers\n'
 lspci -nnk | awk '/Ethernet controller|Network controller/{show=1} show{print} show && /^$/{show=0}'
 printf '\nInterfaces\n'

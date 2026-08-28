@@ -1,1 +1,8 @@
 blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/sathyassn/agent-workstation-kit/security/advisories/new
+    about: Send security-sensitive details privately to the maintainers.
+  - name: Support and usage questions
+    url: https://github.com/sathyassn/agent-workstation-kit/blob/main/SUPPORT.md
+    about: Read the support scope before opening a public issue.

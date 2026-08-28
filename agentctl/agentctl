@@ -24,11 +24,13 @@ source "$config"
 
 # Set HOME to the target account. The agent CLIs, mise activation, tmux socket,
 # and credential helpers all rely on the target home rather than the caller's.
-case ${1:-help} in
+action=${1:-help}
+(($# == 0)) || shift
+case $action in
   help|list|status|observe)
-    exec sudo -H -u "$AGENTCTL_ACCOUNT" -- "$observer" "$@"
+    exec sudo -H -u "$AGENTCTL_ACCOUNT" -- "$observer" "$action" "$@"
     ;;
   *)
-    exec sudo -H -u "$AGENTCTL_ACCOUNT" -- "$helper" "$@"
+    exec sudo -H -u "$AGENTCTL_ACCOUNT" -- "$helper" "$action" "$@"
     ;;
 esac

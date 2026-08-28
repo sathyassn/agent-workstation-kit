@@ -18,9 +18,11 @@
   Each project pins Playwright and installs its matching browser build.
 - Rootless Podman with Docker CLI/Compose compatibility on Linux; OrbStack's Docker-compatible runtime on macOS, with Docker Desktop as fallback.
 
-The installer resolves moving channels such as `lts` and `latest` to concrete
-versions with `mise --pin` and excludes releases newer than seven days when the
-backend supplies release dates. The installer copies reviewed `config/mise.toml`
+The installer resolves the declared channels into `mise.lock` and excludes
+releases newer than seven days when the backend supplies release dates. The
+first install is constrained by that release-age policy but is not fully pinned
+until the generated lock is reviewed and committed for each supported
+architecture. The installer copies reviewed `config/mise.toml`
 into a previously empty global configuration and stops on conflicts. After the
 pilot, record accepted versions and create/commit a `mise.lock` for the Linux
 and macOS architectures in use.

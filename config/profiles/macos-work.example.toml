@@ -16,7 +16,7 @@ asset_tag = "ask"
 platform = "macos"
 os_family = "macos"
 hardware_profile = "mac-mini-or-studio"
-role = "apple-agent-workstation"
+role = "agent-workstation"
 
 [accounts]
 agent = "agent-01"

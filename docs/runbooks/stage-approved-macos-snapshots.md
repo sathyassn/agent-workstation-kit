@@ -175,7 +175,7 @@ sudo /usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME=/var/root \
   /opt/agent-workstation-kit/scripts/install-machine-identity.py \
   --hostname acme-mac-001 --display-name Orchard \
   --uuid REVIEWED_UUIDV4 --asset-tag REVIEWED_ASSET_TAG \
-  --namespace acme --platform macos --role workstation --apply \
+  --namespace acme --platform macos --role REVIEWED_ROLE --apply \
   --confirm-recovery-tested --connection-context local-console
 sudo -K
 ```

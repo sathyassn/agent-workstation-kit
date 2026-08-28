@@ -31,6 +31,9 @@ jobs:
       - name: Run independent repository gate
         run: make ci-check
 
+      - name: Run public-release gate
+        run: make public-check
+
       - name: Validate Git discipline policy
         run: python3 scripts/check_git_discipline.py policy
 
@@ -40,12 +43,16 @@ jobs:
           GIT_DISCIPLINE_BASE: ${{ github.event.pull_request.base.sha }}
           GIT_DISCIPLINE_HEAD: ${{ github.event.pull_request.head.sha }}
           GIT_DISCIPLINE_BRANCH: ${{ github.head_ref }}
+          GIT_DISCIPLINE_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          GIT_DISCIPLINE_BASE_REPOSITORY: ${{ github.repository }}
           GIT_DISCIPLINE_PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           python3 scripts/check_git_discipline.py ci \
             --base "$GIT_DISCIPLINE_BASE" \
             --head "$GIT_DISCIPLINE_HEAD" \
             --branch "$GIT_DISCIPLINE_BRANCH" \
+            --head-repository "$GIT_DISCIPLINE_HEAD_REPOSITORY" \
+            --base-repository "$GIT_DISCIPLINE_BASE_REPOSITORY" \
             --pr-body-env GIT_DISCIPLINE_PR_BODY
 
   secret-scan:

@@ -55,6 +55,20 @@ class StartLinuxPilotTests(unittest.TestCase):
                     self.assertIsNone(resolved)
                     self.assertIsNotNone(error)
 
+    def test_symlinked_profile_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fleet = Path(directory)
+            (fleet / "machines").mkdir()
+            target = fleet / "machines/ac-ws-001.toml"
+            target.write_text('state = "draft"\n', encoding="utf-8")
+            link = fleet / "machines/ac-ws-002.toml"
+            link.symlink_to(target.name)
+            resolved, error = start_linux_pilot.resolve_profile(
+                fleet, Path("machines/ac-ws-002.toml")
+            )
+        self.assertIsNone(resolved)
+        self.assertIn("symlink", error or "")
+
     def test_missing_profile_is_a_next_step_not_a_false_pass(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fleet = Path(directory)
@@ -81,7 +95,10 @@ class StartLinuxPilotTests(unittest.TestCase):
             machines = fleet / "machines"
             machines.mkdir()
             profile = machines / "ac-ws-001.toml"
-            profile.write_text('state = "approved"\n', encoding="utf-8")
+            profile.write_text(
+                'state = "approved"\n[machine]\nplatform = "linux"\n',
+                encoding="utf-8",
+            )
             (fleet / "kit.lock").write_text(
                 (ROOT / "VERSION").read_text(encoding="utf-8"), encoding="utf-8"
             )
@@ -99,6 +116,26 @@ class StartLinuxPilotTests(unittest.TestCase):
             finally:
                 start_linux_pilot.run = original_run
             self.assertEqual("ready validation failed", checks[-1].detail)
+
+    def test_non_linux_profile_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fleet = Path(directory).resolve()
+            (fleet / "machines").mkdir()
+            (fleet / "kit.lock").write_text(
+                (ROOT / "VERSION").read_text(encoding="utf-8"), encoding="utf-8"
+            )
+            profile = fleet / "machines/ac-mac-001.toml"
+            profile.write_text(
+                'state = "approved"\n[machine]\nplatform = "macos"\n',
+                encoding="utf-8",
+            )
+            success = subprocess.CompletedProcess(["validate"], 0, "", "")
+            with mock.patch.object(start_linux_pilot, "run", return_value=success):
+                checks = start_linux_pilot.fleet_checks(
+                    fleet, Path("machines/ac-mac-001.toml")
+                )
+        self.assertEqual("FAIL", checks[-1].status)
+        self.assertIn("must be linux", checks[-1].detail)
 
     def test_missing_preflight_is_reported_without_exception(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

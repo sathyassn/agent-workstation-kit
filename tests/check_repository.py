@@ -51,7 +51,7 @@ def main() -> int:
     for path in ROOT.rglob("*"):
         if ".git" in path.parts or not path.is_file():
             continue
-        if path.name in FORBIDDEN_NAMES or path.suffix in {".key", ".pem", ".p12"}:
+        if path.name in FORBIDDEN_NAMES or path.suffix.lower() in {".key", ".pem", ".p12", ".pfx"}:
             failures.append(f"forbidden credential-like file: {path.relative_to(ROOT)}")
         try:
             content = path.read_text(encoding="utf-8")

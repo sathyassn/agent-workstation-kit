@@ -3,7 +3,7 @@
 Production-oriented profiles, preview-first automation, concise guides and a
 setup-agent skill for dedicated Linux and macOS AI development workstations.
 
-Current version: **0.2.0-rc.4**. This remains a release candidate until the
+Current version: **0.2.0-rc.5**. This remains a release candidate until the
 documented Linux and macOS hardware exercises in the public-release checklist
 are complete.
 
@@ -189,6 +189,10 @@ Contributions follow the branch, commit, review, and test rules in
 [CONTRIBUTING.md](CONTRIBUTING.md). Local hooks and hosted checks enforce the
 repository's Codeflow-derived policy through the self-contained checker; no
 Codeflow installation is required.
+
+For project expectations and safe contact paths, see the
+[Code of Conduct](CODE_OF_CONDUCT.md), [support policy](SUPPORT.md), and
+[security policy](SECURITY.md).
 
 ## License and independence
 

@@ -172,6 +172,34 @@ class StartMacosPilotTests(unittest.TestCase):
         self.assertEqual("PASS", checks[-1].status)
         self.assertIn("valid macOS profile", checks[-1].detail)
 
+    def test_profile_validation_uses_current_python(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fleet = Path(directory)
+            (fleet / "machines").mkdir()
+            (fleet / "kit.lock").write_text(
+                (ROOT / "VERSION").read_text(encoding="utf-8"), encoding="utf-8"
+            )
+            profile = fleet / "machines/acme-mac-001.toml"
+            profile.write_text(
+                'schema_version = 3\n[machine]\nplatform = "macos"\n',
+                encoding="utf-8",
+            )
+            clean = start_macos_pilot.Check("PASS", "private fleet revision", "clean")
+            commands: list[list[str]] = []
+
+            def successful_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+                commands.append(command)
+                return subprocess.CompletedProcess(command, 0, "ok\n", "")
+
+            with mock.patch.object(
+                start_macos_pilot, "clean_git_checkout_check", return_value=clean
+            ), mock.patch.object(start_macos_pilot, "run", side_effect=successful_run):
+                start_macos_pilot.fleet_checks(
+                    fleet, Path("machines/acme-mac-001.toml")
+                )
+        validation = next(command for command in commands if "validate" in command)
+        self.assertEqual(sys.executable, validation[0])
+
     def test_non_macos_profile_is_rejected(self) -> None:
         checks = self._validated_profile_checks("linux")
         self.assertEqual("FAIL", checks[-1].status)

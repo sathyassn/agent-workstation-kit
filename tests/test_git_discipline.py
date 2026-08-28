@@ -66,6 +66,12 @@ class GitDisciplineTests(unittest.TestCase):
                 with self.assertRaisesRegex(discipline.DisciplineError, expected):
                     discipline.validate_message(message, self.policy)
 
+    def test_commit_policy_ignores_discarded_comment_lines(self) -> None:
+        discipline.validate_message(
+            "docs: clarify setup\n\n# Co-authored-by: Claude <bot@example.invalid>\n",
+            self.policy,
+        )
+
     def test_breaking_subject_requires_migration_footer(self) -> None:
         with self.assertRaisesRegex(discipline.DisciplineError, "BREAKING CHANGE"):
             discipline.validate_message("feat!: change profile format\n", self.policy)
@@ -199,6 +205,25 @@ class GitDisciplineIntegrationTests(unittest.TestCase):
                     ),
                     self.policy,
                 )
+
+    def test_fork_default_branch_is_allowed_as_pull_request_head(self) -> None:
+        self._git("switch", "-q", "-c", "docs/fork-source")
+        head = self._commit(
+            "docs/fork.md", "# Fork\n", "docs: add fork fixture"
+        )
+        body = "## Summary\nFixture.\n\n## Changes\n- Add a guide.\n"
+        with mock.patch.dict(os.environ, {"PR_BODY": body}, clear=False):
+            discipline.command_ci(
+                Namespace(
+                    base=self.base,
+                    head=head,
+                    branch="main",
+                    head_repository="contributor/fork",
+                    base_repository="owner/project",
+                    pr_body_env="PR_BODY",
+                ),
+                self.policy,
+            )
 
     def test_pre_push_runs_gate_and_rejects_non_fast_forward(self) -> None:
         self._git("switch", "-q", "-c", "docs/pre-push-check")

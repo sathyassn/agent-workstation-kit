@@ -65,7 +65,10 @@ def run(command: list[str], *, cwd: Path = ROOT) -> subprocess.CompletedProcess[
 
 
 def resolve_profile(fleet_root: Path, profile: Path) -> tuple[Path | None, str | None]:
-    candidate = (fleet_root / profile).resolve() if not profile.is_absolute() else profile.resolve()
+    requested = fleet_root / profile if not profile.is_absolute() else profile.expanduser().absolute()
+    if requested.is_symlink():
+        return None, "profile path must not be a symlink"
+    candidate = requested.resolve()
     machines = (fleet_root / "machines").resolve()
     try:
         candidate.relative_to(machines)
@@ -117,6 +120,7 @@ def fleet_checks(fleet_root: Path, profile: Path | None) -> list[Check]:
     relative = resolved.relative_to(fleet_root)
     validation = run(
         [
+            sys.executable,
             str(ROOT / "scripts/fleetctl.py"),
             "--fleet-root",
             str(fleet_root),
@@ -131,15 +135,27 @@ def fleet_checks(fleet_root: Path, profile: Path | None) -> list[Check]:
     checks.append(Check("PASS", "machine profile", f"draft-valid: {relative}"))
     try:
         with resolved.open("rb") as handle:
-            state = tomllib.load(handle).get("state")
+            profile_data = tomllib.load(handle)
+            state = profile_data.get("state")
     except (OSError, tomllib.TOMLDecodeError) as exc:
         checks.append(Check("FAIL", "profile state", str(exc)))
+        return checks
+    platform = profile_data.get("machine", {}).get("platform")
+    if platform != "linux":
+        checks.append(
+            Check(
+                "FAIL",
+                "machine profile",
+                f"machine.platform must be linux; found {platform!r}",
+            )
+        )
         return checks
     if state != "approved":
         checks.append(Check("NEXT", "profile state", "resolve every 'ask', review, then set state = approved"))
         return checks
     ready = run(
         [
+            sys.executable,
             str(ROOT / "scripts/fleetctl.py"),
             "--fleet-root",
             str(fleet_root),
@@ -148,7 +164,7 @@ def fleet_checks(fleet_root: Path, profile: Path | None) -> list[Check]:
             "--ready",
         ]
     )
-    fleet = run([str(ROOT / "scripts/validate-fleet.py"), str(fleet_root)])
+    fleet = run([sys.executable, str(ROOT / "scripts/validate-fleet.py"), str(fleet_root)])
     if ready.returncode or fleet.returncode:
         failed = ready if ready.returncode else fleet
         output = "\n".join(part for part in (failed.stderr, failed.stdout) if part).strip()

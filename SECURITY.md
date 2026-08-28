@@ -8,14 +8,12 @@ operating system before use.
 
 ## Reporting a vulnerability
 
-This repository must remain private until GitHub private vulnerability
-reporting is enabled and tested, or a monitored private security address is
-published here. Do not include exploit details, credentials, hostnames, or
-other sensitive data in a public issue.
-
-Once public, use the repository's **Report a vulnerability** action. If that
-channel is ever disabled or unavailable, do not publish a report; contact the
-repository owner privately and ask for the current security channel.
+Use GitHub's private
+[Report a vulnerability](https://github.com/sathyassn/agent-workstation-kit/security/advisories/new)
+channel. Do not include exploit details, credentials, hostnames, or other
+sensitive data in a public issue. If private reporting is unavailable, do not
+publish the report; contact the repository owner privately and ask for the
+current security channel.
 
 Include the affected version, operating system, reproduction conditions,
 impact, and a minimal safe proof of concept. Maintainers should acknowledge the

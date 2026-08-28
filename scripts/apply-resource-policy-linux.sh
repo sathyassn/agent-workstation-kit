@@ -35,12 +35,9 @@ require_root_for_apply
 total_kib=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)
 [[ "$total_kib" =~ ^[0-9]+$ ]] || die 'Cannot read total memory.'
 gib_kib=$((1024 * 1024))
-soft_reserve=$((memory_reserve_gib * gib_kib))
-hard_reserve=$((memory_reserve_gib * gib_kib / 2))
-((hard_reserve >= 4 * gib_kib)) || hard_reserve=$((4 * gib_kib))
-memory_high=$((total_kib - soft_reserve))
-memory_max=$((total_kib - hard_reserve))
-((memory_high > 0 && memory_max > memory_high)) || die 'Machine has insufficient memory for the balanced policy.'
+read -r memory_high memory_max < <(
+  calculate_memory_limits "$total_kib" "$memory_reserve_gib"
+) || die 'Machine has insufficient memory for the balanced policy.'
 
 uid=$(id -u "$agent_account")
 dropin_dir="/etc/systemd/system/user-$uid.slice.d"
