@@ -33,6 +33,10 @@ class PublicReleaseTests(unittest.TestCase):
         )
         (root / "README.md").write_text(f"Current version: {version}\n", encoding="utf-8")
         (root / "templates/private-fleet/kit.lock").write_text(f"{version}\n", encoding="utf-8")
+        (root / ".github/dependabot.yml").write_text(
+            "".join(public_release.DEPENDABOT_COMMIT_POLICY),
+            encoding="utf-8",
+        )
 
     def test_draft_allows_missing_license(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -103,6 +107,21 @@ class PublicReleaseTests(unittest.TestCase):
                 tracked=["config/profiles/node.local.toml", "reports/audit.txt"],
             )
             self.assertEqual(2, len(failures))
+
+    def test_dependabot_conventional_subject_policy_is_required(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_repository(root)
+            (root / ".github/dependabot.yml").write_text(
+                "version: 2\n", encoding="utf-8"
+            )
+            failures = public_release.deterministic_failures(
+                root, require_license=False, tracked=[]
+            )
+            self.assertIn(
+                "Dependabot must emit conventional build(scope) commit subjects",
+                failures,
+            )
 
     def test_missing_git_is_reported_without_traceback(self) -> None:
         with tempfile.TemporaryDirectory() as directory, mock.patch.object(

@@ -40,6 +40,12 @@ REQUIRED = (
     "scripts/start-macos-pilot.py",
 )
 CONDUCT_CONTACT_PLACEHOLDER = "owner must add a monitored private conduct-report"
+DEPENDABOT_COMMIT_POLICY = (
+    "    commit-message:\n",
+    "      prefix: build\n",
+    "      prefix-development: build\n",
+    "      include: scope\n",
+)
 
 
 def tracked_files(root: Path) -> tuple[list[str] | None, str | None]:
@@ -101,6 +107,17 @@ def deterministic_failures(
         support_text = support.read_text(encoding="utf-8").lower()
         if "external contributions are not accepted" in support_text:
             failures.append("SUPPORT.md contradicts the contribution policy")
+
+    dependabot = root / ".github/dependabot.yml"
+    if dependabot.is_file():
+        dependabot_text = dependabot.read_text(encoding="utf-8")
+        if any(
+            fragment not in dependabot_text
+            for fragment in DEPENDABOT_COMMIT_POLICY
+        ):
+            failures.append(
+                "Dependabot must emit conventional build(scope) commit subjects"
+            )
 
     if tracked is not None:
         for name in tracked:
