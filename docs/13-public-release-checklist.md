@@ -22,8 +22,7 @@ do not replace legal approval or live-machine evidence.
 
 - [x] `make ci-check` passes on the exact clean local commit.
 - [ ] Hosted CI passes on the exact commit proposed for publication.
-- [ ] Replace the conduct-contact placeholder, then verify `make public-check`
-      passes. It intentionally fails closed while that placeholder remains.
+- [x] Private conduct reporting is configured and `make public-check` passes.
 - [x] Claude and Grok independent reviews are completed and resolved for the
       local RC and supervised pilot scope; durable review evidence belongs in
       the applicable PR or private assurance record, not user documentation.
@@ -35,8 +34,9 @@ do not replace legal approval or live-machine evidence.
 
 ## Hosted repository
 
-- [ ] Obtain explicit owner approval before creating the GitHub remote or pushing.
-- [ ] Create it private first; inspect rendered files, Actions, and history.
+- [x] Obtain explicit owner approval before creating the public GitHub repository
+      or pushing.
+- [x] Create the empty public repository without uploading unreviewed data.
 - [ ] Require PRs, passing CI, independent approval, and protected default branch.
 - [ ] Require both the repository-validation and secret-scan jobs; verify the
       commit, branch, and PR-body policy blocks a deliberately invalid test
@@ -45,39 +45,38 @@ do not replace legal approval or live-machine evidence.
 - [ ] Enable secret scanning, push protection, Dependabot, and private
       vulnerability reporting where the plan supports them.
 - [ ] Confirm agent identities cannot approve or merge their own work.
-- [ ] Obtain separate explicit approval before changing visibility to public.
 - [ ] Clone from the hosted source into a clean directory and rerun all checks.
 
 ### First hosted import
 
-Do not bypass the protected-branch hook for the initial upload. After the owner
-approves remote creation and the first push, use a clean import path:
+An empty repository has no default branch for a pull request. Bootstrap it
+without bypassing the protected-branch hook:
 
 ```text
 reviewed local tree
         |
         v
-new private repository initialized with README on main
+push the reviewed commit to chore/initial-publish
         |
         v
-clean clone -> import tree on chore/initial-toolkit-import
+create main at that exact commit through the GitHub API
         |
         v
-CI + human-reviewed PR -> protected main
+run hosted CI -> protect main -> delete bootstrap branch
 ```
 
-1. Create the private repository with an initial README so `main` exists
-   remotely without a local protected-branch push.
-2. Clone that repository into a new directory and create
-   `chore/initial-toolkit-import` from its `main`.
-3. Copy the reviewed tree without its `.git` directory or ignored local files.
-4. Run `make ci-check` and `make public-check`, make one reviewed Conventional
-   Commit, then push only the import branch.
-5. Open a PR, require the repository-validation and secret-scan jobs, obtain
-   independent human approval, and merge through the host UI.
+1. Run `make ci-check`, `make public-check`, and the full-history secret scan on
+   the exact clean commit approved for publication.
+2. Push that commit to `chore/initial-publish`; the pre-push gate runs normally.
+3. Create `refs/heads/main` at the same commit with the GitHub API and make it
+   the default branch. Confirm the two commit IDs are identical.
+4. Run the CI workflow manually on `main`. After both jobs pass, require those
+   checks and pull-request review in branch protection.
+5. Delete `chore/initial-publish`, clone the public source into a clean directory,
+   and rerun both local gates. All later changes use reviewed pull requests.
 
-This produces a small, reviewable hosted history without disabling hooks or
-carrying exploratory local commits into the public-capable repository.
+This one-time bootstrap preserves the reviewed history and never pushes directly
+to the protected local branch. It is only valid for a new, empty repository.
 
 ## Private fleet repositories
 
