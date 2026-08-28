@@ -45,8 +45,7 @@ do not replace legal approval or live-machine evidence.
 - [x] Enable private vulnerability reporting and verify its repository API state.
 - [x] Enable secret scanning, push protection, and Dependabot where the GitHub
       plan supports them.
-- [x] Confirm identities cannot approve or merge their own work without an
-      independent approval and passing required checks.
+- [ ] Confirm agent identities cannot approve or merge their own work.
 - [x] Clone from the hosted source into a clean directory and rerun all checks.
 
 ### First hosted import
