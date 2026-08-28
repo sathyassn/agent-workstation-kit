@@ -240,6 +240,9 @@ class GitDisciplineIntegrationTests(unittest.TestCase):
         head = self._commit(
             "README.md", "# Updated fixture\n", "docs: update fixture"
         )
+        self._git("remote", "add", "origin", ".")
+        self._git("config", "branch.main.remote", "origin")
+        self._git("config", "branch.main.merge", "refs/heads/main")
         self._git("update-ref", "refs/remotes/origin/main", self.base)
         with self.assertRaisesRegex(discipline.DisciplineError, "upstream sync"):
             discipline.run_reference_transaction(
@@ -270,6 +273,20 @@ class GitDisciplineIntegrationTests(unittest.TestCase):
             io.StringIO(f"{'0' * 40} {head} refs/heads/main\n"),
             self.policy,
         )
+
+    def test_protected_ref_requires_a_configured_upstream(self) -> None:
+        head = self._commit(
+            "README.md", "# No upstream fixture\n", "docs: update fixture"
+        )
+        self._git("update-ref", "refs/remotes/origin/main", head)
+        with self.assertRaisesRegex(
+            discipline.DisciplineError, "no configured upstream"
+        ):
+            discipline.run_reference_transaction(
+                "prepared",
+                io.StringIO(f"{self.base} {head} refs/heads/main\n"),
+                self.policy,
+            )
 
     def test_protected_sync_uses_the_configured_non_origin_upstream(self) -> None:
         head = self._commit(

@@ -38,6 +38,11 @@ Creating a missing local protected branch from that exact upstream tip is also
 allowed. Contribution commits still belong on a valid topic branch, and direct
 pushes to a protected branch remain blocked.
 
+Use `git pull --ff-only` to synchronize a checked-out protected branch. A raw
+fetch refspec that writes directly to the local protected ref, such as
+`git fetch origin main:main`, is intentionally outside the supported workflow;
+fetch remote-tracking refs normally and then use the guarded pull path.
+
 Enable the hooks once in each clone:
 
 ```bash

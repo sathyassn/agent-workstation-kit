@@ -397,8 +397,9 @@ def _protected_sync_head(branch: str) -> str:
         f"{branch}@{{upstream}}",
         check=False,
     ).strip()
-    candidate = upstream or f"refs/remotes/origin/{branch}"
-    return git("rev-parse", "--verify", candidate, check=False).strip()
+    if not upstream:
+        return ""
+    return git("rev-parse", "--verify", upstream, check=False).strip()
 
 
 def run_pre_push(stdin: TextIO, policy: Policy) -> None:
@@ -451,10 +452,14 @@ def run_reference_transaction(stage: str, stdin: TextIO, policy: Policy) -> None
         _old_oid, new_oid, ref = fields
         if ref.startswith("refs/heads/"):
             branch = ref.removeprefix("refs/heads/")
-            if branch in policy.protected_branches and (
-                _is_zero_oid(new_oid)
-                or new_oid != _protected_sync_head(branch)
-            ):
+            if branch not in policy.protected_branches:
+                continue
+            sync_head = _protected_sync_head(branch)
+            if not sync_head:
+                raise DisciplineError(
+                    f"protected branch has no configured upstream: {branch}"
+                )
+            if _is_zero_oid(new_oid) or new_oid != sync_head:
                 raise DisciplineError(
                     "local update that is not an exact upstream sync is blocked: "
                     f"{branch}"
