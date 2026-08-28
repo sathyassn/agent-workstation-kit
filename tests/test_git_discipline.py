@@ -213,33 +213,77 @@ class GitDisciplineIntegrationTests(unittest.TestCase):
             with self.assertRaisesRegex(discipline.DisciplineError, "10 minutes"):
                 discipline.run_pre_push(io.StringIO(update), self.policy)
 
-    def test_protected_ref_allows_only_fast_forwards(self) -> None:
+    def test_pre_push_gate_does_not_inherit_hook_git_context(self) -> None:
+        update = (
+            f"refs/heads/docs/environment-check {self.base} "
+            f"refs/heads/docs/environment-check {'0' * 40}\n"
+        )
+        completed = subprocess.CompletedProcess(["make", "ci-check"], 0)
+        inherited = {
+            "GIT_DIR": "/unsafe/git-dir",
+            "GIT_WORK_TREE": "/unsafe/work-tree",
+            "GIT_INDEX_FILE": "/unsafe/index",
+            "PRESERVE_ME": "yes",
+        }
+        with mock.patch.dict(os.environ, inherited, clear=False):
+            with mock.patch.object(
+                discipline.subprocess, "run", return_value=completed
+            ) as run:
+                discipline.run_pre_push(io.StringIO(update), self.policy)
+        gate_env = run.call_args.kwargs["env"]
+        self.assertNotIn("GIT_DIR", gate_env)
+        self.assertNotIn("GIT_WORK_TREE", gate_env)
+        self.assertNotIn("GIT_INDEX_FILE", gate_env)
+        self.assertEqual(gate_env["PRESERVE_ME"], "yes")
+
+    def test_protected_ref_allows_only_exact_upstream_sync(self) -> None:
         head = self._commit(
             "README.md", "# Updated fixture\n", "docs: update fixture"
         )
+        self._git("update-ref", "refs/remotes/origin/main", self.base)
+        with self.assertRaisesRegex(discipline.DisciplineError, "upstream sync"):
+            discipline.run_reference_transaction(
+                "prepared",
+                io.StringIO(f"{self.base} {head} refs/heads/main\n"),
+                self.policy,
+            )
+        self._git("update-ref", "refs/remotes/origin/main", head)
         discipline.run_reference_transaction(
             "prepared",
             io.StringIO(f"{self.base} {head} refs/heads/main\n"),
             self.policy,
         )
-        with self.assertRaisesRegex(discipline.DisciplineError, "non-fast-forward"):
+        with self.assertRaisesRegex(discipline.DisciplineError, "upstream sync"):
             discipline.run_reference_transaction(
                 "prepared",
                 io.StringIO(f"{head} {self.base} refs/heads/main\n"),
                 self.policy,
             )
-        with self.assertRaisesRegex(discipline.DisciplineError, "non-fast-forward"):
+        with self.assertRaisesRegex(discipline.DisciplineError, "upstream sync"):
             discipline.run_reference_transaction(
                 "prepared",
                 io.StringIO(f"{head} {'0' * 40} refs/heads/main\n"),
                 self.policy,
             )
-        with self.assertRaisesRegex(discipline.DisciplineError, "non-fast-forward"):
-            discipline.run_reference_transaction(
-                "prepared",
-                io.StringIO(f"{'0' * 40} {head} refs/heads/main\n"),
-                self.policy,
-            )
+        discipline.run_reference_transaction(
+            "prepared",
+            io.StringIO(f"{'0' * 40} {head} refs/heads/main\n"),
+            self.policy,
+        )
+
+    def test_protected_sync_uses_the_configured_non_origin_upstream(self) -> None:
+        head = self._commit(
+            "README.md", "# Upstream fixture\n", "docs: update upstream fixture"
+        )
+        self._git("remote", "add", "upstream", ".")
+        self._git("update-ref", "refs/remotes/upstream/main", head)
+        self._git("config", "branch.main.remote", "upstream")
+        self._git("config", "branch.main.merge", "refs/heads/main")
+        discipline.run_reference_transaction(
+            "prepared",
+            io.StringIO(f"{self.base} {head} refs/heads/main\n"),
+            self.policy,
+        )
 
 
 if __name__ == "__main__":

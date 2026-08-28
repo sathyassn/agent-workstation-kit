@@ -31,10 +31,12 @@ protected main <---- GitHub branch rules -----------------------+
 - GitHub branch protection is required after the remote exists. Local hooks are
   fast feedback; hosted CI and branch protection are the merge perimeter.
 
-The local protected-ref hook permits an ordinary fast-forward update from the
-remote default branch. It blocks creating, deleting, rewinding, or otherwise
-rewriting a protected local branch. Contribution commits still belong on a
-valid topic branch, and direct pushes to a protected branch remain blocked.
+The local protected-ref hook permits a move to the exact configured upstream
+tip, which keeps an ordinary `git pull --ff-only` working. It blocks deletion,
+rewind, a local feature-branch fast-forward, or any other protected-branch move.
+Creating a missing local protected branch from that exact upstream tip is also
+allowed. Contribution commits still belong on a valid topic branch, and direct
+pushes to a protected branch remain blocked.
 
 Enable the hooks once in each clone:
 
@@ -46,8 +48,10 @@ make ci-check
 
 The checker fails closed when the policy is missing or malformed. Hook files are
 ShellCheck-validated, and repository tests verify their presence and executable
-mode. The pre-push repository gate has a ten-minute ceiling. Hosted checks must
-remain required because a contributor can disable local hooks in a clone.
+mode. The pre-push repository gate has a ten-minute ceiling and clears Git's
+hook-only repository variables before tests spawn their own temporary Git
+repositories. Hosted checks must remain required because a contributor can
+disable local hooks in a clone.
 
 This is a repository-specific adoption of Codeflow's branch, commit, secret,
 protected-ref, review, and testing discipline. It deliberately does not claim

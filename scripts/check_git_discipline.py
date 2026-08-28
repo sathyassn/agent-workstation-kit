@@ -389,6 +389,18 @@ def _is_zero_oid(value: str) -> bool:
     return bool(value) and set(value) == {"0"}
 
 
+def _protected_sync_head(branch: str) -> str:
+    """Return the exact configured upstream tip used to prove a safe sync."""
+    upstream = git(
+        "rev-parse",
+        "--symbolic-full-name",
+        f"{branch}@{{upstream}}",
+        check=False,
+    ).strip()
+    candidate = upstream or f"refs/remotes/origin/{branch}"
+    return git("rev-parse", "--verify", candidate, check=False).strip()
+
+
 def run_pre_push(stdin: TextIO, policy: Policy) -> None:
     """Validate ref updates from Git's pre-push protocol, then run the full gate."""
     updates = [line.split() for line in stdin if line.strip()]
@@ -409,9 +421,16 @@ def run_pre_push(stdin: TextIO, policy: Policy) -> None:
         if not _is_zero_oid(remote_oid) and not _is_ancestor(remote_oid, local_oid):
             raise DisciplineError(f"force push is blocked: {branch}")
     if updates:
+        gate_env = os.environ.copy()
+        for inherited_git_key in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
+            gate_env.pop(inherited_git_key, None)
         try:
             result = subprocess.run(
-                ["make", "ci-check"], cwd=ROOT, check=False, timeout=600
+                ["make", "ci-check"],
+                cwd=ROOT,
+                check=False,
+                timeout=600,
+                env=gate_env,
             )
         except subprocess.TimeoutExpired as exc:
             raise DisciplineError(
@@ -422,23 +441,22 @@ def run_pre_push(stdin: TextIO, policy: Policy) -> None:
 
 
 def run_reference_transaction(stage: str, stdin: TextIO, policy: Policy) -> None:
-    """Allow protected-branch fast-forwards but block other local ref changes."""
+    """Allow exact upstream syncs but block other protected local ref changes."""
     if stage != "prepared":
         return
     for line in stdin:
         fields = line.split()
         if len(fields) != 3:
             continue
-        old_oid, new_oid, ref = fields
+        _old_oid, new_oid, ref = fields
         if ref.startswith("refs/heads/"):
             branch = ref.removeprefix("refs/heads/")
             if branch in policy.protected_branches and (
-                _is_zero_oid(old_oid)
-                or _is_zero_oid(new_oid)
-                or not _is_ancestor(old_oid, new_oid)
+                _is_zero_oid(new_oid)
+                or new_oid != _protected_sync_head(branch)
             ):
                 raise DisciplineError(
-                    "non-fast-forward local update to protected branch is blocked: "
+                    "local update that is not an exact upstream sync is blocked: "
                     f"{branch}"
                 )
 
