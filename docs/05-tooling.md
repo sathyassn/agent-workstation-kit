@@ -1,5 +1,7 @@
 # Development tooling
 
+[Previous: accounts](04-accounts-and-access.md) · [Documentation home](README.md) · [Next: provider identities](06-agent-and-source-control-identities.md)
+
 ## Baseline
 
 - Git, Git LFS, GitHub CLI (`gh`), and GitLab CLI (`glab`).
@@ -38,6 +40,12 @@ documented distribution. Do not assume a package name or pipe an unreviewed
 moving installer into a work shell. Herdr `0.8.2` is pinned through its official
 mise registry entry; older mise releases must be updated rather than silently
 falling back to an unpinned installer. Authentication remains a separate gate.
+
+The [day-zero Linux guide](runbooks/day-zero-linux.md) documents one explicit
+exception: an official standalone Codex installer establishes the temporary
+bootstrap agent before mise exists. It uses a private temporary directory,
+records the reviewed file digest and never pipes the download into a shell. The
+final `agent-NN` tooling still uses the reviewed mise path.
 
 ## Authentication
 

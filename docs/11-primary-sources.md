@@ -1,12 +1,19 @@
 # Primary source register
 
+[Previous: responsibility matrix](10-human-script-agent-matrix.md) · [Documentation home](README.md) · [Next: fleet rollout](12-fleet-rollout-and-change-management.md)
+
 Recheck these before a fleet release because installers, supported OS versions,
 pricing, authentication, and product maturity change. Provider identity and MCP
-claims in release candidate 0.2.0-rc.2 were last checked on 2026-08-25.
+claims in release candidate 0.2.0-rc.2 were last checked on 2026-08-25. The
+Codex CLI installation and authentication path added in 0.2.0-rc.3 was checked
+against the official OpenAI documentation on 2026-08-27.
 
 ## Agents
 
 - [OpenAI authentication](https://learn.chatgpt.com/docs/auth)
+- [OpenAI device-code authentication](https://learn.chatgpt.com/docs/auth)
+- [OpenAI Codex CLI](https://learn.chatgpt.com/docs/codex/cli)
+- [OpenAI standalone Codex installer](https://chatgpt.com/codex/install.sh)
 - [OpenAI API project service accounts](https://platform.openai.com/docs/api-reference/project-service-accounts)
 - [OpenAI Codex authentication](https://developers.openai.com/codex/auth)
 - [OpenAI Linux desktop preview](https://learn.chatgpt.com/docs/linux/linux-app)

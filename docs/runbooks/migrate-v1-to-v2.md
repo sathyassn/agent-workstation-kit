@@ -1,5 +1,7 @@
 # Migrate a pre-v2 pilot
 
+[Documentation home](../README.md) · [Current migration](migrate-v2-to-v3.md) · [Fleet rollout](../12-fleet-rollout-and-change-management.md)
+
 There is no in-place privileged migration. Preserve the old profile and record
 current live state before changing a node.
 

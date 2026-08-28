@@ -1,5 +1,7 @@
 # Public-readiness follow-up — 2026-08-21
 
+[Previous review](2026-08-20-claude-code-review.md) · [Documentation home](../README.md) · [Next review](2026-08-22-release-candidate-review.md)
+
 > Historical record for 0.1.0-rc.1. Superseded by the 0.2.0-rc.1 reviews and
 > current public-release checklist.
 

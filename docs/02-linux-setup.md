@@ -1,11 +1,28 @@
 # Linux setup
 
-Use Ubuntu LTS on the initial production nodes. Perform the first pilot interactively before reusing the profile elsewhere.
+[Previous: profile fields](01b-profile-field-reference.md) · [Documentation home](README.md) · [Day-zero entry](runbooks/day-zero-linux.md) · [Next: macOS setup](03-macos-setup.md)
+
+Use Ubuntu LTS on the initial production nodes. Follow the [day-zero
+guide](runbooks/day-zero-linux.md) for a fresh machine and perform the first
+pilot interactively before reusing its profile elsewhere.
+
+## Contents
+
+1. [Human-only installation](#phase-0-human-only-installation)
+2. [Read-only assessment](#phase-1-read-only-assessment)
+3. [Base installation](#phase-2-scripted-base-installation)
+4. [Machine identity](#phase-3-machine-identity)
+5. [Accounts and remote access](#phase-4-accounts-and-access)
+6. [User tooling and agents](#phase-5-user-space-tooling-and-agents)
+7. [Controls and validation](#phase-6-controls-and-validation)
 
 ## Phase 0: human-only installation
 
 1. Update firmware and record the device serial number.
-2. Install supported **Ubuntu Desktop LTS** from verified installation media. Ubuntu Server is outside this baseline unless a separately reviewed graphical desktop and display-manager build has been added.
+2. Install supported **Ubuntu Desktop LTS** from verified installation media.
+   The first MS-S1 Max baseline is 24.04.4 LTS. Ubuntu Server is outside this
+   baseline unless a separately reviewed graphical desktop and display-manager
+   build has been added.
 3. Enable full-disk encryption when compatible with the unattended-boot plan.
 4. Create the first temporary/bootstrap administrator.
 5. Apply firmware and OS updates, reboot, and verify network/display stability.
@@ -17,17 +34,19 @@ These steps cannot be safely delegated to an agent that depends on the unfinishe
 
 Copy this repository to the machine, create and validate the [onboarding profile](01a-onboarding-profile.md), then run:
 
-```text
+```bash
+cd "$HOME/setup/agent-workstation-kit"
 ./scripts/preflight.sh
 ```
 
 Review hardware, OS, storage, memory, virtualization, desktop, and existing configuration. Resolve unsupported OS or insufficient disk space before proceeding.
 
-After validation, copy the exact reviewed snapshot to
-`/opt/agent-workstation-kit`, owned by root and not group/world writable. Run
-privileged phases from that immutable staging copy. Keep ordinary development
-and proposed updates in a separate named-human checkout; promote a new snapshot
-only after its checks and review pass.
+After validation, follow the [day-zero staging procedure](runbooks/day-zero-linux.md)
+to copy exact reviewed toolkit and private-fleet revisions to root-owned paths
+under `/opt`. Run privileged phases only from the staged toolkit and only
+against the staged fleet input. Keep ordinary development and proposed updates
+in separate user-owned checkouts; promote replacements only after their checks
+and review pass.
 
 Use `fleetctl.py plan` to render profile-specific commands. The direct script commands below remain useful for inspection and troubleshooting; normal onboarding should run them through `fleetctl.py` one phase at a time.
 
@@ -37,16 +56,19 @@ SSH or systemd files automatically.
 
 ## Phase 2: scripted base installation
 
-Preview first:
+Preview first from the reviewed bootstrap checkout:
 
 ```text
 ./scripts/bootstrap-linux.sh
 ```
 
-Apply only after reviewing the plan:
+Apply only after reviewing the plan and moving to the matching root-owned
+toolkit snapshot:
 
 ```text
+cd /opt/agent-workstation-kit
 sudo ./scripts/bootstrap-linux.sh --apply
+sudo -K
 ```
 
 The base script installs stable OS packages and security/diagnostic prerequisites. It deliberately does not start SSH, authenticate external services, or install NoMachine. On MS-S1 Max hardware, complete the separate [RTL8127/Secure Boot runbook](hardware/minisforum-ms-s1-max.md).
@@ -68,8 +90,12 @@ resolution, `sudo`, and the identity audit before continuing.
 Apply only after recovery is open and tested:
 
 ```bash
-sudo ./scripts/fleetctl.py run /path/to/ac-ws-001.toml identity \
+cd /opt/agent-workstation-kit
+PROFILE='machines/ac-ws-001.toml'
+sudo ./scripts/fleetctl.py --fleet-root /opt/agent-workstation-fleet \
+  run "$PROFILE" identity \
   --apply --confirm-recovery-tested --connection-context local-console
+sudo -K
 ```
 
 When applying through a named-user Tailscale SSH session, use
@@ -88,20 +114,26 @@ Provision public keys for every named SSH user. Install and test Tailscale from
 the console, then preview the profile's `remote-hardening` phase. Apply only
 with open, tested recovery and an explicit connection context:
 
-```text
+```bash
+cd /opt/agent-workstation-kit
+PROFILE='machines/ac-ws-001.toml'
+
 # At a physical console or independently tested KVM:
-sudo ./scripts/fleetctl.py run PROFILE remote-hardening --apply \
+sudo ./scripts/fleetctl.py --fleet-root /opt/agent-workstation-fleet \
+  run "$PROFILE" remote-hardening --apply \
   --confirm-recovery-tested --connection-context local-console
+sudo -K
 
 # In a named-user SSH shell reached through Tailscale, capture before sudo:
 ssh_peer=${SSH_CONNECTION%% *}
-sudo ./scripts/fleetctl.py run PROFILE remote-hardening --apply \
+sudo ./scripts/fleetctl.py --fleet-root /opt/agent-workstation-fleet \
+  run "$PROFILE" remote-hardening --apply \
   --confirm-recovery-tested --connection-context tailscale-ssh \
   --ssh-source-ip "$ssh_peer"
+sudo -K
 ```
 
-For an external fleet, add `--fleet-root PRIVATE_FLEET` before `run`. The
-remote form verifies the supplied peer with `tailscale whois`; a missing
+The remote form verifies the supplied peer with `tailscale whois`; a missing
 context fails closed even when `sudo` strips SSH environment variables. The
 phase enforces key-only SSH, denies direct SSH for `agent-NN`, restricts SSH
 and NoMachine to `tailscale0`, and starts SSH only after the firewall is

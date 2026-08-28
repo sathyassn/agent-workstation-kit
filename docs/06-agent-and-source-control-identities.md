@@ -1,5 +1,7 @@
 # Agent and provider identities
 
+[Previous: tooling](05-tooling.md) · [Documentation home](README.md) · [Next: security and resources](07-security-and-resources.md)
+
 The local `agent-01` Unix account is a runtime boundary. It is not a GitHub,
 GitLab, Atlassian, or model-provider account. Keep these identity layers separate:
 

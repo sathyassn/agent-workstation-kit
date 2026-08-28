@@ -1,5 +1,7 @@
 # Final workstation stack
 
+[Previous: architecture](00-architecture.md) · [Documentation home](README.md) · [Next: planning](01-planning.md)
+
 These are defaults, not silent installers. Recheck price, license, OS support,
 and organization policy at purchase time.
 

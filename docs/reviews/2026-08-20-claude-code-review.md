@@ -1,5 +1,7 @@
 # Independent review record — 2026-08-20
 
+[Documentation home](../README.md) · [Next review](2026-08-21-public-readiness-review.md)
+
 > Historical record for 0.1.0-rc.1. Superseded by the 0.2.0-rc.1 reviews; do
 > not use its names or schema as current guidance.
 

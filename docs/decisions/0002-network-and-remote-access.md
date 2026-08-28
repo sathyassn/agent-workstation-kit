@@ -1,5 +1,7 @@
 # Decision: Tailscale, NoMachine, and staged remote KVM
 
+[Previous decision](0001-platform-and-nodes.md) · [Documentation home](../README.md) · [Next decision](0003-shared-agent-account.md)
+
 - **Status:** accepted
 - **Private network:** Tailscale with grants and tagged agent nodes. Runner-up: directly managed WireGuard.
 - **Desktop:** NoMachine Enterprise Desktop for one shared physical `agent-NN` desktop. Runner-up: self-hosted RustDesk Pro.

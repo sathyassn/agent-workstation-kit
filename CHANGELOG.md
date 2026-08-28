@@ -3,6 +3,18 @@
 This project follows Semantic Versioning. Version 0.x interfaces may change
 between minor releases while live-machine evidence is incorporated.
 
+## 0.2.0-rc.3 — Unreleased
+
+- Added one ordered day-zero Linux path from first boot through supervised
+  setup-agent and operational-agent handoff.
+- Added a non-privileged startup readiness command with unit coverage.
+- Added a complete documentation map, page navigation, concise contents lists,
+  explicit privileged staging instructions and automated discoverability/link
+  checks.
+- Require the approved private profile to be committed before staging, publish
+  toolkit/fleet snapshots through a rollback-capable temporary area, and reject
+  symlinked or dirty private-fleet inputs during readiness checks.
+
 ## 0.2.0-rc.2 — Unreleased
 
 - Added a fleet-unique, human-friendly `machine.display_name` without weakening

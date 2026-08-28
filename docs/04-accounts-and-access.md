@@ -1,5 +1,7 @@
 # Accounts and access
 
+[Previous: macOS setup](03-macos-setup.md) · [Documentation home](README.md) · [Next: tooling](05-tooling.md)
+
 ## Naming and privilege
 
 | Identity | Example | Normal purpose | Privileged |

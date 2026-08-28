@@ -1,5 +1,7 @@
 # Validation and operations
 
+[Previous: security and resources](07-security-and-resources.md) · [Documentation home](README.md) · [Next: network and remote access](09-network-remote-access-and-files.md)
+
 ## Acceptance tests
 
 1. Reboot and recover through the currently approved console path; require remote KVM before unattended placement if policy says so.

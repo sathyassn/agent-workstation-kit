@@ -1,5 +1,7 @@
 # Identity and provider review — 2026-08-25
 
+[Previous review](2026-08-22-release-candidate-review.md) · [Documentation home](../README.md)
+
 Scope: `0.2.0-rc.2` machine identity, fleet-wide uniqueness, schema migration,
 provider identities, and privileged connection-safety changes before the local
 commit. This is static review evidence, not live-machine evidence.
@@ -67,3 +69,5 @@ Provider conclusions were checked against the vendor links in
   policy clears `SSH_CONNECTION`.
 - Future macOS account, naming, FileVault, remote-desktop, privacy, Xcode, and
   workload validation on the intended Mac mini/Studio release.
+
+[Next review: day-zero documentation](2026-08-27-day-zero-documentation-review.md) · [Documentation home](../README.md)

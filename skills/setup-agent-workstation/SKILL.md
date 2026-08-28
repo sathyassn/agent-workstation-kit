@@ -21,15 +21,18 @@ mutating phase.
 
 ## Begin read-only
 
-Run `scripts/preflight.sh` and, on Linux, `scripts/hardware-audit-linux.sh`.
+For a fresh Linux host, first follow `docs/runbooks/day-zero-linux.md`. Run
+`scripts/start-linux-pilot.py --fleet-root FLEET_ROOT` before accepting the
+bootstrap handoff; resolve every `FAIL`. Then run `scripts/preflight.sh` and,
+on Linux, `scripts/hardware-audit-linux.sh`.
 Identify OS/version, firmware, Secure Boot/FileVault/LUKS, hardware, accounts,
 network, desktop, package managers, installed tools, management controls, and
 whether the context is work or personal. Treat hardware audit output as private.
 
-An agent may orchestrate after the OS, first named/bootstrap account, working
-network, toolkit checkout, and one authenticated agent CLI exist. Before then,
-provide the manual OS checklist. After `agent-NN` exists, run its user-space
-phases only in that account. Never copy bootstrap credentials into it.
+An agent may orchestrate after the OS, bootstrap account, working network,
+toolkit checkout, private fleet checkout and one authenticated agent CLI exist.
+Before then, provide the manual OS checklist. After `agent-NN` exists, run its
+user-space phases only in that account. Never copy bootstrap credentials into it.
 
 ## Collect inputs once
 
@@ -56,8 +59,10 @@ For schema-2 inventory, follow `docs/runbooks/migrate-v2-to-v3.md` and run its
 read-only preservation checker before reviewing any identity apply.
 
 Run draft validation and plan. Resolve every `ask`, obtain review, set approved,
-then run `validate --ready` and `validate-fleet.py`. Never turn an unanswered
-choice into a default.
+then run `validate --ready` and `validate-fleet.py`. Commit the exact approved
+profile and `kit.lock` through the private fleet's reviewed workflow before
+creating the root-owned staging archive; never archive an untracked or dirty
+profile. Never turn an unanswered choice into a default.
 
 ## Execute in order
 
@@ -81,6 +86,11 @@ Read [Ubuntu workflow](references/linux-workflow.md) or
 
 Validate after every phase. Stop at the first unknown or failed security,
 recovery, driver, identity, or data-integrity condition.
+
+For privileged Linux applies, use only the matching root-owned toolkit and
+private-fleet snapshots created by the day-zero staging procedure. The human
+types the staged command in a separate trusted terminal and runs `sudo -K`
+immediately afterward. Never apply user-writable code or profile input.
 
 ## Preserve identity boundaries
 

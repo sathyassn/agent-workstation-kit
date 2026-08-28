@@ -1,5 +1,7 @@
 # Planning worksheet
 
+[Previous: selected stack](00a-final-stack.md) · [Documentation home](README.md) · [Next: day zero](runbooks/day-zero-linux.md)
+
 Complete this before running a mutating script, then record the decisions in the validated [onboarding profile](01a-onboarding-profile.md). The worksheet explains the decisions; the TOML profile is the machine-readable source used for planning, apply gates, and later audit.
 
 ## Required decisions

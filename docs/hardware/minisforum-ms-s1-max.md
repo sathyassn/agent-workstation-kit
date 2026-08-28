@@ -1,10 +1,19 @@
 # Minisforum MS-S1 Max acceptance runbook
 
+[Documentation home](../README.md) · [Day-zero startup](../runbooks/day-zero-linux.md) · [First-pilot evidence](../runbooks/first-linux-pilot.md)
+
 This is the first Linux hardware profile, not a universal recommendation. The
 64 GB model has soldered LPDDR5X unified memory, so capacity cannot be upgraded.
 Start with two realistic heavy sessions, measure, then increase concurrency.
 Add 128 GB nodes later for high-memory workloads rather than assuming every
 workload fits the 64 GB pilot.
+
+## Contents
+
+1. [Known hardware facts](#known-hardware-facts)
+2. [Unbox and record](#unbox-and-record-human)
+3. [Ubuntu and 10GbE](#ubuntu-and-10gbe)
+4. [Acceptance gates](#acceptance-gates)
 
 ## Known hardware facts
 
@@ -32,7 +41,7 @@ contains serial numbers and must not be committed to the public toolkit.
 
 ## Ubuntu and 10GbE
 
-Install Ubuntu 24.04 LTS using Wi-Fi, a USB Ethernet adapter, or local media.
+Install Ubuntu 24.04.4 LTS using Wi-Fi, a USB Ethernet adapter, or local media.
 The RTL8127 may require Minisforum's out-of-tree DKMS driver. Preview:
 
 ```bash

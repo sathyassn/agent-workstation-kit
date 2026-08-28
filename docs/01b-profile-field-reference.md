@@ -1,5 +1,7 @@
 # Profile field reference
 
+[Previous: profile onboarding](01a-onboarding-profile.md) · [Documentation home](README.md) · [Next: Linux setup](02-linux-setup.md)
+
 Start with `fleetctl init` or an example; do not invent a profile from memory.
 
 | Field | Allowed/example | Purpose | Evidence |

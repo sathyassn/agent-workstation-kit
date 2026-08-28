@@ -1,5 +1,7 @@
 # macOS setup
 
+[Previous: Linux setup](02-linux-setup.md) · [Documentation home](README.md) · [Next: accounts](04-accounts-and-access.md)
+
 Use this path for future Mac mini or Mac Studio nodes. Keep Xcode/Apple-specific work on the existing MacBook until a dedicated Mac node is added.
 
 ## Human-only bootstrap
@@ -16,7 +18,18 @@ Create separate named human, assigned `admin-NN`, and non-admin `agent-NN` accou
 
 ## Scripted setup
 
-Create a macOS [onboarding profile](01a-onboarding-profile.md). Run the `fleetctl` `base` phase first in preview mode and then with `--apply` as the intended Homebrew package owner, not root. The underlying script verifies prerequisites and installs the declared Homebrew baseline. Next, preview the privileged `identity` phase and apply it with `--confirm-recovery-tested --connection-context local-console` (or the documented `tailscale-ssh` context and peer address); it sets HostName/LocalHostName, the friendly Computer Name, and a root-owned identity record under `/Library/Application Support/Agent Workstation Kit`. The audit checks all three macOS names. The plan marks FileVault, account creation, remote-login, screen-sharing, privacy permissions, MDM, and resource policy as human/managed phases.
+Create a macOS [onboarding profile](01a-onboarding-profile.md), then work in
+phases:
+
+1. Preview `fleetctl base`, then apply it as the intended Homebrew package owner,
+   not root. The script verifies prerequisites and installs the declared baseline.
+2. Preview the privileged `identity` phase. Apply with tested recovery and the
+   documented `local-console` or `tailscale-ssh` connection context.
+3. Verify HostName, LocalHostName, the friendly Computer Name and the root-owned
+   record under `/Library/Application Support/Agent Workstation Kit`.
+
+FileVault, accounts, remote login, Screen Sharing, privacy permissions, MDM and
+resource policy remain human or managed phases.
 
 The identity installer checks process ancestry as well as SSH environment
 variables before accepting `local-console`, and fails closed when it cannot

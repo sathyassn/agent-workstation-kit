@@ -1,5 +1,7 @@
 # Release-candidate review — 2026-08-22
 
+[Previous review](2026-08-21-public-readiness-review.md) · [Documentation home](../README.md) · [Next review](2026-08-25-identity-and-provider-review.md)
+
 Scope: `0.2.0-rc.1` before its first local commit. This record summarizes
 independent read-only reviews; it is not live-machine evidence.
 

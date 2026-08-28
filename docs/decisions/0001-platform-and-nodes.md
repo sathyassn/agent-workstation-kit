@@ -1,5 +1,7 @@
 # Decision: Ubuntu first, multiple nodes
 
+[Documentation home](../README.md) · [Next decision](0002-network-and-remote-access.md)
+
 - **Status:** accepted
 - **Decision:** Use supported Ubuntu LTS on multiple Ryzen AI Max+ 395-class mini PCs. Add macOS nodes later for Apple-platform development.
 - **Reason:** workload isolation, incremental capacity, less browser/build contention, and reduced single-node dependence.

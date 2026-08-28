@@ -1,37 +1,49 @@
 # First Linux node pilot
 
-Use this runbook for the first 64 GB Linux mini PC. It is a controlled pilot,
-not a fleet template until the evidence below is complete.
+[Documentation home](../README.md) · [Day-zero startup](day-zero-linux.md) · [MS-S1 Max hardware](../hardware/minisforum-ms-s1-max.md) · [Linux setup](../02-linux-setup.md)
 
-## Before installation
+Use this checklist alongside the [day-zero guide](day-zero-linux.md) for the
+first 64 GB Linux mini PC. Read and complete **Before power-on** first; day zero
+then controls execution, and this checklist records evidence at each checkpoint.
+It is not a fleet template until the evidence below is complete.
+
+## Contents
+
+1. [Before power-on](#before-power-on)
+2. [Install and establish recovery](#install-and-establish-recovery)
+3. [Provision in reviewed phases](#provision-in-reviewed-phases)
+4. [Acceptance and capacity baseline](#acceptance-and-capacity-baseline)
+5. [Promotion decision](#promotion-decision)
+
+## Before power-on
 
 - [ ] Record the exact model, serial number, RAM, storage, NICs, BIOS version,
       warranty, and return deadline.
-- [ ] Have a monitor, keyboard, wired network, verified Ubuntu Desktop LTS
+- [ ] Have a monitor, keyboard, fallback network, verified Ubuntu Desktop 24.04.4 LTS
       installer, and a second computer available.
 - [ ] Keep a monitor and keyboard attached. Record KVM as `deferred` while the
       node is physically supervised; install/test it before unattended placement.
 - [ ] Decide the disk-encryption and unattended-reboot recovery procedure.
-- [ ] Generate the draft with `fleetctl init` in a private fleet repository;
-      confirm the technical hostname, fleet-unique assigned display name,
-      persistent UUID, asset tag, and non-secret decisions. Run the whole-fleet
-      validator; profile validation alone cannot prove uniqueness.
+- [ ] Decide the proposed technical hostname, fleet-unique assigned display
+      name, asset tag and non-secret policy inputs. The day-zero setup-agent
+      interview later creates the UUID/profile with `fleetctl init`, validates
+      the whole fleet and commits the approved profile before staging.
 
 ## Install and establish recovery
 
 - [ ] Update system firmware, enable virtualization/IOMMU as required, and keep
       memory or performance tuning at supported defaults for the first burn-in.
-- [ ] Install Ubuntu Desktop LTS with full-disk encryption where the recovery
+- [ ] Install Ubuntu Desktop 24.04.4 LTS with full-disk encryption where the recovery
       design supports it. Create only the bootstrap administrator initially.
 - [ ] Apply OS and firmware updates, reboot twice, and check display, wired and
       wireless networking, audio, suspend policy, storage, and thermals.
 - [ ] Validate the approved console path. If KVM is installed, also validate
       power, BIOS, boot, disk unlock, and input through Tailscale.
-- [ ] Validate a clean named-human checkout, then place the exact reviewed
-      snapshot at `/opt/agent-workstation-kit` as root-owned and not
-      group/world writable before installing privileged helpers. Never run an
-      apply from `agent-01`'s home or another agent-writable checkout. Run
-      `make check` and `./scripts/preflight.sh` before any apply operation.
+- [ ] Validate clean toolkit and private-fleet checkouts, then follow the
+      [day-zero staging procedure](day-zero-linux.md). Privileged applies must
+      use the root-owned toolkit and fleet snapshots under `/opt`; never apply
+      user-writable code or profile input. Run `make check` and
+      `./scripts/preflight.sh` before staging.
 - [ ] On an MS-S1 Max, complete `docs/hardware/minisforum-ms-s1-max.md`, retain
       Secure Boot, and prove RTL8127 DKMS survives a kernel update.
 

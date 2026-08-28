@@ -1,5 +1,7 @@
 # Migrate a profile from schema 2 to schema 3
 
+[Documentation home](../README.md) · [Earlier migration](migrate-v1-to-v2.md) · [Fleet rollout](../12-fleet-rollout-and-change-management.md)
+
 Use a private fleet branch. This is a reviewed data migration, not an OS apply.
 Keep the schema-2 source unchanged until the schema-3 candidate passes review.
 

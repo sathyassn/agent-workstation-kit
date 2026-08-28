@@ -1,5 +1,7 @@
 # Network, remote access, and files
 
+[Previous: validation](08-validation-and-operations.md) · [Documentation home](README.md) · [Next: responsibility matrix](10-human-script-agent-matrix.md)
+
 ## Tailscale
 
 Install from the vendor-supported package or installer. Authenticate the node as a tagged non-human device and use Tailscale grants for new policy. Do not leave the default allow-all policy in a work tailnet.
@@ -35,7 +37,18 @@ Keep KVM devices in a separate tag/group and, where possible, a separate LAN/VLA
 
 ## Remote KVM
 
-During a supervised pilot, local monitor/keyboard is sufficient. Before unattended office placement, use a tested remote KVM. Prefer Comet X (GL-RM4PE) for up to four co-located hosts when its firmware and availability meet policy; keep a Comet PoE (GL-RM1PE) as the single-host fallback/spare. Comet X switches among four hosts but controls only one at a time and is a shared failure domain. Put it on Tailscale and a restricted management segment, disable public forwarding, require unique credentials/MFA where supported, and maintain firmware. Test WOL and AC recovery before buying power actuators; do not assume the MS-S1 cascade header is ATX-board compatible.
+During a supervised pilot, local monitor and keyboard are sufficient. Before
+unattended office placement, use a tested remote KVM:
+
+- Prefer Comet X (GL-RM4PE) for up to four co-located hosts when its firmware
+  and availability meet policy.
+- Keep a Comet PoE (GL-RM1PE) as a single-host fallback or spare.
+- Remember that Comet X controls one host at a time and is a shared failure
+  domain.
+- Put the KVM on Tailscale and a restricted management segment. Disable public
+  forwarding, use unique credentials and MFA where supported, and maintain it.
+- Test WOL and AC recovery before buying power actuators. Do not assume the
+  MS-S1 cascade header is ATX-board compatible.
 
 ## Headed browser tests
 

@@ -1,5 +1,7 @@
 # Production and public-release checklist
 
+[Previous: fleet rollout](12-fleet-rollout-and-change-management.md) · [Documentation home](README.md) · [Repository home](../README.md)
+
 Complete this for the exact commit proposed for publication. Repository checks
 do not replace legal approval or live-machine evidence.
 

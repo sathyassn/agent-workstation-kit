@@ -1,5 +1,7 @@
 # Security and resource controls
 
+[Previous: provider identities](06-agent-and-source-control-identities.md) · [Documentation home](README.md) · [Next: validation](08-validation-and-operations.md)
+
 ## Security baseline
 
 - Full-disk encryption and tested recovery.

@@ -1,5 +1,7 @@
 # Onboarding profile and controller
 
+[Previous: day zero](runbooks/day-zero-linux.md) · [Documentation home](README.md) · [Next: field reference](01b-profile-field-reference.md)
+
 One reviewed TOML profile declares each machine's desired, non-secret state.
 Python 3.11+ parses TOML without bootstrap dependencies.
 

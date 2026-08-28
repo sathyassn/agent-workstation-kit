@@ -1,5 +1,7 @@
 # Architecture and operating model
 
+[Documentation home](README.md) · [Next: selected stack](00a-final-stack.md)
+
 ## Goals
 
 - Move sustained agents, browsers, builds, and containers off operator laptops.

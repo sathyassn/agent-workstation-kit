@@ -1,9 +1,12 @@
 # Human, script, and setup-agent responsibilities
 
+[Previous: network and remote access](09-network-remote-access-and-files.md) · [Documentation home](README.md) · [Next: sources](11-primary-sources.md)
+
 | Phase | Human | Script | Setup agent |
 |---|---|---|---|
 | Purchase/site | Approves hardware, warranty, network, location | None | Researches current availability and records assumptions |
 | OS installation | Boots media, encryption, recovery, first admin | None | Presents checklist only |
+| Handoff readiness | Supplies private fleet path and reviews results | `start-linux-pilot.py` | Starts only after the readiness gate passes |
 | Assessment | Provides policy/context | `preflight.sh` | Runs checks and interprets results |
 | Onboarding profile | Resolves choices and approves desired state | `fleetctl.py validate/plan` | Interviews once, writes no secrets, explains validation errors |
 | Fleet/migration gate | Reviews new identity decisions and preserved fields | `validate-fleet.py`, `check-profile-migration.py` | Runs read-only checks; never silently upgrades inventory |
@@ -22,6 +25,16 @@
 
 ## Earliest useful agent point
 
-The setup agent can assist after the OS, first named/bootstrap account, network, repository, and one agent CLI are available. It can then orchestrate preview commands immediately. The shared `agent-NN` account becomes the execution environment only after account creation and its user-space tools are installed.
+The setup agent can assist after the OS, bootstrap account, network, toolkit,
+private fleet and one authenticated agent CLI are available. On Linux, follow
+the [day-zero guide](runbooks/day-zero-linux.md) and run:
+
+```bash
+python3 scripts/start-linux-pilot.py --fleet-root /private/path/workstation-fleet
+```
+
+It can then orchestrate preview commands. The shared `agent-NN` account becomes
+the execution environment only after account creation and its user-space tools
+are installed.
 
 On macOS, an agent cannot replace the human for Setup Assistant, FileVault recovery, MDM, privacy prompts, system extensions, Xcode agreements/signing, or graphical session approval.
