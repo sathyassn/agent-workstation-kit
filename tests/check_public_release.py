@@ -30,11 +30,14 @@ REQUIRED = (
     "docs/13-public-release-checklist.md",
     "docs/README.md",
     "docs/runbooks/day-zero-linux.md",
+    "docs/runbooks/day-zero-macos.md",
+    "docs/runbooks/stage-approved-macos-snapshots.md",
     "docs/runbooks/first-linux-pilot.md",
     "docs/hardware/minisforum-ms-s1-max.md",
     "templates/private-fleet/README.md",
     "skills/setup-agent-workstation/SKILL.md",
     "scripts/start-linux-pilot.py",
+    "scripts/start-macos-pilot.py",
 )
 CONDUCT_CONTACT_PLACEHOLDER = "owner must add a monitored private conduct-report"
 

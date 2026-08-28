@@ -279,7 +279,7 @@ def main() -> int:
     print(f"Identity target: {target}")
     print(content, end="")
     if not args.apply:
-        print("PREVIEW only; rerun through fleetctl with --apply after review.")
+        print("PREVIEW only; apply through the documented staged workflow after review.")
         return 0
     if os.geteuid() != 0:
         print("ERROR: apply requires root", file=sys.stderr)

@@ -60,6 +60,6 @@ reported no unresolved P1/P2 findings.
   headroom, backup/restore and power-loss recovery.
 - Four concurrent long-running sessions with subagents, headed Playwright,
   builds and rootless containers.
-- Future macOS setup and workload validation on the selected Apple hardware.
+- macOS setup and workload validation on the selected Apple hardware.
 
 [Documentation home](../README.md) · [Production/public checklist](../13-public-release-checklist.md)

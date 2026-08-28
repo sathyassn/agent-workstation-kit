@@ -2,6 +2,39 @@
 
 [Previous: validation](08-validation-and-operations.md) · [Documentation home](README.md) · [Next: responsibility matrix](10-human-script-agent-matrix.md)
 
+The operator does not need a Mac. The baseline works from macOS, Windows and
+Linux workstations, with iPadOS/iOS/Android suitable for monitoring and
+approval. Out-of-band recovery requires a deployed, tested KVM.
+
+## Connection model
+
+```text
+operator device                      target Linux or Mac
+---------------                      -------------------
+personal Tailscale identity -------> tagged Tailscale node
+        |
+        +-- NoMachine client ------> shared agent-NN desktop
+        +-- SSH/SFTP client -------> named-human shell/files
+        +-- web browser -----------> restricted remote KVM
+
+Every human has an individual identity. No one shares a Tailscale, human or
+administrator password merely to control the shared agent desktop.
+```
+
+## Operator client matrix
+
+| Operator device | Private path | Graphical desktop | Shell/files | Practical role |
+|---|---|---|---|---|
+| macOS | Tailscale | NoMachine; Apple Screen Sharing for Mac targets | built-in SSH/SFTP | Full operation |
+| Windows | Tailscale | NoMachine | Windows OpenSSH/SFTP client | Full operation |
+| Linux | Tailscale | NoMachine | OpenSSH/SFTP | Full operation |
+| iPadOS/iOS | Tailscale app | NoMachine app | approved SSH/SFTP app | Monitor and approve; KVM-dependent recovery |
+| Android | Tailscale app | NoMachine app | approved SSH/SFTP app | Monitor and approve; KVM-dependent recovery |
+
+Install the operator clients only from vendor-supported stores/packages or the
+organization's software catalog. On managed devices, endpoint policy may limit
+clipboard, file transfer, screen recording or background VPN operation.
+
 ## Tailscale
 
 Install from the vendor-supported package or installer. Authenticate the node as a tagged non-human device and use Tailscale grants for new policy. Do not leave the default allow-all policy in a work tailnet.
@@ -20,12 +53,31 @@ Keep KVM devices in a separate tag/group and, where possible, a separate LAN/VLA
 
 ## NoMachine
 
-- Install Enterprise Desktop on a node that exposes one shared physical `agent-NN` desktop.
+- Install Enterprise Desktop on a node that exposes one shared physical
+  `agent-NN` desktop. NoMachine documents Enterprise Desktop server packages
+  for Windows, macOS, Linux and ARM; verify the supported release before use.
 - Do not expose its port publicly; connect over Tailscale.
-- Register named humans as trusted only for the intended physical desktop.
+- Install the NoMachine client on each authorized macOS, Windows, Linux, iPadOS,
+  iOS or Android operator device.
+- Each human authenticates with an individually attributable target account;
+  authorize named users as trusted only for the intended physical desktop.
 - Use interactive control for the active operator and view-only for observers.
 - Test clipboard, approved file transfer, screen blanking, locking, audio, multiple clients, mobile clients, and unattended reconnect.
 - Upgrade to Workstation only when independent Linux virtual desktops are required.
+
+For a Mac target, Apple's Screen Sharing is a useful Mac-to-Mac alternative.
+Although macOS can expose VNC compatibility, the uniform Windows/Linux baseline
+remains NoMachine; do not enable a separate VNC password merely to avoid the
+supported client. Screen Sharing and Remote Management cannot both be enabled.
+
+## SSH
+
+- Enable SSH/Remote Login only after Tailscale access and console recovery work.
+- Allow only the profile's named human and assigned administrator accounts.
+- Use keys or the approved organization authentication method; disable public
+  exposure and direct `agent-NN` SSH.
+- Windows and Linux operators use the same `ssh user@tailscale-name` flow as a
+  Mac operator. The terminal application differs; the target identity does not.
 
 ## Files
 
@@ -34,6 +86,10 @@ Keep KVM devices in a separate tag/group and, where possible, a separate LAN/VLA
 - Use SMB over Tailscale only for an explicitly shared working directory, not entire home directories.
 - Use Syncthing only for selected non-secret folders with conflict handling understood.
 - Do not synchronize model credentials, keychains, browser profiles, `.ssh`, or entire agent homes between nodes.
+
+Git and SFTP are the portable baseline across operator operating systems.
+Taildrop is convenient where approved, but it does not replace version control,
+backup or a reviewed shared-directory policy.
 
 ## Remote KVM
 

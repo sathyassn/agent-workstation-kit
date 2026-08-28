@@ -26,7 +26,8 @@ do not replace legal approval or live-machine evidence.
       local RC and supervised Linux pilot scope.
 - [ ] Ubuntu MS-S1 Max pilot, Secure Boot/MOK, RTL8127 kernel-update test,
       NoMachine identity behavior, and realistic four-session load are recorded.
-- [ ] macOS guidance is either exercised or clearly retained as unverified future work.
+- [ ] macOS guidance is exercised on selected Apple hardware; until then, every
+      unverified live-host claim remains explicitly marked as pending evidence.
 - [ ] Preview, repeat-apply, rollback, backup/restore, and recovery evidence exists.
 
 ## Hosted repository

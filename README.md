@@ -3,8 +3,9 @@
 Production-oriented profiles, preview-first automation, concise guides and a
 setup-agent skill for dedicated Linux and macOS AI development workstations.
 
-Current version: **0.2.0-rc.3**. This is a release candidate until the first
-physical Linux node completes the documented burn-in.
+Current version: **0.2.0-rc.4**. This remains a release candidate until the
+documented Linux and macOS hardware exercises in the public-release checklist
+are complete.
 
 ## Contents
 
@@ -18,7 +19,7 @@ physical Linux node completes the documented burn-in.
 
 ## Purpose and boundaries
 
-The kit supports Linux and future macOS workstations running Codex, Claude Code,
+The kit supports Linux and macOS workstations running Codex, Claude Code,
 Grok Build, headed browser tests and long-lived agent workloads. It provides:
 
 - A public-capable toolkit containing generic code, tests and guidance.
@@ -33,7 +34,7 @@ does not turn a repository check into proof that a physical machine is ready.
 ## How the pieces fit
 
 ```text
-operator Mac/iPad
+operator on macOS / Windows / Linux / iPadOS / mobile
       |
       +-- Tailscale + NoMachine --> agent-NN graphical desktop
       |                                  |
@@ -69,10 +70,12 @@ For a fresh Ubuntu machine, follow one entry point:
 3. Hand control to the setup agent only at the readiness gate in that guide.
 4. Finish live-host validation before treating the node as operational.
 
-For future Apple nodes, use the [macOS setup path](docs/03-macos-setup.md).
+For a Mac mini or Mac Studio, start with
+[Day-zero macOS startup and agent handoff](docs/runbooks/day-zero-macos.md), then
+continue through the [macOS setup path](docs/03-macos-setup.md).
 
 ```text
-physical setup -> Ubuntu -> bootstrap account -> toolkit + private fleet
+physical setup -> OS -> bootstrap account -> toolkit + private fleet
        -> readiness check -> supervised setup agent -> operational agent-NN
        -> burn-in -> approve or remediate
 ```
@@ -82,12 +85,23 @@ physical setup -> Ubuntu -> bootstrap account -> toolkit + private fleet
 Run these examples from the toolkit root. Replace the sample namespace, host,
 display name and human handle with approved values:
 
+```text
+private machines/<host>.toml
+        deployment.namespace = "acme"
+                         |
+                         +--> machine.hostname = "acme-ws-001"
+```
+
+The prefix is chosen with `fleetctl init --namespace`, saved as
+`deployment.namespace` in the private machine TOML, and validated against the
+technical hostname. It does not prefix local human, admin or agent accounts.
+
 ```bash
-FLEET_ROOT='/private/path/workstation-fleet'
-PROFILE='machines/ac-ws-001.toml'
+FLEET_ROOT="$HOME/setup/acme-agent-workstation-fleet"
+PROFILE='machines/acme-ws-001.toml'
 
 ./scripts/fleetctl.py --fleet-root "$FLEET_ROOT" init "$PROFILE" \
-  --context work --namespace ac --hostname ac-ws-001 \
+  --context work --namespace acme --hostname acme-ws-001 \
   --display-name 'Atlas' --platform linux \
   --hardware-profile minisforum-ms-s1-max-64gb --human alice
 
@@ -116,7 +130,8 @@ contents. Key entry points are:
 | Understand the design | [Architecture and operating model](docs/00-architecture.md) |
 | Start the first Linux host | [Day-zero Linux](docs/runbooks/day-zero-linux.md) |
 | Configure Ubuntu | [Linux setup](docs/02-linux-setup.md) |
-| Configure a future Mac | [macOS setup](docs/03-macos-setup.md) |
+| Start a Mac | [Day-zero macOS](docs/runbooks/day-zero-macos.md) |
+| Configure macOS | [macOS setup](docs/03-macos-setup.md) |
 | Create machine input | [Profile onboarding](docs/01a-onboarding-profile.md) |
 | Accept the MS-S1 Max | [Hardware runbook](docs/hardware/minisforum-ms-s1-max.md) |
 | Prove the first pilot | [First Linux pilot](docs/runbooks/first-linux-pilot.md) |

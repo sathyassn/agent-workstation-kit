@@ -49,7 +49,7 @@ while (($#)); do
     --agent) agent_account=${2:?Missing agent account}; shift 2 ;;
     --target) target=${2:?Missing target alias}; shift 2 ;;
     --help|-h)
-      printf 'Usage: install-agentctl-linux.sh --agent agent-01 --target ac-ws-001 [--apply]\n'
+      printf 'Usage: install-agentctl-linux.sh --agent agent-01 --target acme-ws-001 [--apply]\n'
       exit 0
       ;;
     *) die "Unknown option: $1" ;;

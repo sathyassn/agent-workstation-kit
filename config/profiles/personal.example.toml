@@ -4,12 +4,12 @@ profile = "personal"
 state = "draft"
 
 [deployment]
-namespace = "ss"
+namespace = "home"
 context = "personal"
 ownership = "individual"
 
 [machine]
-hostname = "ss-ws-001"
+hostname = "home-ws-001"
 display_name = "Juniper"
 uuid = "22222222-2222-4222-8222-222222222222"
 asset_tag = "ask"
@@ -30,7 +30,7 @@ ssh_users = ["alice", "admin-01"]
 
 [remote]
 tailscale_tailnet = "ask"
-tailscale_tags = ["tag:ss-workstation"]
+tailscale_tags = ["tag:home-workstation"]
 nomachine_port = 4000
 kvm = "deferred"
 preferred_kvm = "glinet-comet-x-gl-rm4pe"

@@ -9,8 +9,8 @@ and organization policy at purchase time.
 |---|---|---|---|
 | Linux OS | Ubuntu Desktop LTS | Ubuntu LTS + separately reviewed desktop | Broad vendor/tool support; MS-S1 driver runbook is Ubuntu-specific. |
 | Reproducibility | TOML profiles + Python/std-library scripts + mise | Nix/Home Manager later | Predictable bootstrap without making Nix expertise a day-one dependency. |
-| Private network | Tailscale grants/tags | Managed WireGuard | Easiest Mac/Linux/iOS identity-aware private path. |
-| Daily remote desktop | NoMachine Enterprise Desktop | Self-hosted RustDesk Pro | One physical shared desktop, strong media/file features, Mac/Linux/mobile clients. |
+| Private network | Tailscale grants/tags | Managed WireGuard | Identity-aware private path across macOS, Windows, Linux and mobile. |
+| Daily remote desktop | NoMachine Enterprise Desktop | Self-hosted RustDesk Pro | One physical shared desktop with macOS, Windows, Linux and mobile clients. |
 | Paid SaaS alternative | Splashtop Remote Access Pro | TeamViewer business | Polished team/mobile UX; introduces vendor cloud and per-user cost. |
 | Terminal/session | OpenSSH + `agentctl` + tmux | Eternal Terminal/Mosh where policy allows | Auditable human entry and durable agent sessions. Herdr remains a user-facing workspace. |
 | Files | Git + Taildrop/SFTP | scoped Syncthing or SMB over Tailscale | Avoids synchronizing credentials or entire homes. |

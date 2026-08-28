@@ -1,9 +1,14 @@
 # Onboarding profile and controller
 
-[Previous: day zero](runbooks/day-zero-linux.md) · [Documentation home](README.md) · [Next: field reference](01b-profile-field-reference.md)
+[Linux day zero](runbooks/day-zero-linux.md) · [macOS day zero](runbooks/day-zero-macos.md) · [Documentation home](README.md) · [Next: field reference](01b-profile-field-reference.md)
 
 One reviewed TOML profile declares each machine's desired, non-secret state.
 Python 3.11+ parses TOML without bootstrap dependencies.
+
+`deployment.namespace` is where the fleet owner chooses the short prefix used
+in technical hostnames and tags. It is supplied to `fleetctl init`, stored in
+the private TOML profile and validated against `machine.hostname`; the public
+kit does not impose an organization-specific prefix.
 
 ```text
 fleetctl init (UUID generated once)
@@ -23,8 +28,8 @@ draft profile --> validate --> plan --> resolve every "ask" --> human review
 Prefer the generator to copying an example:
 
 ```bash
-./scripts/fleetctl.py init /path/to/private-fleet/machines/ac-ws-001.toml \
-  --context work --namespace ac --hostname ac-ws-001 --display-name Atlas \
+./scripts/fleetctl.py init /path/to/private-fleet/machines/acme-ws-001.toml \
+  --context work --namespace acme --hostname acme-ws-001 --display-name Atlas \
   --platform linux \
   --hardware-profile minisforum-ms-s1-max-64gb \
   --asset-tag AC-10001 --human alice --admin admin-01
@@ -59,8 +64,8 @@ should use its own private fleet repository and protected review workflow.
 ## Validate and plan
 
 ```bash
-./scripts/fleetctl.py validate /path/to/ac-ws-001.toml
-./scripts/fleetctl.py plan /path/to/ac-ws-001.toml
+./scripts/fleetctl.py validate /path/to/acme-ws-001.toml
+./scripts/fleetctl.py plan /path/to/acme-ws-001.toml
 ```
 
 Resolve every `ask`. Review identities, privileges, recovery, endpoint controls,
@@ -68,7 +73,7 @@ backup, resource headroom, and optional tools such as `gws`. Then set
 `state = "approved"` and run:
 
 ```bash
-./scripts/fleetctl.py validate /path/to/ac-ws-001.toml --ready
+./scripts/fleetctl.py validate /path/to/acme-ws-001.toml --ready
 ./scripts/validate-fleet.py /path/to/private-fleet
 ```
 
@@ -84,8 +89,8 @@ Never run the whole build as one opaque operation. Preview, obtain approval,
 apply one phase, and verify it before continuing:
 
 ```bash
-./scripts/fleetctl.py run /path/to/ac-ws-001.toml accounts
-sudo ./scripts/fleetctl.py run /path/to/ac-ws-001.toml accounts --apply
+./scripts/fleetctl.py run /path/to/acme-ws-001.toml accounts
+sudo ./scripts/fleetctl.py run /path/to/acme-ws-001.toml accounts --apply
 ```
 
 Machine identity and remote hardening also require an explicit recovery

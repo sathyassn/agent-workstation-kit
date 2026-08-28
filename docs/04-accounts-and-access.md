@@ -17,20 +17,20 @@ different algorithm per host. `admin-NN` is independent of a person's name, but
 it is never a shared credential: the private fleet assignment maps each one to
 exactly one named human.
 
-Hostnames provide scope. `ac-ws-001/agent-01` and `ac-ws-002/agent-01` are
+Hostnames provide scope. `acme-ws-001/agent-01` and `acme-ws-002/agent-01` are
 different principals, so local names remain short without fleet collisions.
 
 ## Shared work: two valid entry paths
 
 ```text
 Named-user shell
-alice@ac-ws-001
+alice@acme-ws-001
   |
-  +-- agentctl shell ac-ws-001
+  +-- agentctl shell acme-ws-001
         identity: agent-01 for this child shell
         return:   exit or Ctrl-D
 
-  +-- agentctl attach ac-ws-001 project-a
+  +-- agentctl attach acme-ws-001 project-a
         identity: agent-01 for this tmux client
         detach:   agentctl detach OR Ctrl-b d
         result:   session/processes continue; alice returns to own shell
@@ -72,13 +72,13 @@ Use tmux/Herdr sessions and project ownership to avoid conflicting actions.
 
 ```text
 agentctl list
-agentctl status ac-ws-001
-agentctl shell ac-ws-001
-agentctl start ac-ws-001 project-a claude
-agentctl attach ac-ws-001 project-a
-agentctl observe ac-ws-001 project-a
+agentctl status acme-ws-001
+agentctl shell acme-ws-001
+agentctl start acme-ws-001 project-a claude
+agentctl attach acme-ws-001 project-a
+agentctl observe acme-ws-001 project-a
 agentctl detach
-agentctl stop ac-ws-001 project-a
+agentctl stop acme-ws-001 project-a
 ```
 
 `detach` must run inside tmux; `Ctrl-b d` is equivalent. `stop` terminates the
@@ -87,7 +87,7 @@ start, attach, and stop.
 
 ## macOS difference
 
-Future Mac nodes retain the identity names, but GUI applications must run in the
+Mac nodes retain the identity names, but GUI applications must run in the
 owning `agent-01` graphical login. Do not use `sudo -u` to launch GUI apps across
 macOS sessions. Validate Apple Screen Sharing and/or NoMachine on the actual OS,
 including FileVault boot recovery and privacy permissions.

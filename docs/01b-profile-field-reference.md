@@ -8,10 +8,10 @@ Start with `fleetctl init` or an example; do not invent a profile from memory.
 |---|---|---|---|
 | `schema_version` | `3` | Current profile contract. | Validator |
 | `profile`, `deployment.context` | `personal`, `work` | Must match. | Validator |
-| `deployment.namespace` | `ac`, `lab` | 2–8 lowercase letters/digits; hostname prefix. | Validator/fleet uniqueness |
+| `deployment.namespace` | `acme`, `lab`, `home` | Operator-chosen 2–8 lowercase letters/digits; stored in private TOML and used as the hostname/tag prefix. | Validator/fleet uniqueness |
 | `deployment.ownership` | `individual`, `organization` | Work must be organization-owned. | Validator + owner attestation |
 | `state` | `draft`, `approved` | Apply requires reviewed `approved`. | Validator + review record |
-| `machine.hostname` | `ac-ws-001` | Globally managed `<namespace>-<class>-<NNN>`. | Validator/live host/fleet |
+| `machine.hostname` | `acme-ws-001` | Globally managed `<namespace>-<class>-<NNN>`. | Validator/live host/fleet |
 | `machine.display_name` | `Atlas North` | Fleet-unique, case-insensitive ASCII human label; trimmed with no repeated spaces; mutable, never an access-control key. | Validator/local identity/live OS name |
 | `machine.uuid` | UUIDv4 | Generated once; immutable across rebuilds. | Validator/fleet |
 | `machine.asset_tag` | organization label | Unique private inventory reference. | Fleet + physical inventory |
@@ -33,12 +33,12 @@ Start with `fleetctl init` or an example; do not invent a profile from memory.
 | `tooling.secrets_provider` | `1password`, `bitwarden`, `both`, `organization-vault` | Provider name only. | Manual vault evidence; never credentials |
 | `tooling.antidote_ref` | reviewed SHA/tag | Pinned shell plugin manager revision. | Lock/config inspection |
 | `source_control.gitlab_identity` | `service-account`, `none` | GitLab workload identity. | Manual provider/API evidence |
-| `source_control.gitlab_principal` | `ac-agent-dev`, `none` | Approved provider-side name; no credential. | Provider inventory/manual evidence |
+| `source_control.gitlab_principal` | `acme-agent-dev`, `none` | Approved provider-side name; no credential. | Provider inventory/manual evidence |
 | `source_control.github_identity` | `app`, `machine-user`, `none` | GitHub workload identity. | Manual provider/API evidence |
-| `source_control.github_principal` | `ac-agent-dev`, `none` | Approved App or fallback machine-user name. | Provider inventory/manual evidence |
+| `source_control.github_principal` | `acme-agent-dev`, `none` | Approved App or fallback machine-user name. | Provider inventory/manual evidence |
 | `collaboration.atlassian_site` | `ask`, `company.atlassian.net`, `none` | Atlassian Cloud site hostname; no URL or credential. | Provider inventory/manual evidence |
 | `collaboration.atlassian_identity` | `ask`, `service-account`, `named-human`, `none` | `ask` is draft-only; shared work agents cannot use a human identity. | Provider inventory/manual evidence |
-| `collaboration.atlassian_principal` | `ask`, `acagentdev`, `alice@example.com`, `none` | Atlassian service-account name (6–30 alphanumeric) or approved named-human label/email. | Provider inventory/manual evidence |
+| `collaboration.atlassian_principal` | `ask`, `acmeagentdev`, `alice@example.com`, `none` | Atlassian service-account name (6–30 alphanumeric) or approved named-human label/email. | Provider inventory/manual evidence |
 | `collaboration.atlassian_mcp_auth` | `ask`, `service-account-api-key`, `oauth-2.1`, `none` | `ask` is draft-only; non-interactive versus interactive MCP path. | Manual MCP authentication test |
 | `model_auth.*` | `api-workload`, `enterprise-federated`, `named-human`, `none` | Shared work homes cannot use named-human auth. | Manual provider evidence |
 | `security.*_required` | `true` | Disk encryption and Secure Boot baseline. | Live audit + recovery test |

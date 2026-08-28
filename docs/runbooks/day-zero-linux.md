@@ -103,7 +103,7 @@ Use two separate directories:
 ```text
 ~/setup/
 ├── agent-workstation-kit/        generic public-capable automation
-└── mp-agent-workstation-fleet/   private organization inventory
+└── acme-agent-workstation-fleet/ private organization inventory
 ```
 
 After the repositories exist, assign their approved URLs and clone them:
@@ -113,10 +113,10 @@ mkdir -p "$HOME/setup"
 cd "$HOME/setup"
 
 KIT_REPOSITORY_URL='https://github.com/OWNER/agent-workstation-kit.git'
-FLEET_REPOSITORY_URL='https://github.com/ORGANIZATION/mp-agent-workstation-fleet.git'
+FLEET_REPOSITORY_URL='https://github.com/ORGANIZATION/acme-agent-workstation-fleet.git'
 
 git clone "$KIT_REPOSITORY_URL" agent-workstation-kit
-git clone "$FLEET_REPOSITORY_URL" mp-agent-workstation-fleet
+git clone "$FLEET_REPOSITORY_URL" acme-agent-workstation-fleet
 ```
 
 Do not type credentials into either URL. Use the organization's approved Git
@@ -176,7 +176,7 @@ From the toolkit root:
 cd "$HOME/setup/agent-workstation-kit"
 
 python3 scripts/start-linux-pilot.py \
-  --fleet-root "$HOME/setup/mp-agent-workstation-fleet"
+  --fleet-root "$HOME/setup/acme-agent-workstation-fleet"
 ```
 
 The command does not change host configuration. It checks:
@@ -196,8 +196,8 @@ It does not print serial-bearing hardware data unless explicitly requested:
 
 ```bash
 python3 scripts/start-linux-pilot.py \
-  --fleet-root "$HOME/setup/mp-agent-workstation-fleet" \
-  --profile machines/mp-ws-001.toml \
+  --fleet-root "$HOME/setup/acme-agent-workstation-fleet" \
+  --profile machines/acme-ws-001.toml \
   --run-private-hardware-audit
 ```
 
@@ -238,8 +238,8 @@ For example:
 
 ```bash
 ./scripts/fleetctl.py \
-  --fleet-root "$HOME/setup/mp-agent-workstation-fleet" \
-  run machines/mp-ws-001.toml base
+  --fleet-root "$HOME/setup/acme-agent-workstation-fleet" \
+  run machines/acme-ws-001.toml base
 ```
 
 Do not add `sudo` or `--apply` in the `bootstrap-admin` checkout. First establish
@@ -252,14 +252,14 @@ diff and authorizes the commit or merges its private PR/MR. For a supervised
 local pilot with no remote workflow yet:
 
 ```bash
-FLEET_ROOT="$HOME/setup/mp-agent-workstation-fleet"
-PROFILE='machines/mp-ws-001.toml'
+FLEET_ROOT="$HOME/setup/acme-agent-workstation-fleet"
+PROFILE='machines/acme-ws-001.toml'
 
 git -C "$FLEET_ROOT" diff -- "$PROFILE" kit.lock
 git -C "$FLEET_ROOT" add -- "$PROFILE" kit.lock
 git -C "$FLEET_ROOT" diff --cached --check
 git -C "$FLEET_ROOT" diff --cached -- "$PROFILE" kit.lock
-git -C "$FLEET_ROOT" commit -m "fleet: approve mp-ws-001 baseline"
+git -C "$FLEET_ROOT" commit -m "fleet: approve acme-ws-001 baseline"
 git -C "$FLEET_ROOT" status --short  # expected output: nothing
 ```
 
@@ -283,11 +283,11 @@ git archive --format=tar --output="$TOOLKIT_ARCHIVE" "$KIT_REVISION"
 KIT_SHA256="$(sha256sum "$TOOLKIT_ARCHIVE" | awk '{print $1}')"
 printf 'toolkit %s  %s\n' "$KIT_SHA256" "$TOOLKIT_ARCHIVE"
 
-FLEET_ROOT="$HOME/setup/mp-agent-workstation-fleet"
-PROFILE='machines/mp-ws-001.toml'
+FLEET_ROOT="$HOME/setup/acme-agent-workstation-fleet"
+PROFILE='machines/acme-ws-001.toml'
 git -C "$FLEET_ROOT" status --short  # expected output: nothing
 FLEET_REVISION="$(git -C "$FLEET_ROOT" rev-parse HEAD)"
-FLEET_ARCHIVE="$HOME/setup/mp-agent-workstation-fleet-${FLEET_REVISION}.tar"
+FLEET_ARCHIVE="$HOME/setup/acme-agent-workstation-fleet-${FLEET_REVISION}.tar"
 git -C "$FLEET_ROOT" archive --format=tar \
   --output="$FLEET_ARCHIVE" "$FLEET_REVISION"
 FLEET_SHA256="$(sha256sum "$FLEET_ARCHIVE" | awk '{print $1}')"
@@ -394,11 +394,11 @@ the matching staged command. A human opens a separate trusted terminal, types
 the apply command and immediately invalidates cached sudo authorization:
 
 ```bash
-PROFILE='machines/mp-ws-001.toml'
+PROFILE='machines/acme-ws-001.toml'
 
 cd "$HOME/setup/agent-workstation-kit"
 ./scripts/fleetctl.py \
-  --fleet-root "$HOME/setup/mp-agent-workstation-fleet" \
+  --fleet-root "$HOME/setup/acme-agent-workstation-fleet" \
   run "$PROFILE" base
 
 cd /opt/agent-workstation-kit

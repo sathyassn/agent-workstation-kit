@@ -3,6 +3,17 @@
 This project follows Semantic Versioning. Version 0.x interfaces may change
 between minor releases while live-machine evidence is incorporated.
 
+## 0.2.0-rc.4 — Unreleased
+
+- Promoted macOS to a first-class documented target with an ordered day-zero
+  path from Setup Assistant through supervised setup-agent handoff.
+- Documented operator access from macOS, Windows, Linux, iPadOS, iOS and Android,
+  including transport, desktop, shell, file-transfer and recovery boundaries.
+- Replaced environment-specific public examples with neutral namespaces and
+  added release checks that reject non-neutral concrete hostname examples.
+- Hardened macOS snapshot staging, readiness runtime/profile checks and
+  privileged trust boundaries after interactive Claude and Grok reviews.
+
 ## 0.2.0-rc.3 — Unreleased
 
 - Added one ordered day-zero Linux path from first boot through supervised

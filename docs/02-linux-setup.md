@@ -91,7 +91,7 @@ Apply only after recovery is open and tested:
 
 ```bash
 cd /opt/agent-workstation-kit
-PROFILE='machines/ac-ws-001.toml'
+PROFILE='machines/acme-ws-001.toml'
 sudo ./scripts/fleetctl.py --fleet-root /opt/agent-workstation-fleet \
   run "$PROFILE" identity \
   --apply --confirm-recovery-tested --connection-context local-console
@@ -116,7 +116,7 @@ with open, tested recovery and an explicit connection context:
 
 ```bash
 cd /opt/agent-workstation-kit
-PROFILE='machines/ac-ws-001.toml'
+PROFILE='machines/acme-ws-001.toml'
 
 # At a physical console or independently tested KVM:
 sudo ./scripts/fleetctl.py --fleet-root /opt/agent-workstation-fleet \

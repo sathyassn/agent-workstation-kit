@@ -67,7 +67,7 @@ Provider conclusions were checked against the vendor links in
   headroom.
 - The false-local-console rejection test from a real SSH session whose `sudo`
   policy clears `SSH_CONNECTION`.
-- Future macOS account, naming, FileVault, remote-desktop, privacy, Xcode, and
+- macOS account, naming, FileVault, remote-desktop, privacy, Xcode, and
   workload validation on the intended Mac mini/Studio release.
 
 [Next review: day-zero documentation](2026-08-27-day-zero-documentation-review.md) · [Documentation home](../README.md)

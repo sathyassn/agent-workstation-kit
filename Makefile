@@ -1,4 +1,5 @@
 SHELL := /bin/sh
+PYTHON ?= python3
 
 .PHONY: check ci-check public-check public-draft-check repo-check skill-check shell-check unit-check python-check
 
@@ -8,13 +9,13 @@ ci-check: REQUIRE_SHELLCHECK=1
 ci-check: check
 
 public-check:
-	@python3 tests/check_public_release.py
+	@$(PYTHON) tests/check_public_release.py
 
 public-draft-check:
-	@python3 tests/check_public_release.py --allow-missing-license
+	@$(PYTHON) tests/check_public_release.py --allow-missing-license
 
 python-check:
-	@python3 -m py_compile scripts/*.py tests/*.py
+	@$(PYTHON) -m py_compile scripts/*.py tests/*.py
 
 shell-check:
 	@for file in scripts/*.sh scripts/lib/*.sh agentctl/*; do \
@@ -32,11 +33,11 @@ shell-check:
 	fi
 
 skill-check:
-	@python3 tests/check_skill.py
+	@$(PYTHON) tests/check_skill.py
 
 unit-check:
-	@python3 -m unittest discover -s tests -p 'test_*.py'
+	@$(PYTHON) -m unittest discover -s tests -p 'test_*.py'
 	@bash tests/test_shell_behaviour.sh
 
 repo-check:
-	@python3 tests/check_repository.py
+	@$(PYTHON) tests/check_repository.py

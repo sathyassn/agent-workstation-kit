@@ -1,6 +1,6 @@
 # Documentation map
 
-[Repository home](../README.md) · [Start the first Linux machine](runbooks/day-zero-linux.md)
+[Repository home](../README.md) · [Start Linux](runbooks/day-zero-linux.md) · [Start macOS](runbooks/day-zero-macos.md)
 
 Use this page as the table of contents. Follow the numbered path for a new
 machine; use runbooks and references only when the applicable step links to them.
@@ -22,9 +22,10 @@ Architecture -> Planning -> Pilot checklist
 | 1. Understand | [Architecture](00-architecture.md) → [selected stack](00a-final-stack.md) | Know the trust, account, network and repository model. |
 | 2. Decide | [Planning worksheet](01-planning.md) | Resolve ownership, recovery, access, tooling and policy choices. |
 | 3. Prepare the pilot | [First Linux pilot](runbooks/first-linux-pilot.md) | Complete the before-power-on checklist and open the evidence record. |
-| 4. Start and declare Linux | [Day-zero and agent handoff](runbooks/day-zero-linux.md), using [profile onboarding](01a-onboarding-profile.md) and the [field reference](01b-profile-field-reference.md) when linked | Install Ubuntu, create and commit one validated non-secret profile, stage reviewed inputs and hand off safely. |
+| 4A. Start and declare Linux | [Day-zero Linux and agent handoff](runbooks/day-zero-linux.md), using [profile onboarding](01a-onboarding-profile.md) and the [field reference](01b-profile-field-reference.md) when linked | Install Ubuntu, create and commit one validated non-secret profile, stage reviewed inputs and hand off safely. |
+| 4B. Start and declare macOS | [Day-zero macOS and agent handoff](runbooks/day-zero-macos.md), using the same profile references | Complete Setup Assistant and recovery controls, create and commit one validated non-secret profile, then hand off safely. |
 | 5A. Configure Linux | [Linux setup](02-linux-setup.md) | Apply reviewed phases on Ubuntu. |
-| 5B. Configure macOS | [macOS setup](03-macos-setup.md) | Apply the future Mac path and retain its manual gates. |
+| 5B. Configure macOS | [macOS setup](03-macos-setup.md) | Apply the Mac path and retain its manual gates. |
 | 6. Establish access | [Accounts](04-accounts-and-access.md) → [tooling](05-tooling.md) → [provider identities](06-agent-and-source-control-identities.md) | Separate humans, admins, agents, tools and external credentials. |
 | 7. Protect and connect | [Security/resources](07-security-and-resources.md) → [network/remote/files](09-network-remote-access-and-files.md) | Keep recovery and responsiveness while enabling remote work. |
 | 8. Prove readiness | [Validation and operations](08-validation-and-operations.md) | Record repeat-apply, load, reboot, recovery and restore evidence. |
@@ -59,6 +60,8 @@ multi-day burn-in and promotion decision
 | Task | Runbook |
 |---|---|
 | Start the first Linux host | [Day zero](runbooks/day-zero-linux.md) |
+| Start a Mac mini or Mac Studio | [Day-zero macOS](runbooks/day-zero-macos.md) |
+| Stage reviewed macOS inputs | [Root-owned macOS snapshots](runbooks/stage-approved-macos-snapshots.md) |
 | Record the first-node evidence | [First Linux pilot](runbooks/first-linux-pilot.md) |
 | Create a draft PR/MR as the agent | [Draft change](runbooks/create-draft-change.md) |
 | Migrate old inventory | [Pre-v2 migration](runbooks/migrate-v1-to-v2.md) or [schema 2 to 3](runbooks/migrate-v2-to-v3.md) |
@@ -78,7 +81,8 @@ multi-day burn-in and promotion decision
   [public readiness](reviews/2026-08-21-public-readiness-review.md),
   [release candidate](reviews/2026-08-22-release-candidate-review.md),
   [identity/provider review](reviews/2026-08-25-identity-and-provider-review.md),
-  and [day-zero documentation review](reviews/2026-08-27-day-zero-documentation-review.md).
+  [day-zero documentation review](reviews/2026-08-27-day-zero-documentation-review.md),
+  and [macOS day-zero review](reviews/2026-08-28-macos-day-zero-review.md).
 
 ## Documentation conventions
 

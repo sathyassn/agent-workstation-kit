@@ -6,7 +6,7 @@
 |---|---|---|---|
 | Purchase/site | Approves hardware, warranty, network, location | None | Researches current availability and records assumptions |
 | OS installation | Boots media, encryption, recovery, first admin | None | Presents checklist only |
-| Handoff readiness | Supplies private fleet path and reviews results | `start-linux-pilot.py` | Starts only after the readiness gate passes |
+| Handoff readiness | Supplies private fleet path and reviews results | `start-linux-pilot.py` or `start-macos-pilot.py` | Starts only after the readiness gate passes |
 | Assessment | Provides policy/context | `preflight.sh` | Runs checks and interprets results |
 | Onboarding profile | Resolves choices and approves desired state | `fleetctl.py validate/plan` | Interviews once, writes no secrets, explains validation errors |
 | Fleet/migration gate | Reviews new identity decisions and preserved fields | `validate-fleet.py`, `check-profile-migration.py` | Runs read-only checks; never silently upgrades inventory |
@@ -30,7 +30,8 @@ private fleet and one authenticated agent CLI are available. On Linux, follow
 the [day-zero guide](runbooks/day-zero-linux.md) and run:
 
 ```bash
-python3 scripts/start-linux-pilot.py --fleet-root /private/path/workstation-fleet
+python3 scripts/start-linux-pilot.py \
+  --fleet-root "$HOME/setup/acme-agent-workstation-fleet"
 ```
 
 It can then orchestrate preview commands. The shared `agent-NN` account becomes
@@ -38,3 +39,16 @@ the execution environment only after account creation and its user-space tools
 are installed.
 
 On macOS, an agent cannot replace the human for Setup Assistant, FileVault recovery, MDM, privacy prompts, system extensions, Xcode agreements/signing, or graphical session approval.
+
+Follow [day-zero macOS](runbooks/day-zero-macos.md) and run:
+
+```bash
+PYTHON_BIN="$(brew --prefix python@3.13)/bin/python3.13"
+"$PYTHON_BIN" scripts/start-macos-pilot.py \
+  --fleet-root "$HOME/setup/acme-agent-workstation-fleet"
+```
+
+Operators may reach either target OS from macOS, Windows or Linux. iPadOS, iOS
+and Android clients support monitoring and approval; out-of-band recovery
+requires a deployed and tested KVM. A workstation remains the preferred setup
+and development console.

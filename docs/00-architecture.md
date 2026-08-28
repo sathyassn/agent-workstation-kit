@@ -8,7 +8,7 @@
 - Let named people supervise a shared non-admin agent workspace.
 - Keep human, administrator, OS runtime, model-provider, and source-control
   identities separate and auditable.
-- Start with multiple modest Linux nodes; add 128 GB and macOS nodes by measured need.
+- Support a mixed Linux/macOS fleet and add higher-memory nodes by measured need.
 - Preserve a recovery route outside the normal OS session.
 
 ## Identity layers
@@ -27,29 +27,33 @@ Shared OS runtime   agent-01                            (no sudo; no direct SSH)
 ```
 
 The complete principal is `hostname/account`, for example
-`ac-ws-001/agent-01`. Account names can therefore repeat safely on other hosts.
+`acme-ws-001/agent-01`. Account names can therefore repeat safely on other hosts.
 Never copy a human's cached credentials into the shared agent home.
 
 ## Access paths
 
 ```text
-Flow A — personal Linux desktop and terminal delegation
+Flow A — named-user shell and terminal delegation
 
-Mac -- Tailscale -- NoMachine/SSH -- alice -- agentctl shell ac-ws-001
-                                                |
-                                                +-- child zsh as agent-01
-                                                    `exit` returns to alice
+macOS/Windows/Linux operator -- Tailscale/SSH -- alice
+                                                   |
+                                                   +-- agentctl shell acme-ws-001
+                                                       child zsh as agent-01
+                                                       `exit` returns to alice
 
 Flow B — shared graphical agent desktop
 
-Mac -- Tailscale -- NoMachine -- desktop owned by agent-01
-                                      |
-                                      +-- Terminal is already agent-01
-                                      +-- Codex/Claude/Grok GUI or CLI
+macOS/Windows/Linux/mobile -- Tailscale -- NoMachine
+                                              |
+                                              +-- desktop owned by agent-01
+                                              +-- Terminal is already agent-01
+                                              +-- Codex/Claude/Grok GUI or CLI
 
 Flow C — out-of-band recovery
 
-Mac -- Tailscale -- remote KVM -- display/keyboard/boot/firmware/recovery
+any approved browser -- Tailscale -- remote KVM
+                                      |
+                                      +-- display/keyboard/boot/recovery
 ```
 
 In Flow A, `agentctl` changes identity only for that child shell or tmux client;
@@ -60,7 +64,7 @@ client while the processes continue.
 Flow B is the preferred daily shared-GUI path after NoMachine behavior is tested
 on the actual release. Each person authenticates individually and is authorized
 for the agent-owned desktop; the agent account password is not shared. Directly
-launch GUI apps as another macOS user is not supported, so future Mac nodes use
+launch GUI apps as another macOS user is not supported, so Mac nodes use
 the owning `agent-01` graphical session rather than Linux-style delegation.
 
 ## Fleet and recovery

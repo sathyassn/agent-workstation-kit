@@ -21,9 +21,10 @@ mutating phase.
 
 ## Begin read-only
 
-For a fresh Linux host, first follow `docs/runbooks/day-zero-linux.md`. Run
-`scripts/start-linux-pilot.py --fleet-root FLEET_ROOT` before accepting the
-bootstrap handoff; resolve every `FAIL`. Then run `scripts/preflight.sh` and,
+For a fresh Linux host, first follow `docs/runbooks/day-zero-linux.md`; for a
+fresh Mac, follow `docs/runbooks/day-zero-macos.md`. Run the matching
+`scripts/start-*-pilot.py --fleet-root FLEET_ROOT` before accepting the
+bootstrap handoff and resolve every `FAIL`. Then run `scripts/preflight.sh` and,
 on Linux, `scripts/hardware-audit-linux.sh`.
 Identify OS/version, firmware, Secure Boot/FileVault/LUKS, hardware, accounts,
 network, desktop, package managers, installed tools, management controls, and
@@ -38,7 +39,8 @@ user-space phases only in that account. Never copy bootstrap credentials into it
 
 Ask one concise set of unresolved questions:
 
-- Work/personal context, namespace, hostname/class, fleet-unique display name,
+- Work/personal context, operator-chosen namespace prefix, hostname/class,
+  fleet-unique display name,
   ownership, asset tag, and hardware.
 - Stable human handles, one assigned `admin-NN` per administrator, `agent-NN`,
   operators, viewers, recovery SSH users, and any `svc-purpose` accounts.
@@ -87,10 +89,11 @@ Read [Ubuntu workflow](references/linux-workflow.md) or
 Validate after every phase. Stop at the first unknown or failed security,
 recovery, driver, identity, or data-integrity condition.
 
-For privileged Linux applies, use only the matching root-owned toolkit and
-private-fleet snapshots created by the day-zero staging procedure. The human
-types the staged command in a separate trusted terminal and runs `sudo -K`
-immediately afterward. Never apply user-writable code or profile input.
+For privileged applies, use only matching root-owned toolkit and private-fleet
+snapshots. Linux uses the day-zero staging procedure; macOS uses
+`docs/runbooks/stage-approved-macos-snapshots.md`. The human types the staged
+command in a separate trusted terminal and runs `sudo -K` immediately afterward.
+Never apply user-writable code or profile input.
 
 ## Preserve identity boundaries
 

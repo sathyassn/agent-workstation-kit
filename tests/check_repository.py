@@ -16,6 +16,20 @@ FORBIDDEN_NAMES = {".env", "id_rsa", "id_ed25519", "credentials.json", "auth.jso
 PLACEHOLDER = re.compile(r"\b(TODO|FIXME|CHANGEME)\b")
 SECRET_LIKE = re.compile(r"(?:AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{30,}|glpat-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9_-]{24,})")
 PERSONAL_PATH = re.compile(r"/(?:Users|home)/[^/\s]+/")
+HOSTNAME_EXAMPLE = re.compile(
+    r"\b([a-z0-9]{2,8})-(?:ws|mac|hv|vws|nas|mgmt|srv)-[0-9]{3}\b",
+    re.IGNORECASE,
+)
+NEUTRAL_EXAMPLE_NAMESPACES = {"ac", "acme", "home", "lab", "ss"}
+
+
+def non_neutral_hostname_examples(text: str) -> set[str]:
+    """Return organization-specific namespaces used in concrete host examples."""
+    return {
+        match.group(1).lower()
+        for match in HOSTNAME_EXAMPLE.finditer(text)
+        if match.group(1).lower() not in NEUTRAL_EXAMPLE_NAMESPACES
+    }
 
 
 def heading_slug(heading: str) -> str:
@@ -46,6 +60,12 @@ def main() -> int:
             failures.append(f"secret-like value in {path.relative_to(ROOT)}")
         if PERSONAL_PATH.search(content):
             failures.append(f"personal absolute path in {path.relative_to(ROOT)}")
+        non_neutral = non_neutral_hostname_examples(content)
+        if non_neutral:
+            failures.append(
+                f"non-neutral hostname namespace(s) in {path.relative_to(ROOT)}: "
+                + ", ".join(sorted(non_neutral))
+            )
         if path.suffix != ".md":
             continue
         text = content
@@ -86,7 +106,11 @@ def main() -> int:
     if not readme:
         failures.append("root README is missing or empty")
     else:
-        for required_link in ("docs/README.md", "docs/runbooks/day-zero-linux.md"):
+        for required_link in (
+            "docs/README.md",
+            "docs/runbooks/day-zero-linux.md",
+            "docs/runbooks/day-zero-macos.md",
+        ):
             if required_link not in readme:
                 failures.append(f"root README does not link required entry point: {required_link}")
 

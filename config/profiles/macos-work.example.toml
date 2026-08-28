@@ -1,4 +1,4 @@
-# Future organization-owned Apple-platform workstation example.
+# Organization-owned Apple-platform workstation example.
 schema_version = 3
 profile = "work"
 state = "draft"

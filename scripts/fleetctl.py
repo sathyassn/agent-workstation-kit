@@ -234,7 +234,7 @@ def validate_profile(profile: dict[str, Any], *, ready: bool) -> list[Issue]:
 
     match = HOSTNAME.fullmatch(machine["hostname"]) if isinstance(machine["hostname"], str) else None
     if not match:
-        issues.append(Issue("machine.hostname", "must be <namespace>-<class>-<NNN>, for example ac-ws-001"))
+        issues.append(Issue("machine.hostname", "must be <namespace>-<class>-<NNN>, for example acme-ws-001"))
     elif match.group("namespace") != namespace:
         issues.append(Issue("machine.hostname", "namespace prefix must match deployment.namespace"))
     if not valid_display_name(machine["display_name"]):

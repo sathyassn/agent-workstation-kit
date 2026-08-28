@@ -241,7 +241,7 @@ def repository_suite_check() -> Check:
 
 
 def print_handoff(fleet_root: Path, profile: Path | None) -> None:
-    profile_text = str(profile) if profile else "machines/mp-ws-001.toml (create during the interview)"
+    profile_text = str(profile) if profile else "machines/acme-ws-001.toml (create during the interview)"
     print("\nSetup-agent handoff prompt\n==========================")
     print(
         f"""This is a supervised work Linux pilot. Use

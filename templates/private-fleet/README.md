@@ -12,6 +12,11 @@ across separate clones where a filesystem lock cannot coordinate. The toolkit's 
 installs a root-owned local copy for self-identification, while this private
 repository remains the recovery source of truth.
 
+Choose the fleet's short technical prefix with `fleetctl init --namespace`.
+That value is stored as `deployment.namespace` in each private machine TOML and
+must match the prefix of `machine.hostname`; the public kit supplies only
+fictional examples and no organization-specific default.
+
 ```text
 private-fleet/
 ├── kit.lock                 exact compatible toolkit version
@@ -27,7 +32,7 @@ exact toolkit version in `kit.lock`:
 
 ```bash
 ./scripts/validate-fleet.py /path/to/private-fleet
-./scripts/fleetctl.py --fleet-root /path/to/private-fleet validate machines/ac-ws-001.toml --ready
+./scripts/fleetctl.py --fleet-root /path/to/private-fleet validate machines/acme-ws-001.toml --ready
 ```
 
 Copy this directory into a new private repository. Replace `kit.lock` with the

@@ -42,11 +42,19 @@ against the official OpenAI documentation on 2026-08-27.
 
 ## Host tooling
 
+- [Homebrew installation](https://docs.brew.sh/Installation)
 - [Tailscale installation](https://tailscale.com/docs/install)
+- [Tailscale on Windows](https://tailscale.com/docs/install/windows)
+- [Tailscale on Linux](https://tailscale.com/docs/install/linux)
 - [Tailscale access controls and grants](https://tailscale.com/docs/features/access-control)
 - [Tailscale device tags](https://tailscale.com/docs/features/tags)
+- [NoMachine supported operating systems and clients](https://www.nomachine.com/support/supported-operating-systems-and-supported-applications)
 - [NoMachine Enterprise Desktop physical-desktop guide](https://knowledgebase.nomachine.com/DT11R00195)
+- [NoMachine Enterprise Desktop platforms and features](https://www.nomachine.com/enterprise/enterprise-desktop-products/enterprise-desktop)
 - [NoMachine trusted users and desktop sharing](https://kb.nomachine.com/DT04U00276)
+- [Apple FileVault guide](https://support.apple.com/en-ca/guide/mac-help/mh11785/mac)
+- [Apple Remote Login guide](https://support.apple.com/en-lamr/guide/mac-help/mchlp1066/mac)
+- [Apple Screen Sharing guide](https://support.apple.com/en-au/guide/mac-help/-mh11848/mac)
 - [Ubuntu Secure Boot and DKMS/MOK signing](https://documentation.ubuntu.com/security/docs/security-features/platform-protections/secure-boot/)
 - [Minisforum MS-S1 Max Canadian product](https://ca.minisforum.com/products/minisforum-ms-s1-max-64gb)
 - [Minisforum RTL8127 DKMS source](https://github.com/minisforum-repo/r8127-dkms)
