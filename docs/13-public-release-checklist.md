@@ -13,10 +13,10 @@ do not replace legal approval or live-machine evidence.
 - [x] Version and changelog updated together.
 - [x] Codeflow-derived policy, self-contained checker, local hook shims, and
       hosted policy check are checked in.
-- [ ] Owner confirms copyright attribution and publication rights.
-- [ ] Replace the private conduct-report placeholder with a monitored channel.
+- [x] Owner confirms publication under the selected license.
+- [x] Private conduct reports use GitHub private vulnerability reporting.
 - [x] Scan the complete final Git history with an approved secret scanner.
-- [ ] Review the clean root history before its first push.
+- [x] Review the complete root history before its first push.
 
 ## Engineering
 
