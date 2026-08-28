@@ -1,8 +1,17 @@
-## Purpose
+## Summary
 
 Describe the problem and the smallest change that addresses it.
 
-## Safety and validation
+## Changes
+
+- List the material behavior, documentation, or policy changes.
+
+## Testing
+
+- Paste the commands and results that verify this change.
+- State what was not exercised on real Linux or macOS hardware.
+
+## Safety and approvals
 
 - [ ] Preview behavior remains non-mutating.
 - [ ] Privileged, credential, recovery, and destructive boundaries are explicit.

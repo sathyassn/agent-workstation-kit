@@ -5,7 +5,15 @@ __pycache__/
 *.local
 config/profiles/*.local.toml
 .env
+.env.*
 .secrets/
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.local.json
+credentials.*.local.json
+.pytest_cache/
 artifacts/
 reports/
 .fleetctl-identity.lock

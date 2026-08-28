@@ -14,17 +14,64 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  validate:
+  repository-validation:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Check out source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Install shell analysis
         run: sudo apt-get update && sudo apt-get install --yes shellcheck
 
-      - name: Run repository checks
+      - name: Run independent repository gate
         run: make ci-check
+
+      - name: Validate Git discipline policy
+        run: python3 scripts/check_git_discipline.py policy
+
+      - name: Enforce pull-request Git discipline
+        if: github.event_name == 'pull_request'
+        env:
+          GIT_DISCIPLINE_BASE: ${{ github.event.pull_request.base.sha }}
+          GIT_DISCIPLINE_HEAD: ${{ github.event.pull_request.head.sha }}
+          GIT_DISCIPLINE_BRANCH: ${{ github.head_ref }}
+          GIT_DISCIPLINE_PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          python3 scripts/check_git_discipline.py ci \
+            --base "$GIT_DISCIPLINE_BASE" \
+            --head "$GIT_DISCIPLINE_HEAD" \
+            --branch "$GIT_DISCIPLINE_BRANCH" \
+            --pr-body-env GIT_DISCIPLINE_PR_BODY
+
+  secret-scan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out full history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Run pinned Gitleaks
+        run: |
+          version="8.30.0"
+          expected="79a3ab579b53f71efd634f3aaf7e04a0fa0cf206b7ed434638d1547a2470a66e"
+          archive="gitleaks_${version}_linux_x64.tar.gz"
+          curl --fail --location --silent --show-error \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${version}/${archive}" \
+            --output "$archive"
+          printf '%s  %s\n' "$expected" "$archive" | sha256sum --check --strict
+          tar --extract --gzip --file "$archive" gitleaks
+          python3 -c 'from pathlib import Path; Path("negative-fixture.txt").write_text("token=" + "glpat-" + "kSaPeOD_-T0JxMi3p28B" + "\n")'
+          set +e
+          ./gitleaks dir --redact --no-banner --exit-code 7 negative-fixture.txt
+          fixture_exit=$?
+          set -e
+          rm -f negative-fixture.txt
+          test "$fixture_exit" -eq 7
+          ./gitleaks git --redact --no-banner --exit-code 1 .
