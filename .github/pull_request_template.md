@@ -1,6 +1,8 @@
 ## Summary
 
-Describe the problem and the smallest change that addresses it.
+Describe the problem and the smallest change that addresses it. Write it
+plainly: simple, straightforward and clear, no mannered prose (see
+`AGENTS.md`, "Writing").
 
 ## Changes
 

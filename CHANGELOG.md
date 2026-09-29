@@ -5,6 +5,10 @@ between minor releases while live-machine evidence is incorporated.
 
 ## 0.2.0-rc.5 — Unreleased
 
+- Added a writing section to the agent contract: plain writing with no
+  mannered prose, short prose by default, summaries that anchor the reader,
+  and figures by surface. The setup skill's report step and the pull-request
+  template point at it.
 - Closed final cross-model release-review gaps in resource-limit boundaries,
   macOS identity/runtime consistency, remote-access hardening, agent session
   delegation, pilot validation, public CI and contributor/security guidance.
