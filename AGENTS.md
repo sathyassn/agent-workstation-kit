@@ -29,8 +29,8 @@ This repository provisions development machines that run autonomous AI agents.
   needs and no more. Avoid mannered prose, writing that performs for effect:
   slogans, "not X but Y" turns, rhetorical triplets, dramatic fragments,
   stacked hedges, colon reveals, self-narration, ceremonial framing and walls
-  of text. State the fact directly. CodeFlow's cf-editorial-review skill lists
-  these patterns with plain rewrites in `references/editorial-smells.md`.
+  of text. State the fact directly. Where Codeflow is installed, its
+  cf-editorial-review skill pairs each pattern with a plain rewrite.
 - Default to short prose and bullets. Write long prose only when the reader
   asks for it or the artifact is prose by nature, such as an essay or a
   narrative guide.

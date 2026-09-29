@@ -56,5 +56,7 @@ merge boundary; a local hook alone is not sufficient enforcement.
 - An agent identity may author a change, but it must not approve or merge its
   own pull request.
 - Security reports follow `SECURITY.md`, not the public issue tracker.
+- Pull request bodies, commit messages and docs follow the Writing section
+  of `AGENTS.md`.
 - Pull requests use the checked-in template. A human who did not author the
   change approves and merges it after required checks pass.
