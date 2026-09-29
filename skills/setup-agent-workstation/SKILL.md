@@ -113,6 +113,8 @@ Run the profile audit, resource assessment, and relevant acceptance runbooks.
 Report completed, skipped, failed, and deferred phases; versions; accounts and
 role groups; remote paths; source/model identities; resource/load results;
 driver/kernel/reboot state; backup/restore; and remaining approvals/risks.
+Write the report plainly: simple, straightforward and clear, no mannered prose
+(see the toolkit's `AGENTS.md`, "Writing").
 
 Do not claim live certification when hardware or organization controls remain
 untested. An agent may prepare local changes and draft review text, but must ask
