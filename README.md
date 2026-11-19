@@ -184,6 +184,10 @@ make ci-check       # adds mandatory ShellCheck
 make public-check   # deterministic public-readiness checks
 ```
 
+The Linux shell checks require Bash 4 or newer. macOS's system Bash 3.2 is too
+old; install current Bash with Homebrew and run
+`make BASH_BIN="$(brew --prefix bash)/bin/bash" ci-check`.
+
 Repository checks do not certify a live host. Record firmware, drivers,
 endpoint management, remote access, backup/restore and realistic workload
 evidence separately before approving a node.
