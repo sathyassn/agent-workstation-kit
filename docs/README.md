@@ -13,6 +13,7 @@ sequence.
 |---|---|
 | Set up the first Linux pilot | [First Linux pilot](runbooks/first-linux-pilot.md), then [day-zero Linux](runbooks/day-zero-linux.md) |
 | Set up another Linux host | [Day-zero Linux](runbooks/day-zero-linux.md) |
+| Draft a machine handoff or resume setup | [Guided fleet setup](runbooks/guided-fleet-setup.md) |
 | Set up a Mac | [Day-zero macOS](runbooks/day-zero-macos.md) |
 | Configure an already prepared host | [Linux setup](02-linux-setup.md) or [macOS setup](03-macos-setup.md) |
 | Create or change a machine profile | [Profile onboarding](01a-onboarding-profile.md) |

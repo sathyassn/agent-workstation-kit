@@ -769,7 +769,7 @@ def fleet_lock_issue(fleet_root: Path | None) -> str | None:
         return f"{lock} is missing"
     try:
         pinned = lock.read_text(encoding="utf-8").strip()
-    except OSError as exc:
+    except (OSError, UnicodeError) as exc:
         return f"cannot read {lock}: {exc}"
     if pinned != VERSION:
         return f"{lock} pins {pinned or '<empty>'}, but this toolkit is {VERSION}"
@@ -845,6 +845,123 @@ def allocate_profile(args: argparse.Namespace, output: Path, scan_directory: Pat
     return None
 
 
+def setup_revision(root: Path, label: str, expected: str | None) -> str:
+    def git(*arguments: str) -> str:
+        result = subprocess.run(
+            ["git", "-C", str(root), *arguments],
+            capture_output=True, text=True, check=False, timeout=15,
+        )
+        if result.returncode:
+            raise ValueError(f"{label}: Git {arguments[0]} failed at {root}; check path, ownership and Git availability")
+        return result.stdout.rstrip("\n")
+
+    if not (root / ".git").exists():
+        raise ValueError(f"{label}: no Git metadata at {root}; use the reviewed source checkout")
+    if git("rev-parse", "--show-toplevel") != str(root.resolve()):
+        raise ValueError(f"{label}: use the source checkout root at {root}")
+    revision = git("rev-parse", "HEAD")
+    if expected and revision != expected:
+        raise ValueError(f"{label}: expected {expected}, found {revision}")
+    if git("status", "--porcelain", "--untracked-files=all"):
+        raise ValueError(f"{label}: review local changes or use a clean checkout of the reviewed revision")
+    return revision
+
+
+def guided_setup(args: argparse.Namespace, path: Path, profile: dict[str, Any]) -> int:
+    fleet = args.fleet_root.expanduser().absolute()
+    machine = profile["machine"]
+    hostname = machine["hostname"]
+    platform = machine["platform"]
+    relative = Path("machines") / f"{hostname}.toml"
+    handoff = Path("handoffs") / f"{hostname}-bootstrap.md"
+    if path.absolute() != fleet / relative:
+        raise ValueError(f"use the target profile at {relative} inside the fleet checkout")
+    if platform == "macos" and args.expected_ubuntu:
+        raise ValueError("--expected-ubuntu applies only to Linux profiles")
+    ubuntu = args.expected_ubuntu or "24.04"
+    launcher = "start-linux-pilot.py" if platform == "linux" else "start-macos-pilot.py"
+    guide = "day-zero-linux.md" if platform == "linux" else "day-zero-macos.md"
+
+    if args.handoff_draft:
+        accounts = profile["accounts"]
+        command = [
+            "python3", "scripts/fleetctl.py", "--fleet-root", "FLEET_CHECKOUT",
+            "setup", str(relative),
+        ]
+        if platform == "linux":
+            command.extend(["--expected-ubuntu", ubuntu])
+        boot = (
+            "Review the Ubuntu release and disk plan. Prove console access and LUKS recovery."
+            if platform == "linux" else
+            "Confirm ownership and MDM at Setup Assistant. Verify FileVault escrow and console recovery."
+        )
+        admins = ", ".join(
+            f"{admin} ({owner})" for admin, owner in accounts["admin_assignments"].items()
+        )
+        print(f"""# {hostname} bootstrap setup-agent handoff
+
+Draft for review. Fill in the actual stopping point, approved client access,
+recovery owner, package decisions and remaining work before committing.
+
+- Target profile: `{relative}`
+- Platform and hardware: {platform}, {machine['hardware_profile']}
+- Named humans: {', '.join(accounts['humans'])}
+- Assigned administrators: {admins}
+- Shared runtime: {accounts['agent']}
+- Kit version: {VERSION}
+- Approved OS build and exceptions: record during review.
+- Stopping point and next phase: record during review.
+- Approved access and recovery owners: record during review.
+
+1. Follow the kit's `docs/runbooks/{guide}` from the local console. {boot}
+2. Complete day-zero prerequisites. Use the reviewed kit and fleet source
+   checkouts and substitute the fleet path in the command below.
+3. Run readiness. Resolve failures and rerun the same command from source.
+4. Start the setup agent with this handoff and the stopping point above.
+   Review the ordered plan. Preview each remaining phase and apply only
+   approved changes from the required execution context.
+5. Record pairing, desktop access, reconnect, transfer, and recovery separately.
+
+```sh
+{shlex.join(command)}
+```
+
+## Setup-agent prompt
+
+Read this handoff and `{relative}`. Follow the kit setup skill and platform
+runbook. Start read-only, confirm the intended target and resume from observed
+state. Keep credentials and recovery material out of Git. Stop for the named
+operator at approval, authentication and recovery steps.""")
+        return 0
+
+    if actual_platform() != platform:
+        raise ValueError(f"run readiness on the selected {platform} workstation")
+    if os.geteuid() == 0:
+        raise ValueError("run readiness as the approved non-root setup operator")
+    if (fleet / handoff).is_symlink() or (fleet / handoff).parent.is_symlink() or not (fleet / handoff).is_file():
+        raise ValueError(f"review and commit {handoff}; use --handoff-draft to start it")
+    kit_revision = setup_revision(ROOT, "toolkit source checkout", args.kit_revision)
+    fleet_revision = setup_revision(fleet, "fleet source checkout", args.fleet_revision)
+    committed = subprocess.run(
+        ["git", "-C", str(fleet), "cat-file", "-e", f"HEAD:{handoff}"],
+        capture_output=True, check=False, timeout=15,
+    )
+    if committed.returncode:
+        raise ValueError(f"commit the reviewed handoff at {handoff} before readiness")
+    print(f"Toolkit source {kit_revision} at {ROOT}", flush=True)
+    print(f"Fleet source   {fleet_revision} at {fleet}", flush=True)
+    print(f"Target         {hostname} ({platform})", flush=True)
+    print("These are local source revisions. Use reviewed staged snapshots for privileged apply.", flush=True)
+    print("Running platform and repository checks…", flush=True)
+    command = [sys.executable, str(ROOT / "scripts" / launcher), "--fleet-root", str(fleet), "--profile", str(relative)]
+    if platform == "linux":
+        command.extend(["--expected-ubuntu", ubuntu])
+    result = subprocess.run(command, cwd=ROOT, check=False)
+    if result.returncode == 0:
+        print(f"Use the reviewed host handoff at {fleet / handoff} when starting the setup agent.")
+    return result.returncode
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Manage agent-workstation-kit profiles.")
     parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
@@ -867,6 +984,12 @@ def main() -> int:
         sub.add_argument("profile", type=Path)
         if command == "validate":
             sub.add_argument("--ready", action="store_true", help="require all apply-time decisions")
+    setup = subs.add_parser("setup", help="draft a host handoff or run platform readiness from reviewed source")
+    setup.add_argument("profile", type=Path)
+    setup.add_argument("--handoff-draft", action="store_true", help="print a draft to review; write no files")
+    setup.add_argument("--expected-ubuntu", help="reviewed Ubuntu release (default: 24.04)")
+    setup.add_argument("--kit-revision", help="require the exact reviewed toolkit commit")
+    setup.add_argument("--fleet-revision", help="require the exact reviewed fleet commit")
     run = subs.add_parser("run", help="run exactly one phase")
     run.add_argument("profile", type=Path)
     run.add_argument("phase", choices=PHASES)
@@ -882,6 +1005,18 @@ def main() -> int:
         help="SSH peer captured before sudo; required with tailscale-ssh",
     )
     args = parser.parse_args()
+
+    if args.command == "setup":
+        if args.fleet_root is None:
+            parser.error("setup requires --fleet-root")
+        args.fleet_root = args.fleet_root.expanduser().absolute()
+        if args.handoff_draft and (args.kit_revision or args.fleet_revision):
+            parser.error("revision options apply to readiness only")
+        if args.expected_ubuntu and not re.fullmatch(r"[0-9]{2}\.[0-9]{2}", args.expected_ubuntu):
+            parser.error("--expected-ubuntu must use YY.MM format")
+        for revision in (args.kit_revision, args.fleet_revision):
+            if revision and not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", revision):
+                parser.error("provide full lowercase Git commit IDs")
 
     if args.command == "init":
         if lock_error := fleet_lock_issue(args.fleet_root):
@@ -932,6 +1067,13 @@ def main() -> int:
         print(f"ERROR kit.lock: {lock_error}", file=sys.stderr)
         return 2
     path = resolve_profile(args.profile, args.fleet_root)
+    if args.command == "setup" and (
+        path.absolute().parent != args.fleet_root / "machines"
+        or args.fleet_root.is_symlink() or path.parent.is_symlink()
+        or path.is_symlink() or not path.is_file()
+    ):
+        print("ERROR setup: select a regular profile directly under the fleet machines/ directory", file=sys.stderr)
+        return 2
     try:
         profile = load_profile(path)
     except ValueError as exc:
@@ -942,6 +1084,18 @@ def main() -> int:
     if issues:
         show_issues(issues)
         return 2
+    if args.command == "setup":
+        try:
+            return guided_setup(args, path, profile)
+        except subprocess.TimeoutExpired:
+            print("ERROR setup: a readiness check timed out. Check the source checkout and local prerequisites, then rerun.", file=sys.stderr)
+            return 2
+        except (OSError, ValueError) as exc:
+            print(f"ERROR setup: {exc}", file=sys.stderr)
+            return 2
+        except KeyboardInterrupt:
+            print("Setup readiness interrupted. Rerun from the reviewed source checkouts.", file=sys.stderr)
+            return 130
     print(f"PASS profile {path} ({profile['profile']}, {profile['machine']['platform']}, state={profile['state']})")
     if args.command == "validate":
         return 0
