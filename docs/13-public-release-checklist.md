@@ -104,8 +104,8 @@ release-specific evidence on the final follow-up revision before publication:
       Orca connect/reconnect, named-user Screen Sharing or selected GUI results.
 - [ ] Provider real runs, project browser preview, container smoke, app restart,
       host reboot, sleep/wake and independent recovery outcomes.
-- [ ] Optional package/app source supplement and update/rollback ownership
-      reviewed; schema 3 does not automate those new selections.
+- [ ] Optional package/app source and update/rollback ownership reviewed; added
+      APT/Homebrew selections are automated, custom sources remain separate.
 - [ ] Human approves publication and the private fleet's new pin separately.
 
 The local regression for source-versus-staged readiness covers an ignored archive
@@ -121,3 +121,32 @@ resumable preview and evidence tests address the handoff's OBS-030/032/035;
 transport/workload checks and project transfer documentation address
 OBS-038 through OBS-043. These are handoff mappings, not tracker dispositions
 or physical-host certification.
+
+## Release candidate 0.2.0-rc.7 automation
+
+The follow-up now includes actual owner-scope execution with preview, explicit
+host/scope approval, live postconditions, automatic private receipts and failure
+resume. Linux and Mac package sets are declarative; fresh Linux mise bootstrap
+uses fixed, signature-reviewed source hashes. Mac local accounts use hidden
+vendor prompts, managed accounts are verified, and the shared workload helper
+automates project-locked browser and digest-pinned rootless container probes on
+Ubuntu/Podman and Mac/OrbStack. SSH/SFTP
+transport checks are executable.
+
+- [ ] Independent review of the new executor, privileged staging checks, fresh
+      SSH-install guard, account helper and live-verification semantics.
+- [ ] Physical Ubuntu APT/postinst/masking/firewall failure recovery and reboot
+      qualification, including preservation of an existing administrator's SSH.
+- [ ] Physical Mac `sysadminctl` create/repeat behavior, secure-token consequences,
+      MDM account verification, native Homebrew owner and OrbStack/privacy paths.
+- [ ] Real selected project Playwright/browser and digest-pinned container runs;
+      real client/host SSH/SFTP plus Orca and Screen Sharing reconnect.
+
+Disposable execution fixtures and mocked package/network tests establish software
+control flow; they do not establish these physical-host results.
+
+Local development validation: 212 automated tests, strict `make ci-check` and
+`make public-check` pass. Native Apple Bash package/account previews and the
+guided terminal were exercised without applying host changes. Signed mise
+checksums were verified against the vendor public key. The pending live checks
+above remain required before rollout.

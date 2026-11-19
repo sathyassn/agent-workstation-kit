@@ -190,3 +190,11 @@ OS installation require human approval. No unattended installer is qualified by
 this documentation change.
 
 Installer reference checked 2026-11-19: [Canonical autoinstall reference](https://github.com/canonical/subiquity/blob/main/doc/reference/autoinstall-reference.rst).
+
+Base and account tooling are now driven through the
+[automated setup scopes](runbooks/resumable-setup.md). Optional
+`tooling.apt_packages` adds packages to the public baseline; installed selections
+are preserved. A new account can bootstrap mise from the signature-reviewed
+Linux binary catalog automatically before installing its runtimes/agent CLIs.
+Fresh OpenSSH installation stays guarded until remote hardening validates the
+policy and firewall; existing service overrides are preserved.

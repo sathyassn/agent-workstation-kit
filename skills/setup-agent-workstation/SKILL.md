@@ -121,7 +121,7 @@ repository visibility.
 
 ## Resume the approved plan
 
-Use `scripts/setup-workstation.py` and `docs/runbooks/resumable-setup.md` after
+Use `scripts/setup-workstation.sh` and `docs/runbooks/resumable-setup.md` after
 profile approval. Present the full plan once, bind human approval to its target
 UUID and plan ID, and keep checkpoint evidence private. Resume at the first
 incomplete/invalid checkpoint; do not rerun earlier valid phases without drift.
@@ -135,3 +135,28 @@ does not establish remote freshness or live host readiness. Record full kit and
 fleet revisions. For remote Mac hosts follow `docs/runbooks/remote-mac.md`:
 listener and viewer TCP before pairing, then authenticated Orca reconnect and
 independent named-user Apple Screen Sharing, transfer, sleep and reboot outcomes.
+
+## Execute approved automation
+
+Export the portable execution bundle from the reviewed source profile. Preview
+each owner scope through `setup-workstation.sh --plan-file ... --scope ...`.
+After human approval of the exact host/scope execution-plan ID, use its apply
+command; privileged scopes require matching root-owned `/opt` source/profile
+snapshots and an OS-owned interpreter. The executor batches that scope, previews
+each script, verifies live postconditions, writes private receipts and stops at
+the first failure. Rerun the scope to recheck and skip completed phases or repair
+drift. Never turn a receipt into approval for changed code or scope.
+
+Use declarative package additions, the verified Linux mise bootstrap, selected
+Mac account helper and Mac workload helper instead of asking humans to repeat
+those deterministic commands. Run `verify-remote-access.py` previews before its
+actual TCP, named-user SSH/SFTP and reconnect probes. Preserve the explicit
+credential, encryption, enrollment, privacy and managed-policy gates.
+
+Prefer the single `scripts/setup-workstation.sh` entry point. In a human terminal,
+use its guided walkthrough; for agents use the `plan`, `run`/`resume`, `status`,
+`check-access` and `workloads` actions. Do not send operators through separate
+helper scripts for ordinary setup. The console uses Rich when available and
+falls back without installing a UI dependency. Show the current scope owner,
+preview, blocker and next action. Blank/invalid input and cancellation must never
+authorize apply. The wizard captures only a plan approval phrase, never secrets.

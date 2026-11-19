@@ -40,6 +40,7 @@ fallback_kvm = "glinet-comet-poe-gl-rm1pe"
 desktop_lock_mode = "ask"
 
 [tooling]
+# apt_packages = ["ripgrep"] # Optional additions from approved APT repositories.
 install_agents = true
 gws = "ask" # install or skip
 secrets_provider = "ask" # 1password, bitwarden, both, or organization-vault

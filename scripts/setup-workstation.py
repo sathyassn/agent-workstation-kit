@@ -7,11 +7,15 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 
 import fleetctl
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+from path_safety import outside_kit
 
 ROOT = Path(__file__).resolve().parents[1]
 ACCEPTANCE = (
@@ -66,10 +70,15 @@ def remaining(plan: str, journal: dict) -> list[str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(prog="setup-workstation.sh plan", description=__doc__)
     parser.add_argument("--fleet-root", type=Path, required=True)
     parser.add_argument("--profile", type=Path, required=True)
     parser.add_argument("--journal", type=Path, help="private JSON checkpoint journal; read only")
+    parser.add_argument("--details", action="store_true", help="show full profile, internal phase commands and acceptance checklist")
+    parser.add_argument("--export-plan", type=Path, help="write a portable execution plan outside the kit; no host apply")
+    parser.add_argument("--confirm-recovery-tested", action="store_true")
+    parser.add_argument("--connection-context", choices=("local-console", "tailscale-ssh"))
+    parser.add_argument("--ssh-source-ip")
     args = parser.parse_args()
     try:
         if not (ROOT / ".git").exists():
@@ -86,13 +95,18 @@ def main() -> int:
         profile_path = fleetctl.resolve_profile(args.profile, fleet_root)
         if profile_path.is_symlink() or profile_path.resolve().parent != fleet_root / "machines":
             raise ValueError("profile must be a regular direct child of private machines/")
-        if args.journal and args.journal.expanduser().resolve().is_relative_to(ROOT):
+        if args.journal and not outside_kit(args.journal.expanduser(), ROOT):
             raise ValueError("checkpoint journals belong outside the public toolkit")
         profile = fleetctl.load_profile(profile_path)
         issues = fleetctl.validate_profile(profile, ready=True)
         if issues:
             fleetctl.show_issues(issues)
             return 2
+        fleet_validation = subprocess.run([sys.executable, str(ROOT / "scripts/validate-fleet.py"), str(fleet_root)], check=False, capture_output=True, text=True)
+        if fleet_validation.returncode:
+            raise ValueError("configuration-wide validation failed: " + fleet_validation.stderr.strip())
+        if fleet_validation.stdout.strip():
+            print(fleet_validation.stdout.strip().splitlines()[-1])
         # Include the exact current content of source files, including new files.
         files = subprocess.run(["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
                                cwd=ROOT, check=True, capture_output=True).stdout.split(b"\0")
@@ -112,18 +126,58 @@ def main() -> int:
         pending = remaining(identity, journal)
         print(f"PREVIEW ONLY | version={fleetctl.VERSION} | target={profile['machine']['hostname']} uuid={profile['machine']['uuid']}")
         print(f"Source revision: {revision} (current content bound below; remote freshness unverified)")
-        print(f"Plan ID: {identity}")
-        print("Settings (non-secret profile; public defaults < approved private defaults < reviewed host overrides):")
-        print(json.dumps(profile, sort_keys=True, indent=2))
-        print(result.stdout)
-        print("Human gates: OS/disk/enrollment/recovery; each scoped privileged apply; account/access changes; vendor MFA/consent.")
-        print("Recovery: keep tested console/KVM, backups and matching staged revisions; stop at the first failure; sudo -K after each apply.")
-        print("Acceptance checkpoints (operator-attested; file hashes do not prove a live result):")
-        for key, detail in ACCEPTANCE:
-            print(f"{'PENDING' if key in pending else 'RECORDED'} {key}: {detail}")
-        print("Next: " + (pending[0] if pending else "all checkpoints recorded; independent live review required"))
+        if args.details or args.journal:
+            print(f"Source review ID (not execution approval): {identity}")
+        from terminal_ui import UI
+        from setup_scopes import SCOPES, expected_owner
+        from package_setup import selected_packages
+        ui = UI()
+        ui.table(("Setting", "Selection"), [
+            ("OS", profile["machine"]["platform"]),
+            ("Agent account", profile["accounts"]["agent"]),
+            ("Human accounts", ", ".join(profile["accounts"]["humans"])),
+            ("Assigned admins", ", ".join(profile["accounts"]["admins"])),
+            ("Private access", profile["security"]["remote_scope"]),
+            ("Management", profile["security"]["endpoint_management"]),
+        ])
+        rows = []
+        for scope, names in SCOPES[profile["machine"]["platform"]].items():
+            phases = [fleetctl.phase_for(profile, name, apply=False, recovery=False) for name in names]
+            gates = [phase.name for phase in phases if phase.command is None]
+            rows.append((scope, expected_owner(names[0], profile["machine"]["platform"]), ", ".join(names) + ("; human gate: " + ", ".join(gates) if gates else "")))
+        ui.table(("Scope", "Run as", "Phases"), rows)
+        tools = profile["tooling"]
+        packages = selected_packages(profile["machine"]["platform"], {"apt": tools.get("apt_packages", []), "formulae": tools.get("brew_formulae", []), "casks": tools.get("brew_casks", [])})
+        for kind, values in packages.items():
+            ui.say("Packages (" + kind + "): " + ", ".join(values))
+        if args.details:
+            print("Full non-secret profile:")
+            print(json.dumps(profile, sort_keys=True, indent=2))
+            print(result.stdout)
+            print("Acceptance checkpoints (operator-attested; file hashes do not prove a live result):")
+            for key, detail in ACCEPTANCE:
+                print(f"{'PENDING' if key in pending else 'RECORDED'} {key}: {detail}")
+        else:
+            ui.say("Use --details for the full profile, exact helper commands and OS/GUI/recovery checklist.")
+        ui.say("Next acceptance candidate: " + (pending[0] if pending else "all recorded; live review required"))
         if journal and journal.get("plan_id") != identity:
-            print("Plan changed: prior approval/checkpoints invalid; review the changed scope before applying.")
+            ui.say("Plan changed: prior manual checkpoints need review.")
+        ui.say("Human gates: OS/encryption/enrollment/recovery; privileged approval; account passwords; provider MFA and privacy prompts.")
+        if args.export_plan:
+            from setup_plan import export_plan, plan_digest
+            output = args.export_plan.expanduser().absolute()
+            if output.exists() or output.is_symlink() or not outside_kit(output, ROOT):
+                raise ValueError("export a new execution plan outside the public kit; existing files are preserved")
+            portable = export_plan(ROOT, fleet_root, profile_path, profile,
+                                   recovery=args.confirm_recovery_tested,
+                                   context=args.connection_context, ssh_source_ip=args.ssh_source_ip)
+            descriptor = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(descriptor, "w") as stream:
+                json.dump(portable, stream, sort_keys=True, indent=2)
+                stream.write("\n")
+            print("Exported execution bundle: " + str(output))
+            print("Bundle ID: " + plan_digest(portable))
+            print("Next: scripts/setup-workstation.sh --plan-file PLAN --scope packages (preview first)")
         print("See docs/runbooks/resumable-setup.md; this preview grants no apply authorization.")
         return 0
     except (OSError, ValueError, TypeError, subprocess.CalledProcessError) as error:

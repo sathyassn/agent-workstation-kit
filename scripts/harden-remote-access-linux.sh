@@ -68,11 +68,21 @@ tmp=''
 ufw_backup_dir=''
 ufw_touched=false
 ufw_was_active=false
+ssh_guard=/etc/agent-workstation-kit/ssh-install-guard.json
+ssh_guard_released=false
 
 cleanup() {
   local exit_status=$? restoration_failed=false
   trap - EXIT
   set +e
+  if ((exit_status != 0)) && [[ "$ssh_guard_released" == true ]]; then
+    if ! systemctl stop ssh.socket ssh.service || ! systemctl mask ssh.service ssh.socket; then
+      # Keep the restrictive firewall if a newly unmasked service cannot be
+      # safely returned to the guarded state. Recovery must inspect it.
+      ufw_touched=false
+      warn 'Could not rearm the fresh-install SSH guard; keeping the restrictive firewall. Use the recovery console.'
+    fi
+  fi
   if ((exit_status != 0)) && [[ "$ufw_touched" == true && -n "$ufw_backup_dir" ]]; then
     for path in /etc/default/ufw /etc/ufw/user.rules /etc/ufw/user6.rules; do
       backup="$ufw_backup_dir${path}"
@@ -252,6 +262,12 @@ ufw allow in on tailscale0 to any port 22 proto tcp comment 'agent-workstation s
 ufw allow in on tailscale0 to any port "$nomachine_port" proto tcp comment 'agent-workstation nomachine tcp'
 ufw allow in on tailscale0 to any port "$nomachine_port" proto udp comment 'agent-workstation nomachine udp'
 ufw --force enable
+# Fresh package installation was guarded so maintainer scripts could not expose
+# SSH before this validated configuration and firewall were in place. Preserve
+# any masks that this kit did not create.
+python3 "$script_dir/install-package-set.py" --platform linux --release-ssh-guard
+[[ ! -f "$ssh_guard" ]] || ssh_guard_released=true
+python3 "$script_dir/install-package-set.py" --platform linux --release-ssh-guard --apply
 systemctl enable --now ssh.socket 2>/dev/null || systemctl enable --now ssh
 if systemctl is-active --quiet ssh.service; then
   systemctl reload ssh.service
@@ -260,8 +276,12 @@ elif systemctl is-active --quiet ssh.socket; then
 else
   die 'OpenSSH is not active after enablement.'
 fi
+if [[ "$ssh_guard_released" == true ]]; then
+  rm -- "$ssh_guard"
+fi
 dropin_created=false
 ufw_touched=false
+ssh_guard_released=false
 
 log 'Remote-access hardening applied. Keep the recovery console open.'
 log 'Open a second named-user SSH session over the Tailscale address now; do not disconnect recovery until it succeeds.'

@@ -32,6 +32,11 @@ Start with `fleetctl init` or an example; do not invent a profile from memory.
 | `remote.preferred_kvm` | `glinet-comet-x-gl-rm4pe` | Four-host target when mature/available. | Inventory only until installed |
 | `remote.fallback_kvm` | `glinet-comet-poe-gl-rm1pe` | Per-host fallback/spare. | Inventory only until installed |
 | `remote.desktop_lock_mode` | `ask`, `dedicated-shared`, `locked` | Explicit shared desktop choice; `ask` is draft-only. | Manual NoMachine session test |
+| `accounts.macos_provisioning` | optional `managed` (default), `local` | Verify managed accounts, or explicitly create missing Mac accounts with vendor password prompts. Existing accounts/roles are preserved. | Account helper + live audit |
+| `tooling.apt_packages` | optional array, e.g. `["ripgrep", "sqlite3"]` | Ubuntu additions from approved APT sources; explicit `name=version` pins permitted. | Installed package check |
+| `tooling.brew_formulae` | optional array, e.g. `["ripgrep"]` | Mac additions from Homebrew core; no URLs/options/taps. | Installed package check |
+| `tooling.brew_casks` | optional array, e.g. `["firefox"]` | Mac GUI additions from Homebrew cask. | Installed cask check |
+| `tooling.mise_version`, `tooling.mise_sha256` | optional paired Linux version/digest | Override the signature-reviewed public mise binary catalog. Do not select a second mise install on Mac. | Binary SHA-256 and version check |
 | `tooling.install_agents` | `true` | Requires the Codex, Claude Code, and Grok Build toolchain. | Validator/live commands |
 | `tooling.gws` | `ask`, `install`, `skip` | Optional, asked during onboarding; `ask` is draft-only. | Live command/manual decision |
 | `tooling.secrets_provider` | `ask`, `1password`, `bitwarden`, `both`, `organization-vault` | Provider name only; `ask` is draft-only. | Manual vault evidence; never credentials |

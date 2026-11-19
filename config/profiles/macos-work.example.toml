@@ -19,6 +19,7 @@ hardware_profile = "mac-mini-or-studio"
 role = "agent-workstation"
 
 [accounts]
+macos_provisioning = "managed" # Use local only under an explicitly approved local-account policy.
 agent = "agent-01"
 humans = ["alice", "bob"]
 admins = ["admin-01", "admin-02"]
@@ -38,6 +39,8 @@ fallback_kvm = "glinet-comet-poe-gl-rm1pe"
 desktop_lock_mode = "ask"
 
 [tooling]
+brew_formulae = []
+brew_casks = []
 install_agents = true
 gws = "ask"
 secrets_provider = "ask"
