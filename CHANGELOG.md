@@ -5,6 +5,8 @@ between minor releases while live-machine evidence is incorporated.
 
 ## 0.2.0-rc.5 — Unreleased
 
+- Expanded the private-fleet template with source-toolkit context, placeholder
+  guidance, repository boundaries, validation, deployment flow and governance.
 - Closed final cross-model release-review gaps in resource-limit boundaries,
   macOS identity/runtime consistency, remote-access hardening, agent session
   delegation, pilot validation, public CI and contributor/security guidance.
