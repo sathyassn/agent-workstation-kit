@@ -1,9 +1,10 @@
 SHELL := /bin/sh
 PYTHON ?= python3
+BASH_BIN ?= bash
 
-.PHONY: check ci-check git-discipline-check public-check public-draft-check repo-check skill-check shell-check unit-check python-check
+.PHONY: bash-check check ci-check git-discipline-check public-check public-draft-check repo-check skill-check shell-check unit-check python-check
 
-check: shell-check python-check unit-check skill-check repo-check git-discipline-check public-draft-check
+check: bash-check shell-check python-check unit-check skill-check repo-check git-discipline-check public-draft-check
 
 ci-check: REQUIRE_SHELLCHECK=1
 ci-check: check
@@ -17,11 +18,24 @@ public-draft-check:
 python-check:
 	@$(PYTHON) -m py_compile scripts/*.py tests/*.py
 
-shell-check:
+bash-check:
+	@if ! command -v "$(BASH_BIN)" >/dev/null 2>&1; then \
+		echo "Bash 4 or newer is required; command not found: $(BASH_BIN)" >&2; \
+		exit 1; \
+	fi
+	@major=$$("$(BASH_BIN)" -c 'printf "%s\n" "$${BASH_VERSINFO[0]}"'); \
+	if [ "$$major" -lt 4 ]; then \
+		"$(BASH_BIN)" --version | sed -n '1p' >&2; \
+		echo 'Bash 4 or newer is required for Linux shell validation.' >&2; \
+		echo 'On macOS: brew install bash; make BASH_BIN="$$(brew --prefix bash)/bin/bash" ci-check' >&2; \
+		exit 1; \
+	fi
+
+shell-check: bash-check
 	@for file in scripts/*.sh scripts/lib/*.sh agentctl/* .codeflow/git-hooks/*; do \
 		[ -f "$$file" ] || continue; \
 		case "$$file" in *.md|*.yaml) continue ;; esac; \
-		bash -n "$$file"; \
+		"$(BASH_BIN)" -n "$$file"; \
 	done
 	@if command -v shellcheck >/dev/null 2>&1; then \
 		set --; \
@@ -40,9 +54,9 @@ shell-check:
 skill-check:
 	@$(PYTHON) tests/check_skill.py
 
-unit-check:
+unit-check: bash-check
 	@$(PYTHON) -m unittest discover -s tests -p 'test_*.py'
-	@bash tests/test_shell_behaviour.sh
+	@"$(BASH_BIN)" tests/test_shell_behaviour.sh
 
 repo-check:
 	@$(PYTHON) tests/check_repository.py

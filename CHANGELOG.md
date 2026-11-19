@@ -94,6 +94,8 @@ independent review and approved release publication.
 - Added regression coverage for the corrected first-use and policy paths.
 - Allowed GitHub-authenticated Dependabot branch names and generated PR/commit
   bodies while retaining conventional subjects, secret scans, and test gates.
+- Added an explicit Bash 4+ validation gate and macOS contributor instructions
+  so Linux shell tests fail clearly instead of aborting under Apple Bash 3.2.
 
 ## 0.2.0-rc.4 — Unreleased
 

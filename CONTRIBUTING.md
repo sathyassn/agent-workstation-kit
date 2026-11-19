@@ -9,11 +9,20 @@ fleet data, organization-only policy, personal paths, or credentials.
 
 ## Before opening a change
 
-1. Install Python 3.11+, Make, Git, and ShellCheck. On Ubuntu:
+1. Install Python 3.11+, Bash 4+, Make, Git, and ShellCheck. On Ubuntu:
 
    ```bash
    sudo apt-get update
-   sudo apt-get install --yes git make python3 shellcheck
+   sudo apt-get install --yes bash git make python3 shellcheck
+   ```
+
+   macOS ships Bash 3.2, which cannot run the Linux shell-behavior fixtures.
+   Install current Bash and the remaining checks with Homebrew, then select that
+   Bash explicitly:
+
+   ```bash
+   brew install bash python@3.13 shellcheck
+   make BASH_BIN="$(brew --prefix bash)/bin/bash" ci-check
    ```
 
 2. Enable the checked-in hooks for this clone and validate the self-contained
@@ -39,7 +48,8 @@ fleet data, organization-only policy, personal paths, or credentials.
    privileged or recovery-sensitive changes need the documented human gate.
 8. Update examples, tests, documentation, and `CHANGELOG.md` when behavior or
    profile fields change.
-9. Run `make ci-check` and `make public-check` before requesting review. Include
+9. Run `make ci-check` and `make public-check` before requesting review. On
+   macOS, keep using the reviewed `BASH_BIN` override above. Include
    the result plus any
    untested live-machine assumptions in the pull request. Hosted CI validates
    the exact commit range and pull-request body with the same policy.
