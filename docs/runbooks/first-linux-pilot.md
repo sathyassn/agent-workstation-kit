@@ -45,7 +45,8 @@ It is not a fleet template until the evidence below is complete.
       user-writable code or profile input. Run `make check` and
       `./scripts/preflight.sh` before staging.
 - [ ] On an MS-S1 Max, complete `docs/hardware/minisforum-ms-s1-max.md`, retain
-      Secure Boot, and prove RTL8127 DKMS survives a kernel update.
+      Secure Boot, and qualify native Ethernet first. If a reproduced issue
+      requires RTL8127 DKMS, prove that fallback survives a kernel update.
 
 ## Provision in reviewed phases
 

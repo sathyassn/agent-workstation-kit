@@ -62,3 +62,21 @@ This is a repository-specific adoption of Codeflow's branch, commit, secret,
 protected-ref, review, and testing discipline. It deliberately does not claim
 the full Codeflow scaffold or its planning, ledger, orchestration, or harness
 guard features.
+
+## Ref packing and maintenance
+
+The protected-ref hook allows packing an existing logical value without pruning:
+`git pack-refs --all --no-prune`. It verifies that the zero-old-value packed
+record equals the current logical ref before permitting that no-op. New protected
+refs, ref moves and deletions still require the existing policy path.
+
+Default loose-ref pruning can emit the same deletion-shaped transaction as a
+protected branch deletion. The hook fails closed for that ambiguity; do not
+disable it for `git gc`, auto maintenance or packing. Where maintenance hits this
+case, use the non-pruning command and record the limitation. Review any existing
+`gc.packRefs` setting and preserve its previous value before an operator-approved
+local `gc.packRefs=false` change; this prevents GC from implicitly pruning refs
+while retaining object maintenance. Full pruning lifecycle support remains
+unqualified on Git versions that do not expose sufficient hook context.
+
+Reference: [Git pack-refs](https://git-scm.com/docs/git-pack-refs).

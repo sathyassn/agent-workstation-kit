@@ -42,7 +42,7 @@ Run the read-only readiness check and preflight:
 
 ```bash
 PYTHON_BIN="$(brew --prefix python@3.13)/bin/python3.13"
-"$PYTHON_BIN" scripts/start-macos-pilot.py \
+"$PYTHON_BIN" scripts/start-macos-pilot.py --execution-context host \
   --fleet-root "$HOME/setup/acme-agent-workstation-fleet"
 ./scripts/preflight.sh
 ```
@@ -239,3 +239,28 @@ pending until these checks are exercised on the selected Mac mini or Mac Studio.
 Record results in the private fleet evidence, not this public repository.
 
 [Previous: Linux setup](02-linux-setup.md) · [Documentation home](README.md) · [Next: accounts and access](04-accounts-and-access.md)
+
+Use the [resumable setup plan](runbooks/resumable-setup.md) to bind approvals
+and checkpoint evidence to the target and exact plan before phase applies.
+
+For remote Mac mini/Studio hosts, follow the [remote Mac acceptance recipe](runbooks/remote-mac.md):
+verify listener and client TCP before Orca pairing, then authenticated reconnect
+and independently selected named-user Apple Screen Sharing.
+
+## Architecture and installer qualification
+
+Record OS/build, hardware architecture, enrollment state, FileVault escrow and
+cold-unlock evidence before setup acceptance. Confirm Xcode tools and `brew
+--prefix` under the intended package owner: native Apple silicon Homebrew uses
+`/opt/homebrew`; Intel uses `/usr/local`. Detect Rosetta execution before choosing
+a prefix and never repair ownership or migrate an existing installation silently.
+Setup Assistant and organization enrollment remain human-owned ceremonies.
+
+Evaluate supported MDM automated enrollment and vendor restore/install workflows
+separately on a representative test Mac. Record exact installer/restore version,
+source verification, explicit target storage identity, prompts and a tested
+recovery route. This kit does not implement or qualify unattended macOS erasure
+or installation. Keep activation, signing, Secure Token and escrow credentials
+outside profiles and checkpoint evidence.
+
+Homebrew prefixes checked 2026-11-19: [Homebrew installation](https://docs.brew.sh/Installation).

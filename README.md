@@ -3,7 +3,7 @@
 Production-oriented profiles, preview-first automation, concise guides and a
 setup-agent skill for dedicated Linux and macOS AI development workstations.
 
-Current version: **0.2.0-rc.5**. This remains a release candidate until the
+Current version: **0.2.0-rc.6**. This remains a release candidate until the
 documented Linux and macOS hardware exercises in the public-release checklist
 are complete.
 
@@ -200,3 +200,6 @@ Licensed under the [Apache License 2.0](LICENSE). This project configures
 independent vendor products and is not sponsored or endorsed by OpenAI,
 Anthropic, xAI, Tailscale, NoMachine, Minisforum, GL.iNet or other referenced
 vendors.
+
+For approved profiles, use the [resumable setup plan](docs/runbooks/resumable-setup.md)
+and [remote Mac recipe](docs/runbooks/remote-mac.md) for checkpoint evidence.

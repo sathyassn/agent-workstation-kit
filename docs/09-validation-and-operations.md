@@ -51,3 +51,11 @@ Use the results to select 64 GB versus 128 GB for additional nodes and to set `M
 Updates to agent CLIs and preview applications should be staged on one node before fleet rollout.
 
 Record `MemoryHigh`, `MemoryMax`, `TasksMax`, peak tasks, memory pressure, and responsiveness. Promote measured values through the [fleet change process](12-fleet-rollout-and-change-management.md); do not silently rewrite the formula on running nodes.
+
+## Setup checkpoint evidence
+
+Use the [resumable setup plan](runbooks/resumable-setup.md) and, for Mac hosts,
+the [remote Mac recipe](runbooks/remote-mac.md). Record peer presence, listener,
+actual client TCP, authentication, file transfer, real provider run, project
+browser preview, container smoke, app reconnect, sleep and encrypted reboot
+separately. A sign-in or installed binary alone does not pass its workload check.

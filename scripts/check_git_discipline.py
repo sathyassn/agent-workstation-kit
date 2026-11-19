@@ -481,6 +481,12 @@ def run_reference_transaction(stage: str, stdin: TextIO, policy: Policy) -> None
             branch = ref.removeprefix("refs/heads/")
             if branch not in policy.protected_branches:
                 continue
+            # Packing a loose ref creates a packed record (old=zero) without
+            # changing its logical value. The zero-old-value packed record is safe when
+            # the logical ref already matches. Never allow ambiguous deletion.
+            current = git("rev-parse", "--verify", ref, check=False).strip()
+            if _is_zero_oid(_old_oid) and not _is_zero_oid(new_oid) and current == new_oid:
+                continue
             sync_head = _protected_sync_head(branch)
             if not sync_head:
                 raise DisciplineError(

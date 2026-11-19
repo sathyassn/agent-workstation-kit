@@ -19,6 +19,8 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts/lib"))
+from readiness import source_evidence, execution_evidence  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -90,7 +92,7 @@ def repository_check() -> Check:
     revision = run(["git", "rev-parse", "HEAD"])
     if revision.returncode != 0:
         return Check("FAIL", "toolkit checkout", "cannot resolve the Git revision")
-    return Check("PASS", "toolkit checkout", f"clean at {revision.stdout.strip()[:12]}")
+    return Check("PASS", "toolkit checkout", f"clean at {revision.stdout.strip()}")
 
 
 def fleet_checks(fleet_root: Path, profile: Path | None) -> list[Check]:
@@ -217,7 +219,7 @@ def fleet_repository_check(fleet_root: Path, profile: Path | None) -> Check:
     return Check(
         "PASS",
         "private fleet revision",
-        f"clean at {revision.stdout.strip()[:12]}",
+        f"clean at {revision.stdout.strip()}",
     )
 
 
@@ -286,7 +288,17 @@ def main() -> int:
         action="store_true",
         help="print serial-bearing hardware evidence to this terminal",
     )
+    parser.add_argument("--execution-context", choices=("host", "sandbox", "unknown"), default="unknown",
+                        help="operator attestation; run host checks outside the agent sandbox")
     args = parser.parse_args()
+    evidence = [source_evidence(ROOT),
+                source_evidence(args.fleet_root.expanduser().resolve(), "kit.lock"),
+                execution_evidence(args.execution_context)]
+    for status, detail in evidence:
+        print(f"{status} {detail}")
+    if any(status == "FAIL" for status, _ in evidence):
+        return 1
+
 
     checks: list[Check] = []
     if sys.platform.startswith("linux"):

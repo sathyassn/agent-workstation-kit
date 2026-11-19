@@ -125,3 +125,19 @@ and must be burn-in tested. The KVM remains the out-of-band recovery path.
 Current product links and guides are in the
 [primary-source register](11-primary-sources.md). Recheck them before purchase
 or deployment.
+
+## Orca and remote Mac acceptance
+
+Select Orca SSH worktrees independently from optional Orca Desktop hosting.
+Follow the [remote Mac recipe](runbooks/remote-mac.md) for listener/address checks,
+viewer-to-host TCP before pairing, named-user Screen Sharing and reconnect.
+Use the [resumable plan](runbooks/resumable-setup.md) for separate transfer,
+sleep and encrypted-reboot checkpoints on Ubuntu and macOS.
+
+For project transfer, commit/push only with the required authorization or copy
+a reviewed non-secret archive via named-user SFTP to an approved staging folder.
+Compare SHA-256 after transfer, inspect contents before extraction and avoid
+overwriting an existing project. Move only the project files selected by its
+owner; exclude credentials, browser profiles, keychains, `.ssh` and entire homes.
+Provision dependencies and workload authentication independently under the target
+role. A source checkout transfer never transfers source-control or model identity.

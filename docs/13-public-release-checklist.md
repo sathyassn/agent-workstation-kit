@@ -87,3 +87,37 @@ to the protected local branch. It is only valid for a new, empty repository.
 - [ ] Validate unique technical hostnames, case-insensitive assigned display
       names, UUIDs, asset tags, assignments, and retired names across the whole fleet.
 - [ ] Record toolkit revision, reviewer, tests, canary, rollback, and rollout cohort.
+
+## Release candidate 0.2.0-rc.6 follow-up
+
+Historical checked items above describe the earlier publication. Re-establish
+release-specific evidence on the final follow-up revision before publication:
+
+- [ ] Existing private feedback tracker reconciled against the complete pilot
+      observations; the dropped handoff alone is not the tracker.
+- [ ] Independent review of the new readiness, plan and acceptance paths.
+- [ ] `make ci-check`, strict `make public-check` and secret scan on the final
+      clean commit; hosted checks require an explicitly approved push/PR.
+- [ ] Separate Ubuntu and Mac physical-host fresh install, interruption/resume,
+      repeat-run user-state preservation and encrypted cold-unlock evidence.
+- [ ] Actual listener/address, viewer TCP, named-user SSH/SFTP file transfer,
+      Orca connect/reconnect, named-user Screen Sharing or selected GUI results.
+- [ ] Provider real runs, project browser preview, container smoke, app restart,
+      host reboot, sleep/wake and independent recovery outcomes.
+- [ ] Optional package/app source supplement and update/rollback ownership
+      reviewed; schema 3 does not automate those new selections.
+- [ ] Human approves publication and the private fleet's new pin separately.
+
+The local regression for source-versus-staged readiness covers an ignored archive
+inside an unrelated clean parent checkout (OBS-037). Host-context checks cover
+unknown and sandbox results (OBS-031). A disposable Git fixture exercises the
+shipped hooks through feature worktree creation, linked-worktree commit and ref
+packing. Ref packing reproduced a protected-branch/no-upstream failure and now
+permits only zero-old-value logical no-op updates before the upstream guard
+with `--no-prune`; ref moves and deletions remain guarded. Default pruning still
+fails closed because its hook input is ambiguous with deletion. The original OBS-033 reproduction still requires the
+private tracker details. The
+resumable preview and evidence tests address the handoff's OBS-030/032/035;
+transport/workload checks and project transfer documentation address
+OBS-038 through OBS-043. These are handoff mappings, not tracker dispositions
+or physical-host certification.

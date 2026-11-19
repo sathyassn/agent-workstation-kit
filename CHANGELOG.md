@@ -3,6 +3,28 @@
 This project follows Semantic Versioning. Version 0.x interfaces may change
 between minor releases while live-machine evidence is incorporated.
 
+## 0.2.0-rc.6 — Unreleased
+
+- Added a preview-only resumable setup plan with target/content binding and
+  private evidence checkpoints for Ubuntu and macOS.
+- Added generic remote Mac listener/TCP-before-pairing, Orca reconnect,
+  named-user Apple Screen Sharing, transfer, sleep and recovery acceptance.
+- Distinguished source worktrees from staged snapshots, full revision/version
+  evidence from remote freshness, and host attestation from sandbox probes.
+- Enabled non-pruning ref packing with a protected branch that has no upstream;
+  tested the installed hook lifecycle and retained ambiguous deletion guards.
+  Default ref pruning remains a documented maintenance limitation.
+- Clarified native Ethernet qualification, installer recovery boundaries,
+  architecture-specific Homebrew and independent per-role authentication.
+
+Upgrade: schema 3 remains unchanged. Run pilot readiness from the source
+worktree in an ordinary target-host terminal with `--execution-context host`.
+Keep journals outside the public kit; review the new plan and checkpoint scope
+before resuming. Optional app/source choices still require a reviewed private
+supplement and manual vendor steps. This candidate has no fresh Ubuntu or Mac
+hardware qualification; keep the fleet pin unchanged pending live evidence,
+independent review and approved release publication.
+
 ## 0.2.0-rc.5 — Unreleased
 
 - Closed final cross-model release-review gaps in resource-limit boundaries,
