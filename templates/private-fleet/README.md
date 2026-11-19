@@ -1,39 +1,114 @@
-# Private workstation fleet
+# <Organization> Agent Workstation Fleet
 
-Keep real inventory, ownership assignments, asset tags, internal hostnames, and
-organization policy here—not in the public toolkit. Never commit credentials.
+Replace `<Organization>` and the example paths in this file before the first
+commit.
 
-Each profile also records a unique `machine.display_name`. Assigned names use a
-trimmed ASCII alphabet with no repeated spaces and uniqueness is checked
-case-insensitively, preventing mixed-script, whitespace, and case-only
-collisions. Creation is serialized by a local allocation lock; the required
-whole-fleet validation remains the authoritative pre-merge gate, especially
-across separate clones where a filesystem lock cannot coordinate. The toolkit's `identity` phase
-installs a root-owned local copy for self-identification, while this private
-repository remains the recovery source of truth.
+This private repository is the organization-specific desired-state companion to
+the public [Agent Workstation Kit](https://github.com/sathyassn/agent-workstation-kit).
+If deployment uses a reviewed fork, replace that link with its canonical URL and
+record the upstream source in organization policy.
 
-Choose the fleet's short technical prefix with `fleetctl init --namespace`.
-That value is stored as `deployment.namespace` in each private machine TOML and
-must match the prefix of `machine.hostname`; the public kit supplies only
-fictional examples and no organization-specific default.
+```text
+public agent-workstation-kit             private organization fleet
+generic scripts, tests and runbooks      real machine desired state
+                   \                     /
+                    +--- kit.lock -------+
+```
+
+The toolkit remains generic. This repository records approved, non-secret
+machine profiles, assignments and organization policy. `kit.lock` pins the
+exact toolkit version required to validate or deploy this fleet; it must match
+the toolkit checkout's `VERSION`.
+
+## Scope and boundaries
+
+This repository may contain:
+
+- Technical hostnames, assigned display names and generated machine UUIDs.
+- Organization asset tags and non-secret hardware-profile selections.
+- Named-human, assigned-administrator and non-admin agent account declarations.
+- Approved remote-access tag intent, endpoint-management state, backup labels
+  and other non-secret desired state.
+- Non-secret assignment and organization-policy notes.
+
+Do not commit credentials, tokens, passwords, SSH private keys, encryption
+recovery material, serial numbers, MAC addresses, exported keychains, private
+hardware reports or sensitive deployment evidence. Store those in the
+organization's approved asset, vault or evidence system.
+
+## Repository layout
 
 ```text
 private-fleet/
 ├── kit.lock                 exact compatible toolkit version
 ├── .gitignore               excludes the local allocation lock
-├── machines/                one approved <hostname>.toml per host
-├── policy/                  organization-only policy notes
-├── assignments/             non-secret human/account ownership records
+├── machines/                one <hostname>.toml profile per machine
+├── policy/                  organization-only non-secret policy notes
+├── assignments/             non-secret account ownership records
 └── retired-hostnames.txt    append-only hostname retirement ledger
 ```
 
-Validate from a checkout of `agent-workstation-kit`. Both commands enforce the
-exact toolkit version in `kit.lock`:
+Choose the fleet's short technical prefix with `fleetctl init --namespace`.
+That namespace must match each technical hostname prefix. The technical
+hostname, assigned display name, UUID and asset tag must be fleet-unique.
+Generate profiles with `fleetctl init`; never create or replace a UUID manually.
+Local allocation locking serializes one checkout, while whole-fleet validation
+is the authoritative collision gate across clones and branches.
+
+## Validate a change
+
+Use separate clean checkouts and replace the paths/profile below:
 
 ```bash
-./scripts/validate-fleet.py /path/to/private-fleet
-./scripts/fleetctl.py --fleet-root /path/to/private-fleet validate machines/acme-ws-001.toml --ready
+TOOLKIT_ROOT='/path/to/agent-workstation-kit'
+FLEET_ROOT='/path/to/private-fleet'
+PROFILE='machines/<hostname>.toml'
+
+cmp "$TOOLKIT_ROOT/VERSION" "$FLEET_ROOT/kit.lock"
+
+"$TOOLKIT_ROOT/scripts/fleetctl.py" \
+  --fleet-root "$FLEET_ROOT" validate "$PROFILE"
+"$TOOLKIT_ROOT/scripts/fleetctl.py" \
+  --fleet-root "$FLEET_ROOT" plan "$PROFILE"
+
+# Resolve every `ask`, obtain human review and set state = "approved" first.
+"$TOOLKIT_ROOT/scripts/fleetctl.py" \
+  --fleet-root "$FLEET_ROOT" validate "$PROFILE" --ready
+"$TOOLKIT_ROOT/scripts/validate-fleet.py" "$FLEET_ROOT"
 ```
 
-Copy this directory into a new private repository. Replace `kit.lock` with the
-exact toolkit `VERSION`. Protect its default branch and require human review.
+Normal validation proves profile structure. Readiness validation rejects
+unresolved policy choices. Whole-fleet validation enforces unique identities
+and consistent shared principals. These checks do not prove that the live
+machine, recovery path, endpoint controls or remote access have passed.
+
+## Change and deployment workflow
+
+```text
+feature branch
+    -> fleetctl init/update
+    -> validate + plan
+    -> resolve every ask
+    -> review complete diff
+    -> validate --ready + validate-fleet
+    -> reviewed pull request
+    -> merge protected default branch
+    -> stage exact committed toolkit/fleet snapshots
+    -> preview one phase
+    -> human-approved apply
+    -> audit and evidence
+```
+
+Do not apply privileged changes from a user-writable checkout. Follow the
+toolkit's controlling day-zero runbook for the target platform. Every
+privileged, firmware, recovery, account, remote-access or authentication step
+remains a separate human approval gate.
+
+## Governance
+
+- Keep this repository private.
+- Protect its default branch and require human review before merge.
+- Do not let an agent identity approve or merge its own change.
+- Preserve the exact approved profile and `kit.lock` in Git before deployment.
+- Record reusable discoveries through the public toolkit's feedback process;
+  keep organization policy and deployment evidence private.
