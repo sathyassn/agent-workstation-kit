@@ -123,3 +123,6 @@ product truth.
   [primary-source register](11-primary-sources.md) and recheck it before use.
 
 [Repository home](../README.md) · [Start with architecture](00-architecture.md)
+
+- [Resumable setup and checkpoint evidence](runbooks/resumable-setup.md)
+- [Remote Mac listener, pairing and Screen Sharing acceptance](runbooks/remote-mac.md)

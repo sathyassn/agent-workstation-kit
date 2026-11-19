@@ -42,8 +42,12 @@ contains serial numbers and must not be committed to the public toolkit.
 ## Ubuntu and 10GbE
 
 Install Ubuntu 24.04.4 LTS using Wi-Fi, a USB Ethernet adapter, or local media.
-The RTL8127 may require Minisforum's out-of-tree Dynamic Kernel Module Support
-(DKMS) driver. Preview:
+First qualify the approved image's native Ethernet driver and current approved
+firmware. Record the exact kernel, driver/firmware, link negotiation, DHCP,
+throughput and reboot results for both ports. If a native path works, retain it.
+Only a reproduced failure on that exact version pair warrants reviewing
+Minisforum's out-of-tree Dynamic Kernel Module Support (DKMS) fallback. Preview
+that conditional fallback:
 
 ```bash
 ./scripts/install-ms-s1-r8127-dkms.sh
@@ -68,9 +72,11 @@ working driver. See Ubuntu's [Secure Boot documentation](https://documentation.u
 ## Acceptance gates
 
 - Two cold boots and two warm reboots with encrypted-disk recovery understood.
-- Secure Boot still enabled; `r8127` signed, loaded, and owned by DKMS.
+- Secure Boot still enabled; selected native driver verified, or fallback
+  `r8127` signed, loaded and owned by DKMS with the native failure recorded.
 - Both 10GbE ports negotiate at expected speed and sustain an error-free test.
-- A normal kernel upgrade rebuilds and loads the module after reboot.
+- A normal approved kernel upgrade retains working native Ethernet; if DKMS
+  was required, its module rebuilds and loads after reboot.
 - Ethernet loss does not remove Wi-Fi/USB/local-console recovery.
 - CPU, memory, SSD, thermals, and fan behavior pass a sustained workload.
 - Headed Playwright works in the `agent-01` desktop without a physical display.

@@ -23,7 +23,7 @@ mutating phase.
 
 For a fresh Linux host, first follow `docs/runbooks/day-zero-linux.md`; for a
 fresh Mac, follow `docs/runbooks/day-zero-macos.md`. Run the matching
-`scripts/start-*-pilot.py --fleet-root FLEET_ROOT` before accepting the
+`scripts/start-*-pilot.py --execution-context host --fleet-root FLEET_ROOT` before accepting the
 bootstrap handoff and resolve every `FAIL`. Then run `scripts/preflight.sh` and,
 on Linux, `scripts/hardware-audit-linux.sh`.
 Identify OS/version, firmware, Secure Boot/FileVault/LUKS, hardware, accounts,
@@ -118,3 +118,20 @@ Do not claim live certification when hardware or organization controls remain
 untested. An agent may prepare local changes and draft review text, but must ask
 before creating a remote, pushing, opening a PR/MR, deploying, or changing
 repository visibility.
+
+## Resume the approved plan
+
+Use `scripts/setup-workstation.py` and `docs/runbooks/resumable-setup.md` after
+profile approval. Present the full plan once, bind human approval to its target
+UUID and plan ID, and keep checkpoint evidence private. Resume at the first
+incomplete/invalid checkpoint; do not rerun earlier valid phases without drift.
+The journal contains operator attestations, not executable authority. A changed
+plan requires renewed approval for the changed scope. Preview every repository
+phase before its apply and stop at each actual trust boundary.
+
+Run readiness from a source worktree in an ordinary target-host terminal with
+`--execution-context host`; a staged archive, clean checkout or sandbox probe
+does not establish remote freshness or live host readiness. Record full kit and
+fleet revisions. For remote Mac hosts follow `docs/runbooks/remote-mac.md`:
+listener and viewer TCP before pairing, then authenticated Orca reconnect and
+independent named-user Apple Screen Sharing, transfer, sleep and reboot outcomes.
