@@ -133,3 +133,21 @@ Scripts are preview-only by default. Add --apply after reviewing every action.
 No script accepts or writes credentials.
 EOF
 }
+
+find_toolkit_python() {
+  local candidate
+  if [[ -n ${AWK_PYTHON:-} ]]; then
+    "$AWK_PYTHON" -c 'import sys; raise SystemExit(sys.version_info < (3, 11))' || \
+      die 'AWK_PYTHON must select Python 3.11 or newer for source/package tooling.'
+    printf '%s\n' "$AWK_PYTHON"
+    return
+  fi
+  for candidate in python3 /opt/homebrew/bin/python3 /usr/local/bin/python3; do
+    command -v "$candidate" >/dev/null 2>&1 || continue
+    if "$candidate" -c 'import sys; raise SystemExit(sys.version_info < (3, 11))' >/dev/null 2>&1; then
+      printf '%s\n' "$candidate"
+      return
+    fi
+  done
+  die 'Python 3.11+ is required; complete the OS day-zero prerequisite or select AWK_PYTHON explicitly.'
+}

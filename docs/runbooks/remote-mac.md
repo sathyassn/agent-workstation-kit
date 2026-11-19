@@ -101,3 +101,12 @@ checkpoints in the resumable plan. A failed or deferred result remains pending.
 Sources checked 2026-11-19: [Apple Screen Sharing settings](https://support.apple.com/en-ie/guide/mac-help/mh11848/mac/1000),
 [Apple Screen Sharing client](https://support.apple.com/en-sg/guide/mac-help/mh14066/mac),
 [Tailscale device sharing](https://tailscale.com/docs/features/sharing).
+
+## Executable transport checks
+
+`scripts/verify-remote-access.py` now performs the repeatable TCP, named-user SSH,
+SFTP hash roundtrip and independent SSH reconnect tests after a default preview.
+It also has a separate host-local listener inspection mode. Use the commands in
+the [automated setup runbook](resumable-setup.md#automate-access-and-workload-checks).
+These results do not substitute for Orca pairing/app reconnect, Screen Sharing
+control, sleep/wake or FileVault preboot evidence.

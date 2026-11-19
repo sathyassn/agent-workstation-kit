@@ -3,9 +3,16 @@
 Production-oriented profiles, preview-first automation, concise guides and a
 setup-agent skill for dedicated Linux and macOS AI development workstations.
 
-Current version: **0.2.0-rc.6**. This remains a release candidate until the
+Current version: **0.2.0-rc.7**. This remains a release candidate until the
 documented Linux and macOS hardware exercises in the public-release checklist
 are complete.
+
+Run `scripts/setup-workstation.sh` for the guided setup walkthrough. The same
+command provides `init`, `plan`, `run`, `resume`, `status`, `check-access`, `workloads`
+and `doctor` for terminal or agent use. Preview is the default; installation
+requires the displayed host/scope approval. Rich tables are optional and a plain
+terminal fallback requires no extra package. See the
+[walkthrough](docs/runbooks/resumable-setup.md#start-here-one-command).
 
 ## Contents
 
@@ -93,43 +100,39 @@ platform + recovery preparation -> physical setup -> OS -> bootstrap account
 
 ## Normal profile workflow
 
-Run these examples from the toolkit root. Replace the sample namespace, host,
-display name and human handle with approved values:
-
-```text
-private machines/<host>.toml
-        deployment.namespace = "acme"
-                         |
-                         +--> machine.hostname = "acme-ws-001"
-```
-
-The prefix is chosen with `fleetctl init --namespace`, saved as
-`deployment.namespace` in the private machine TOML, and validated against the
-technical hostname. It does not prefix local human, admin or agent accounts.
+Use one entry point from the toolkit root:
 
 ```bash
-FLEET_ROOT="$HOME/setup/acme-agent-workstation-fleet"
-PROFILE='machines/acme-ws-001.toml'
-
-./scripts/fleetctl.py --fleet-root "$FLEET_ROOT" init "$PROFILE" \
-  --context work --namespace acme --hostname acme-ws-001 \
-  --display-name 'Atlas' --platform linux \
-  --hardware-profile minisforum-ms-s1-max-64gb --human alice
-
-./scripts/fleetctl.py --fleet-root "$FLEET_ROOT" validate "$PROFILE"
-./scripts/fleetctl.py --fleet-root "$FLEET_ROOT" plan "$PROFILE"
-# Resolve every "ask", obtain human review, then validate readiness.
-./scripts/fleetctl.py --fleet-root "$FLEET_ROOT" validate "$PROFILE" --ready
-./scripts/validate-fleet.py "$FLEET_ROOT"
-# Human-review the exact profile/lock diff, then commit it before staging.
-git -C "$FLEET_ROOT" status --short
+./scripts/setup-workstation.sh
 ```
 
-`machine.hostname`, `machine.display_name` and `machine.uuid` must be unique in
-the complete fleet. `fleetctl init` generates the UUID; do not invent one.
-The [day-zero guide](docs/runbooks/day-zero-linux.md) gives the narrow `git add`,
-review and commit commands; a root-owned archive must never contain uncommitted
-or untracked fleet input.
+The walkthrough guides profile planning, scope review/execution, resume and
+access checks. For an agent or non-interactive terminal, use the same command's
+actions. For example, preview a draft profile:
+
+```bash
+./scripts/setup-workstation.sh init machines/acme-ws-001.toml \
+  --fleet-root /PRIVATE/CONFIGURATION_ROOT \
+  --context work --namespace acme --hostname acme-ws-001 \
+  --display-name Atlas --platform linux --human alice
+```
+
+Add `--write` only to create that draft configuration. It does not create an OS
+account. The underlying initializer allocates the UUID and checks uniqueness;
+do not invent a UUID or replace an existing profile. Resolve every `ask`, obtain
+human review, and commit the approved private profile/lock through its reviewed
+workflow before staging. `plan` validates both the selected profile and the
+complete configuration automatically.
+
+Then export the execution plan and use the owner scopes in the
+[walkthrough](docs/runbooks/resumable-setup.md). The normal order is packages,
+machine, agent, measured resources and audit. Actual OS, credential, management,
+privileged and recovery boundaries remain explicit. Helper scripts implement the
+steps; operators do not need to run or remember them individually.
+
+The operator-chosen namespace, technical hostname, assigned display name and UUID
+retain the existing fleet-wide validation rules. Linux and Mac day-zero guides
+remain authoritative before this entry point's prerequisites exist.
 
 ## Documentation
 
@@ -203,3 +206,7 @@ vendors.
 
 For approved profiles, use the [resumable setup plan](docs/runbooks/resumable-setup.md)
 and [remote Mac recipe](docs/runbooks/remote-mac.md) for checkpoint evidence.
+
+The setup entry point `scripts/setup-workstation.sh` now exports reviewed
+execution plans and runs approved owner scopes with live checks and automatic
+resume receipts. See [automated setup](docs/runbooks/resumable-setup.md).

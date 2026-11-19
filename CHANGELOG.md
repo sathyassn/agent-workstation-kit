@@ -3,6 +3,34 @@
 This project follows Semantic Versioning. Version 0.x interfaces may change
 between minor releases while live-machine evidence is incorporated.
 
+## 0.2.0-rc.7 — Unreleased
+
+- Consolidated operator workflow into one command with a guided Rich/plain-text
+  walkthrough, validated input, explicit safe approvals, progress, status and
+  actionable retry/role-handoff guidance. UI packages are optional.
+
+- Added real owner-scope execution with portable reviewed plans, explicit host/
+  scope approval, live verification, automatic private receipts and failure resume.
+- Added profile-selected APT/Homebrew packages/apps with missing-only installs;
+  guarded fresh OpenSSH installation until validated hardening; and a pinned,
+  signature-reviewed mise bootstrap for new Linux accounts.
+- Added Mac local-account creation with hidden vendor password prompts, managed
+  account verification, project-locked Playwright/browser and digest-pinned
+  OrbStack container probes, plus executable TCP/SSH/SFTP/reconnect checks.
+- Fixed the shared installer for Apple's system Bash and made new Mac agent
+  shells discover the selected Homebrew installation.
+- Added regression and subprocess-fixture coverage for preview, approval, failed
+  phase resume, repeat runs, drift, tampered source and configuration preservation.
+
+Upgrade: schema-3 profiles remain valid; new package/account choices are optional.
+Use `scripts/setup-workstation.sh` to export a new execution bundle and preview
+owner scopes before approving them. Existing configurations and conflicting
+installed versions are preserved; a reviewed merge/upgrade may be needed. Keep
+root applies in matching root-owned `/opt` snapshots and use per-executor private
+journals. Software fixtures do not qualify fresh physical Ubuntu/Mac installation,
+account/Secure Token behavior, SSH postinst/recovery or GUI/reboot acceptance.
+Keep the fleet pin unchanged pending independent review and live qualification.
+
 ## 0.2.0-rc.6 — Unreleased
 
 - Added a preview-only resumable setup plan with target/content binding and

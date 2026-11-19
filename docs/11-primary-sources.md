@@ -80,3 +80,19 @@ The GL.iNet remote-KVM product names and guides used in release candidate
   is a preview on specified distributions and currently lacks Computer Use. Do
   not make it a prerequisite for Linux browser automation.
 - Prefer current Tailscale grants for a new deployment rather than starting with legacy ACL syntax.
+
+Automation sources checked 2026-11-19: [Homebrew inventory/install options](https://docs.brew.sh/Manpage),
+[mise official binary verification](https://mise.jdx.dev/installing-mise.html),
+and [OrbStack Docker context](https://docs.orbstack.dev/docker/). Mac account
+arguments and hidden password-prompt behavior were also checked against the
+local OS vendor's `sysadminctl -h`; fresh-host account/Secure Token behavior is
+still pending physical qualification. Grok's current installer uses authenticated
+downloads and can inspect existing provider configuration, so it remains a
+separate reviewed vendor/credential ceremony.
+
+The optional terminal presentation uses [Rich's Console and Table APIs](https://rich.readthedocs.io/en/stable/console.html).
+The workflow remains usable without that dependency and does not install it
+implicitly.
+
+The shared project checker uses [Podman info's host security data](https://docs.podman.io/en/stable/markdown/podman-info.1.html)
+to require rootless execution, and the CLI's explicit local-engine selection.

@@ -93,7 +93,9 @@ After reviewing every package and cask, apply as that same package owner:
   --fleet-root "$FLEET_ROOT" run "$PROFILE" base --apply
 ```
 
-The baseline installs Git/LFS, `gh`, `glab`, `jq`, `mise`, Python, ShellCheck,
+The baseline installs missing selected packages and preserves installed versions.
+`tooling.brew_formulae` and `tooling.brew_casks` add approved selections.
+The baseline includes Git/LFS, `gh`, `glab`, `jq`, `mise`, Python, ShellCheck,
 tmux, Ghostty, Chrome, VS Code and OrbStack. It does not create accounts,
 authenticate services, grant privacy permissions or enable remote access.
 
@@ -145,8 +147,13 @@ cat '/Library/Application Support/Agent Workstation Kit/identity.toml'
 
 ## Phase 4: accounts
 
-Create accounts through MDM where available; otherwise a named human uses
-**System Settings → Users & Groups**. The approved profile remains authoritative.
+Select `accounts.macos_provisioning` in the approved profile. The `accounts`
+phase now calls `setup-accounts-macos.sh`: managed mode verifies the approved
+MDM-created accounts and roles; explicit local mode creates missing accounts
+through native hidden password prompts during human-approved apply. Existing
+passwords and roles are preserved. A role mismatch stops for review. System
+Settings remains an alternative human workflow, not a prerequisite to scripted
+local creation.
 
 | Account | Purpose | Admin | Graphical session |
 |---|---|---:|---:|
@@ -264,3 +271,8 @@ or installation. Keep activation, signing, Secure Token and escrow credentials
 outside profiles and checkpoint evidence.
 
 Homebrew prefixes checked 2026-11-19: [Homebrew installation](https://docs.brew.sh/Installation).
+
+The `workloads` phase now calls `check-project-workloads.sh` in the real agent
+account. Its project option installs locked Playwright browsers and runs a
+headless smoke test; its digest-pinned image option runs the OrbStack container
+smoke test. See the [automated setup scopes](runbooks/resumable-setup.md).

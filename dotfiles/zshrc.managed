@@ -1,6 +1,17 @@
 # Managed baseline for agent development accounts.
 # Machine-local and secret values do not belong in this file.
 
+# Load the selected shared Homebrew installation in a new Mac account. This
+# does not install a second Homebrew tree or change ownership.
+if [[ "$OSTYPE" == darwin* ]]; then
+  if [[ -x /opt/homebrew/bin/brew ]]; then
+    eval "$(/opt/homebrew/bin/brew shellenv)"
+  elif [[ -x /usr/local/bin/brew ]]; then
+    eval "$(/usr/local/bin/brew shellenv)"
+  fi
+fi
+export PATH="$HOME/.local/bin:$PATH"
+
 if command -v code >/dev/null 2>&1; then
   export EDITOR='code --wait'
   export VISUAL='code --wait'

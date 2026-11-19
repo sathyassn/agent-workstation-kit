@@ -49,6 +49,29 @@ class FleetProfileTests(unittest.TestCase):
         result["maintenance"]["owner"] = "platform-team"
         return result
 
+    def test_optional_package_selections_are_validated_and_rendered(self) -> None:
+        profile = self.make_ready(self.load_work())
+        profile["tooling"]["apt_packages"] = ["ripgrep", "sqlite3=3.0"]
+        self.assertEqual([], fleetctl.validate_profile(profile, ready=True))
+        phase = fleetctl.phase_for(profile, "base", apply=False, recovery=False)
+        self.assertIn("--apt", phase.command)
+        self.assertIn("sqlite3=3.0", phase.command)
+        for bad in (["--force"], ["https://example.invalid/package"], ["ripgrep", "ripgrep"]):
+            profile["tooling"]["apt_packages"] = bad
+            self.assertIn("tooling.apt_packages", {issue.path for issue in fleetctl.validate_profile(profile, ready=True)})
+
+    def test_mac_account_and_workload_phases_now_have_commands(self) -> None:
+        profile = fleetctl.load_profile(ROOT / "config/profiles/macos-work.example.toml")
+        profile["accounts"]["macos_provisioning"] = "local"
+        accounts = fleetctl.phase_for(profile, "accounts", apply=False, recovery=False)
+        self.assertEqual("setup-accounts-macos.sh", Path(accounts.command[0]).name)
+        self.assertIn("local", accounts.command)
+        workload = fleetctl.phase_for(profile, "workloads", apply=False, recovery=False)
+        self.assertEqual("check-project-workloads.sh", Path(workload.command[0]).name)
+        self.assertFalse(workload.privileged)
+        profile["tooling"]["apt_packages"] = ["ripgrep"]
+        self.assertIn("tooling.apt_packages", {issue.path for issue in fleetctl.validate_profile(profile, ready=False)})
+
     def test_examples_are_valid_drafts(self) -> None:
         examples = sorted((ROOT / "config/profiles").glob("*.example.toml"))
         self.assertGreaterEqual(len(examples), 3)

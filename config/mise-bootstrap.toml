@@ -1,0 +1,10 @@
+# Official standalone Linux binary pins, reviewed 2026-11-19.
+# SHASUMS256.asc was verified with GPG against the fingerprint published in
+# https://mise.jdx.dev/installing-mise.html; its signed body matched SHASUMS256.txt.
+# Review directory evidence is local; repeat signature verification before updating.
+version = "2026.10.4"
+signing_fingerprint = "24853EC9F655CE80B48E6C3A8B81C9D17413A06D"
+checksums_url = "https://github.com/jdx/mise/releases/download/v2026.10.4/SHASUMS256.txt"
+[sha256]
+linux-x64 = "2b8ce21f550872807bcaabf45b6bc5c64bfbd6dc3bf49dd4e67de700ef3ceb75"
+linux-arm64 = "9013ce1d7d9bbbf65254cda178562f5450c474a705907c18b77e6b678bb10041"
