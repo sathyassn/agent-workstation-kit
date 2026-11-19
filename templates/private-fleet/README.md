@@ -45,6 +45,7 @@ private-fleet/
 ├── machines/                one <hostname>.toml profile per machine
 ├── policy/                  organization-only non-secret policy notes
 ├── assignments/             non-secret account ownership records
+├── handoffs/                one <hostname>-bootstrap.md per machine
 └── retired-hostnames.txt    append-only hostname retirement ledger
 ```
 
@@ -54,6 +55,24 @@ hostname, assigned display name, UUID and asset tag must be fleet-unique.
 Generate profiles with `fleetctl init`; never create or replace a UUID manually.
 Local allocation locking serializes one checkout, while whole-fleet validation
 is the authoritative collision gate across clones and branches.
+
+## Prepare a machine handoff
+
+Allocate the asset and create its profile before preparing the handoff. With
+the reviewed toolkit checkout and Python 3.11 or newer, print a draft using
+the target's actual profile path.
+
+```bash
+python3 "$TOOLKIT_ROOT/scripts/fleetctl.py" --fleet-root "$FLEET_ROOT" \
+  setup "$PROFILE" --handoff-draft
+```
+
+Set the three variables using the examples under Validate a change below.
+Save the reviewed draft under `handoffs/<hostname>-bootstrap.md`. Resolve its
+approved OS, access, account ownership, recovery path and next setup step.
+Review the profile and handoff together. On the intended target, rerun the
+same command without `--handoff-draft` from the reviewed source checkout.
+Use the toolkit's `docs/runbooks/guided-fleet-setup.md` for the walkthrough.
 
 ## Validate a change
 
