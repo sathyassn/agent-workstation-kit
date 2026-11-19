@@ -470,6 +470,8 @@ def run_pre_push(stdin: TextIO, policy: Policy) -> None:
 
 def run_reference_transaction(stage: str, stdin: TextIO, policy: Policy) -> None:
     """Allow exact upstream syncs but block other protected local ref changes."""
+    # Git 2.54 adds preparing before refs are locked and symbolic refs resolve.
+    # Enforce the existing policy at prepared on every supported Git version.
     if stage != "prepared":
         return
     for line in stdin:
@@ -575,7 +577,7 @@ def build_parser() -> argparse.ArgumentParser:
     reference = subparsers.add_parser(
         "reference-transaction", help="protect local branch refs"
     )
-    reference.add_argument("stage", choices=("prepared", "committed", "aborted"))
+    reference.add_argument("stage", choices=("preparing", "prepared", "committed", "aborted"))
     ci = subparsers.add_parser("ci", help="validate a pull-request commit range")
     ci.add_argument("--base", required=True)
     ci.add_argument("--head", required=True)

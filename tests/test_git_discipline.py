@@ -29,6 +29,13 @@ class GitDisciplineTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.policy = discipline.load_policy()
 
+    def test_new_git_preparing_stage_preserves_prepared_enforcement(self) -> None:
+        args = discipline.build_parser().parse_args(["reference-transaction", "preparing"])
+        discipline.run_reference_transaction(args.stage, io.StringIO("0 new HEAD\n"), self.policy)
+        with mock.patch.object(discipline, "_protected_sync_head", return_value=None):
+            with self.assertRaisesRegex(discipline.DisciplineError, "no configured upstream"):
+                discipline.run_reference_transaction("prepared", io.StringIO("old new refs/heads/main\n"), self.policy)
+
     def test_policy_is_self_contained_and_fail_closed(self) -> None:
         self.assertIn("docs/", self.policy.branch_prefixes)
         self.assertIn("skills/**", self.policy.breaking_watch_paths)
