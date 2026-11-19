@@ -170,6 +170,9 @@ into `agent-NN`.
 
 ## 8. Run the readiness command
 
+For an existing private fleet profile, use [guided fleet setup](guided-fleet-setup.md)
+to check the reviewed handoff and resume from the source checkouts.
+
 From the toolkit root:
 
 ```bash

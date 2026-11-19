@@ -78,6 +78,57 @@ class FleetProfileTests(unittest.TestCase):
         for path in examples:
             self.assertEqual([], fleetctl.validate_profile(fleetctl.load_profile(path), ready=False), path)
 
+    def test_guided_setup_renders_platform_specific_draft_without_writing(self) -> None:
+        for template, guide in (
+            ("work.example.toml", "day-zero-linux.md"),
+            ("macos-work.example.toml", "day-zero-macos.md"),
+        ):
+            with self.subTest(template=template), tempfile.TemporaryDirectory() as directory:
+                fleet = Path(directory)
+                (fleet / "kit.lock").write_text(fleetctl.VERSION, encoding="utf-8")
+                content = (ROOT / "config/profiles" / template).read_text(encoding="utf-8")
+                profile = fleetctl.load_profile(ROOT / "config/profiles" / template)
+                hostname = profile["machine"]["hostname"]
+                target = fleet / "machines" / f"{hostname}.toml"
+                target.parent.mkdir()
+                target.write_text(content, encoding="utf-8")
+                command = [
+                    sys.executable, str(ROOT / "scripts/fleetctl.py"),
+                    "--fleet-root", directory, "setup", str(target), "--handoff-draft",
+                ]
+                result = subprocess.run(command, check=True, capture_output=True, text=True)
+                self.assertTrue(result.stdout.startswith(f"# {hostname} "))
+                self.assertIn(guide, result.stdout)
+                self.assertFalse((fleet / "handoffs").exists())
+                wrong_path = target.with_name("wrong.toml")
+                wrong_path.write_text(content, encoding="utf-8")
+                command[-2] = str(wrong_path)
+                result = subprocess.run(command, capture_output=True, text=True)
+                self.assertEqual(2, result.returncode)
+                self.assertIn(str(target.relative_to(fleet)), result.stderr)
+
+    def test_setup_revision_rejects_staged_subdirectory_and_wrong_pin(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            git = ["git", "-C", directory]
+            subprocess.run([*git, "init", "-q"], check=True)
+            subprocess.run(
+                [*git, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+                 "commit", "--allow-empty", "-qm", "Fixture"],
+                check=True,
+            )
+            revision = fleetctl.setup_revision(source, "source", None)
+            self.assertEqual(revision, fleetctl.setup_revision(source, "source", revision))
+            with self.assertRaisesRegex(ValueError, "expected"):
+                fleetctl.setup_revision(source, "source", "0" * len(revision))
+            staged = source / "staged"
+            staged.mkdir()
+            with self.assertRaisesRegex(ValueError, "use the reviewed source checkout"):
+                fleetctl.setup_revision(staged, "source", None)
+            (source / "local.txt").touch()
+            with self.assertRaisesRegex(ValueError, "review local changes"):
+                fleetctl.setup_revision(source, "source", revision)
+
     def test_cli_version_matches_version_file(self) -> None:
         result = subprocess.run([str(ROOT / "scripts/fleetctl.py"), "--version"], check=True, capture_output=True, text=True)
         self.assertEqual(f"fleetctl.py {(ROOT / 'VERSION').read_text().strip()}", result.stdout.strip())
