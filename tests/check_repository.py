@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -22,6 +24,99 @@ HOSTNAME_EXAMPLE = re.compile(
     re.IGNORECASE,
 )
 NEUTRAL_EXAMPLE_NAMESPACES = {"ac", "acme", "home", "lab", "ss"}
+
+
+CHANGELOG_GUARDED = ("scripts/", "config/", "templates/")
+RELEASE_HEADING = re.compile(r"^## \[[^\]]+\] - \d{4}-\d{2}-\d{2}$", re.MULTILINE)
+
+
+def _git(root: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(["git", "--no-optional-locks", "-C", str(root), *arguments],
+                          capture_output=True, text=True, check=False)
+
+
+def unreleased_bullets(text: str) -> set[str]:
+    """Return the bullet lines of the [Unreleased] section."""
+    section = text.split("\n## [Unreleased]", 1)
+    if len(section) < 2:
+        return set()
+    body = section[1].split("\n## ", 1)[0]
+    return {line.strip() for line in body.splitlines() if line.lstrip().startswith("- ")}
+
+
+def changelog_base(root: Path) -> str | None:
+    """The pull request's base: CHANGELOG_BASE in CI, else the merge-base with origin/main."""
+    explicit = os.environ.get("CHANGELOG_BASE", "").strip()
+    if explicit:
+        return explicit
+    merge_base = _git(root, "merge-base", "HEAD", "origin/main")
+    return merge_base.stdout.strip() if merge_base.returncode == 0 and merge_base.stdout.strip() else None
+
+
+def changelog_entry_issue(root: Path, base: str | None) -> str | None:
+    """Fail a change to scripts/, config/ or templates/ that adds no [Unreleased] bullet."""
+    if base is None:
+        return None
+    changed = _git(root, "diff", "--name-only", base)
+    untracked = _git(root, "ls-files", "--others", "--exclude-standard")
+    if changed.returncode or untracked.returncode:
+        return "cannot compare the branch with its base " + base + " to check CHANGELOG.md"
+    paths = set(changed.stdout.split()) | set(untracked.stdout.split())
+    if not any(path.startswith(CHANGELOG_GUARDED) for path in paths):
+        return None
+    current = (root / "CHANGELOG.md").read_text(encoding="utf-8")
+    previous = _git(root, "show", base + ":CHANGELOG.md")
+    before = previous.stdout if previous.returncode == 0 else ""
+    if unreleased_bullets(current) - unreleased_bullets(before):
+        return None
+    # A release moves [Unreleased] under a new dated heading instead.
+    if set(RELEASE_HEADING.findall(current)) - set(RELEASE_HEADING.findall(before)):
+        return None
+    return ("this change touches scripts/, config/ or templates/ but adds no bullet under "
+            "## [Unreleased] in CHANGELOG.md; add one short entry linked to the pull request")
+
+
+AGENTS_PATH = re.compile(r"(?<![\w/.-])((?:scripts|config|templates|docs|skills|tests)/[\w./-]*[\w/])")
+AGENTS_ACTION = re.compile(r"setup-workstation\.sh (?!ACTION)([a-z][a-z-]*)")
+AGENTS_FLAG = re.compile(r"(?<![\w-])(--[a-z][a-z-]*)")
+# Commands named in AGENTS.md, and the files whose text defines their flags.
+FLAG_SOURCES = {
+    "setup-workstation.sh": ("scripts/setup-workstation.sh", "scripts/lib/setup_cli.py", "scripts/setup-workstation.py", "scripts/execute-setup.py", "scripts/fleetctl.py"),
+    "fleetctl.py": ("scripts/fleetctl.py",),
+    "validate-fleet.py": ("scripts/validate-fleet.py",),
+    "validate-host.sh": ("scripts/validate-host.sh",),
+}
+# Commands the manual names for work still to come; their flags are not checked yet.
+PLANNED = ("PR 2", "PR 2a", "PR 3")
+
+
+def agents_manual_issues(root: Path) -> list[str]:
+    """Every path, setup action and flag AGENTS.md names must exist in the kit."""
+    manual = root / "AGENTS.md"
+    if not manual.is_file():
+        return ["AGENTS.md is missing"]
+    text = manual.read_text(encoding="utf-8")
+    issues = []
+    for path in sorted(set(AGENTS_PATH.findall(text))):
+        if not (root / path.rstrip("/")).exists():
+            issues.append("AGENTS.md names a path that does not exist: " + path)
+    cli = (root / "scripts/lib/setup_cli.py").read_text(encoding="utf-8")
+    commands = re.search(r"^COMMANDS = \(([^)]*)\)", cli, re.M)
+    actions = set(re.findall(r'"([a-z-]+)"', commands.group(1))) if commands else set()
+    for line in text.splitlines():
+        if any(marker in line for marker in PLANNED):
+            continue
+        for action in AGENTS_ACTION.findall(line):
+            if action not in actions and action != "help":
+                issues.append("AGENTS.md names an unknown setup-workstation.sh action: " + action)
+        for command, sources in FLAG_SOURCES.items():
+            if command not in line:
+                continue
+            defined = "".join((root / source).read_text(encoding="utf-8") for source in sources)
+            for flag in AGENTS_FLAG.findall(line.split(command, 1)[1]):
+                if flag not in defined:
+                    issues.append("AGENTS.md uses " + flag + " with " + command + ", which does not define it")
+    return issues
 
 
 def non_neutral_hostname_examples(text: str) -> set[str]:
@@ -165,6 +260,11 @@ def main() -> int:
         failures.append("hosted CI depends on a private Codeflow release")
     if "./gitleaks git" not in workflow_text:
         failures.append("hosted secret scan does not use the supported Gitleaks git command")
+
+    failures.extend(agents_manual_issues(ROOT))
+
+    if issue := changelog_entry_issue(ROOT, changelog_base(ROOT)):
+        failures.append(issue)
 
     if failures:
         print("Repository checks failed:")
