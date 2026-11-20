@@ -7,7 +7,7 @@
 - Source: the consolidated design on issue #5 (comment 7048343188) and its
   amendments on resolving "latest" (7048398540), OS support (7048442102) and
   the tunnel's order (7048586326). It is refined against the code, and revised
-  after rounds 1 to 3 of the D0 adversarial review.
+  after rounds 1 to 4 of the D0 adversarial review.
 - Audience: maintainers and reviewers. The conductor agent and operators get
   their own pages as each part lands.
 - Numbering: this is decision 0005. It lives in `docs/design/` because the
@@ -204,10 +204,12 @@ What the code does today, and the problem each fact causes:
   the phase removes `AWK_RUN_ID` and `AWK_FAILURE_FD` from its environment.
   - **Python phases** rely on `close_fds`, the default, for every tool they
     start.
-  - **Bash phases** close every inherited descriptor except the failure
-    descriptor, and close that one for each command they run (`cmd {fd}>&-`).
-    This covers every command, not only those run through the `run` helper,
-    so a daemon a package starts can never hold the host lock.
+  - **Bash phases** close every inherited descriptor except two: the lock
+    descriptor, which the phase keeps holding so that no second apply can
+    start if the executor is killed, and the failure descriptor. They close
+    both for each command they run (`cmd {lock}>&- {fd}>&-`). This covers
+    every command, not only those run through the `run` helper, so a daemon a
+    package starts can never hold the host lock.
 - **Staged-root check.** `path_safety.require_staged_root()` is extended to
   every Python phase that runs as root. The root block of `common.sh` gets the
   same check.
@@ -769,7 +771,8 @@ Decisions for the operator:
       release, and hosted runners may not offer macOS 27 yet.
 - **D2, what "pinned" means for each kind of source (principle 7).** The ADR
   proposes three policies and asks one question:
-  - **`exact`:** downloads, vendor `.pkg` files, mise tools, and packages from
+  - **`exact`:** downloads, vendor `.pkg` files (except apps that update
+    themselves), mise tools, and packages from
     third-party apt repositories that keep old versions (such as Tailscale's).
   - **`os-managed`:** the Ubuntu archive and Homebrew formulae. A minimum
     version, with the observed version recorded, because these do not keep
