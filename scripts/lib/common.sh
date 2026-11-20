@@ -11,12 +11,23 @@ APPLY_CHANGES=false
 # This protects a staged helper; it cannot protect a checkout someone edited.
 # shellcheck disable=SC2034 # used by scripts that source this library
 KIT_PYTHON=(python3)
+
+# Succeed only when this library is sourced by a script file that can be re-run
+# as itself. From `bash -c` or an interactive shell, $0 is a label or the shell,
+# and re-running it could execute an unrelated file.
+# Recorded at source time: the file that sourced this library, if any.
+KIT_SOURCED_BY=${BASH_SOURCE[1]:-}
+kit_can_reexec_clean() {
+  [[ -n "$KIT_SOURCED_BY" && "$KIT_SOURCED_BY" == "$0" && -f "$0" && ! -L "$0" ]]
+}
+
 if [[ ${EUID:-$(/usr/bin/id -u)} -eq 0 ]]; then
   # Re-run once with an empty environment, the standard design for privileged
-  # scripts; the unsets below are a fallback if the marker is preset. Only
+  # scripts; the unsets below are the fallback when the marker is preset or the
+  # library is not sourced by a re-runnable script file. Only
   # SSH_CONNECTION (a remote-login signal) and SUDO_USER, which load no code,
   # are carried over.
-  if [[ -z ${AWK_CLEAN_ROOT_ENV:-} ]]; then
+  if [[ -z ${AWK_CLEAN_ROOT_ENV:-} ]] && kit_can_reexec_clean; then
     root_home=/root
     [[ $(/usr/bin/uname -s) != Darwin ]] || root_home=/var/root
     exec /usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME="$root_home" \
