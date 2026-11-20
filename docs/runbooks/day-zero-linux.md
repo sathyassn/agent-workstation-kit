@@ -406,7 +406,7 @@ cd "$HOME/setup/agent-workstation-kit"
 
 cd /opt/agent-workstation-kit
 
-sudo ./scripts/fleetctl.py \
+sudo /usr/bin/python3 -I -B /opt/agent-workstation-kit/scripts/fleetctl.py \
   --fleet-root /opt/agent-workstation-fleet \
   run "$PROFILE" base --apply
 sudo -K

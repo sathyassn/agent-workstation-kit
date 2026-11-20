@@ -23,6 +23,9 @@ done
 
 require_macos_for_apply
 [[ $(uname -s) == Darwin ]] || die 'This script supports macOS only.'
+# Homebrew and its Python belong to the named package owner; as root they would
+# run a user-owned interpreter with root rights.
+[[ ${EUID:-$(id -u)} -ne 0 ]] || die 'Run this as the named Homebrew package owner, never root.'
 
 if ! xcode-select -p >/dev/null 2>&1; then
   die 'Install Xcode Command Line Tools as a named human, then rerun.'

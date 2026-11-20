@@ -67,7 +67,7 @@ toolkit snapshot:
 
 ```text
 cd /opt/agent-workstation-kit
-sudo ./scripts/bootstrap-linux.sh --apply
+sudo /bin/bash /opt/agent-workstation-kit/scripts/bootstrap-linux.sh --apply
 sudo -K
 ```
 
@@ -92,7 +92,7 @@ Apply only after recovery is open and tested:
 ```bash
 cd /opt/agent-workstation-kit
 PROFILE='machines/acme-ws-001.toml'
-sudo ./scripts/fleetctl.py --fleet-root /opt/agent-workstation-fleet \
+sudo /usr/bin/python3 -I -B /opt/agent-workstation-kit/scripts/fleetctl.py --fleet-root /opt/agent-workstation-fleet \
   run "$PROFILE" identity \
   --apply --confirm-recovery-tested --connection-context local-console
 sudo -K
@@ -119,14 +119,14 @@ cd /opt/agent-workstation-kit
 PROFILE='machines/acme-ws-001.toml'
 
 # At a physical console or independently tested KVM:
-sudo ./scripts/fleetctl.py --fleet-root /opt/agent-workstation-fleet \
+sudo /usr/bin/python3 -I -B /opt/agent-workstation-kit/scripts/fleetctl.py --fleet-root /opt/agent-workstation-fleet \
   run "$PROFILE" remote-hardening --apply \
   --confirm-recovery-tested --connection-context local-console
 sudo -K
 
 # In a named-user SSH shell reached through Tailscale, capture before sudo:
 ssh_peer=${SSH_CONNECTION%% *}
-sudo ./scripts/fleetctl.py --fleet-root /opt/agent-workstation-fleet \
+sudo /usr/bin/python3 -I -B /opt/agent-workstation-kit/scripts/fleetctl.py --fleet-root /opt/agent-workstation-fleet \
   run "$PROFILE" remote-hardening --apply \
   --confirm-recovery-tested --connection-context tailscale-ssh \
   --ssh-source-ip "$ssh_peer"

@@ -12,11 +12,23 @@ APPLY_CHANGES=false
 # shellcheck disable=SC2034 # used by scripts that source this library
 KIT_PYTHON=(python3)
 if [[ ${EUID:-$(/usr/bin/id -u)} -eq 0 ]]; then
+  # Re-run once with an empty environment, the standard design for privileged
+  # scripts; the unsets below are a fallback if the marker is preset. Only
+  # SSH_CONNECTION (a remote-login signal) and SUDO_USER, which load no code,
+  # are carried over.
+  if [[ -z ${AWK_CLEAN_ROOT_ENV:-} ]]; then
+    root_home=/root
+    [[ $(/usr/bin/uname -s) != Darwin ]] || root_home=/var/root
+    exec /usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME="$root_home" \
+      TERM="${TERM:-dumb}" LC_ALL=C AWK_CLEAN_ROOT_ENV=1 \
+      SSH_CONNECTION="${SSH_CONNECTION:-}" SUDO_USER="${SUDO_USER:-}" /bin/bash "$0" "$@"
+  fi
   PATH=/usr/bin:/bin:/usr/sbin:/sbin
   export PATH
   unset BASH_ENV ENV CDPATH PYTHONPATH PYTHONHOME PYTHONSTARTUP PYTHONUSERBASE PYTHONINSPECT
+  # -B as well as -I: isolated mode ignores PYTHONDONTWRITEBYTECODE.
   # shellcheck disable=SC2034
-  KIT_PYTHON=(/usr/bin/python3 -I)
+  KIT_PYTHON=(/usr/bin/python3 -I -B)
 fi
 
 log() {

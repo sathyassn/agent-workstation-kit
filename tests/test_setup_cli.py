@@ -214,7 +214,23 @@ class NoWritesWithoutApplyTests(unittest.TestCase):
             call.assert_not_called()
             self.assertFalse(output.parent.exists())
 
-    def test_wrapper_disables_bytecode_writes(self):
+    def test_help_and_doctor_leave_no_bytecode_in_the_kit(self):
+        import shutil
+        with tempfile.TemporaryDirectory() as directory:
+            kit = Path(directory) / "kit"
+            shutil.copytree(ROOT, kit, ignore=shutil.ignore_patterns(".git", "__pycache__", ".worktrees"))
+            for action in ("help", "doctor"):
+                result = subprocess.run(["bash", str(kit / "scripts/setup-workstation.sh"), action],
+                                        capture_output=True, text=True, timeout=60)
+                self.assertEqual(0, result.returncode, action + ": " + result.stderr)
+            self.assertEqual([], [str(path) for path in kit.rglob("__pycache__")])
+
+    def test_root_paths_use_isolated_python_without_bytecode(self):
+        # Root cannot run in tests; -I alone ignores PYTHONDONTWRITEBYTECODE, so -B is required.
         wrapper = (ROOT / "scripts/setup-workstation.sh").read_text()
-        self.assertIn("export PYTHONDONTWRITEBYTECODE=1", wrapper)
-        self.assertIn("PYTHONDONTWRITEBYTECODE=1 \\\n    /usr/bin/python3 -I", wrapper)
+        self.assertIn("/usr/bin/python3 -I -B \"$script_dir/lib/setup_cli.py\"", wrapper)
+        common = (ROOT / "scripts/lib/common.sh").read_text()
+        self.assertIn("KIT_PYTHON=(/usr/bin/python3 -I -B)", common)
+        self.assertIn("exec /usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin", common)
+        bootstrap = (ROOT / "scripts/bootstrap-macos.sh").read_text()
+        self.assertIn("never root", bootstrap)
