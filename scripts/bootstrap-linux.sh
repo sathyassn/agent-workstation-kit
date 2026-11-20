@@ -36,7 +36,10 @@ require_root_for_apply
 log "Mode: $([[ "$APPLY_CHANGES" == true ]] && printf APPLY || printf PREVIEW)"
 if [[ "$check_only" == true ]]; then
   python3 "$script_dir/install-package-set.py" --platform linux "${package_args[@]}" --check
-  systemctl is-enabled --quiet fail2ban apt-daily.timer apt-daily-upgrade.timer
+  # One unit per call: with several units, is-enabled succeeds if any is enabled.
+  for unit in fail2ban apt-daily.timer apt-daily-upgrade.timer; do
+    systemctl is-enabled --quiet "$unit" || die "$unit is not enabled"
+  done
   exit
 fi
 if [[ "$APPLY_CHANGES" == true ]]; then package_args+=(--apply); fi

@@ -63,43 +63,91 @@ def identity_matches(profile):
         return False
 
 
-def accounts_match(profile):
+def account_problems(profile):
+    """Return a reason for every declared-account postcondition that fails.
+
+    Only the agent account must use zsh: the accounts phase creates it with
+    zsh, while existing human and admin accounts are preserved unchanged.
+    """
     accounts = profile["accounts"]
     group = "sudo" if profile["machine"]["platform"] == "linux" else "admin"
+    problems = []
     for name in [accounts["agent"], *accounts["humans"], *accounts["admins"]]:
         try:
             entry = pwd.getpwnam(name)
         except KeyError:
-            return False
+            problems.append(name + " does not exist")
+            continue
         if entry.pw_uid == 0:
-            return False
+            problems.append(name + " has UID 0")
+            continue
         home = Path(entry.pw_dir)
-        if not home.is_dir() or home.stat().st_uid != entry.pw_uid or not entry.pw_shell.endswith("zsh"):
-            return False
+        if not home.is_dir() or home.stat().st_uid != entry.pw_uid:
+            problems.append(name + " does not own an existing home directory")
+        if name == accounts["agent"] and not entry.pw_shell.endswith("zsh"):
+            problems.append(name + " (agent) does not use zsh")
         memberships = probe(["id", "-nG", name])
         if memberships.returncode:
-            return False
+            problems.append("cannot read group memberships of " + name)
+            continue
         groups = memberships.stdout.split()
-        if (name in accounts["admins"]) != (group in groups) or (name == accounts["agent"] and "docker" in groups):
-            return False
+        if (name in accounts["admins"]) != (group in groups):
+            problems.append(name + (" is not" if name in accounts["admins"] else " must not be") + " in " + group)
+        if name == accounts["agent"] and "docker" in groups:
+            problems.append(name + " is in the root-equivalent docker group")
     if profile["machine"]["platform"] == "linux":
         for suffix in ("operators", "viewers"):
-            if probe(["getent", "group", accounts["agent"] + "-" + suffix]).returncode:
-                return False
+            group_name = accounts["agent"] + "-" + suffix
+            if probe(["getent", "group", group_name]).returncode:
+                problems.append("group " + group_name + " does not exist")
+                continue
             for person in accounts[suffix]:
-                if accounts["agent"] + "-" + suffix not in probe(["id", "-nG", person]).stdout.split():
-                    return False
+                if group_name not in probe(["id", "-nG", person]).stdout.split():
+                    problems.append(person + " is not in " + group_name)
     for service in accounts.get("services", []):
         try:
             entry = pwd.getpwnam(service)
         except KeyError:
-            return False
+            problems.append("service account " + service + " does not exist")
+            continue
         if entry.pw_uid == 0 or not entry.pw_shell.endswith(("nologin", "false")):
-            return False
+            problems.append("service account " + service + " has UID 0 or a login shell")
         memberships = probe(["id", "-nG", service])
         if memberships.returncode or set(memberships.stdout.split()) & {"sudo", "admin", "docker"}:
-            return False
-    return True
+            problems.append("service account " + service + " has privileged or unreadable groups")
+    return problems
+
+
+def accounts_match(profile):
+    problems = account_problems(profile)
+    for problem in problems:
+        print("REASON accounts: " + problem)
+    return not problems
+
+
+def sshd_effective(output):
+    """Parse `sshd -T`, which prints one line per value for list keywords."""
+    values = {}
+    for line in output.splitlines():
+        fields = line.split(maxsplit=1)
+        if len(fields) == 2:
+            values.setdefault(fields[0].lower(), []).append(fields[1])
+    return values
+
+
+def sshd_problems(output, ssh_users, agent):
+    config = sshd_effective(output)
+    problems = []
+    for key, expected in (("permitrootlogin", "no"), ("passwordauthentication", "no"), ("kbdinteractiveauthentication", "no")):
+        if config.get(key) != [expected]:
+            problems.append("sshd " + key + " is not " + expected)
+    allowed = {user for value in config.get("allowusers", []) for user in value.split()}
+    denied = {user for value in config.get("denyusers", []) for user in value.split()}
+    if allowed != set(ssh_users):
+        problems.append("sshd AllowUsers does not exactly match accounts.ssh_users")
+    if agent not in denied:
+        problems.append("sshd DenyUsers does not include the agent account")
+    return problems
 
 
 def resource_values(profile, total):
@@ -167,9 +215,10 @@ def verify_phase(plan, name, root):
             ok = ok and probe(["visudo", "-cf", str(sudoers)]).returncode == 0
         elif name == "remote-hardening":
             ssh = probe(["sshd", "-T"])
-            config = dict(line.split(maxsplit=1) for line in ssh.stdout.splitlines() if len(line.split(maxsplit=1)) == 2)
-            ok = ssh.returncode == 0 and all(config.get(key) == value for key, value in (("permitrootlogin", "no"), ("passwordauthentication", "no"), ("kbdinteractiveauthentication", "no")))
-            ok = ok and set(config.get("allowusers", "").split()) == set(profile["accounts"]["ssh_users"]) and agent in config.get("denyusers", "").split()
+            problems = ["cannot read effective sshd policy"] if ssh.returncode else sshd_problems(ssh.stdout, profile["accounts"]["ssh_users"], agent)
+            for problem in problems:
+                print("REASON remote-hardening: " + problem)
+            ok = not problems
             ufw = probe(["ufw", "status"])
             ok = ok and ufw.returncode == 0 and "Status: active" in ufw.stdout
             port = str(profile["remote"]["nomachine_port"])

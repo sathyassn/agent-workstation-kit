@@ -582,7 +582,9 @@ def audit_declared_accounts(profile: dict[str, Any]) -> int:
         check(home.is_dir(), f"{account} has a home directory")
         if home.is_dir():
             check(home.stat().st_uid == entry.pw_uid, f"{account} owns its home directory")
-        check(entry.pw_shell.endswith("zsh"), f"{account} uses zsh")
+        if account == accounts["agent"]:
+            # Existing human/admin accounts are preserved with their own shell.
+            check(entry.pw_shell.endswith("zsh"), f"{account} uses zsh")
     admin_group = "sudo" if profile["machine"]["platform"] == "linux" else "admin"
     for account in accounts["admins"]:
         check(admin_group in account_groups(account), f"{account} belongs to {admin_group}")
