@@ -7,7 +7,7 @@
 - Source: the consolidated design on issue #5 (comment 7048343188) and its
   amendments on resolving "latest" (7048398540), OS support (7048442102) and
   the tunnel's order (7048586326). It is refined against the code, and revised
-  after rounds 1 to 4 of the D0 adversarial review.
+  after rounds 1 to 5 of the D0 adversarial review.
 - Audience: maintainers and reviewers. The conductor agent and operators get
   their own pages as each part lands.
 - Numbering: this is decision 0005. It lives in `docs/design/` because the
@@ -204,10 +204,11 @@ What the code does today, and the problem each fact causes:
   the phase removes `AWK_RUN_ID` and `AWK_FAILURE_FD` from its environment.
   - **Python phases** rely on `close_fds`, the default, for every tool they
     start.
-  - **Bash phases** close every inherited descriptor except two: the lock
-    descriptor, which the phase keeps holding so that no second apply can
-    start if the executor is killed, and the failure descriptor. They close
-    both for each command they run (`cmd {lock}>&- {fd}>&-`). This covers
+  - **Bash phases** close every inherited descriptor except the lock
+    descriptors (the journal lock, and the host lock for root runs) and the
+    failure descriptor. They keep holding the locks so that no second apply
+    can start if the executor is killed. They close each of these for every
+    command they run (`cmd {lock}>&- {fd}>&-`). This covers
     every command, not only those run through the `run` helper, so a daemon a
     package starts can never hold the host lock.
 - **Staged-root check.** `path_safety.require_staged_root()` is extended to
