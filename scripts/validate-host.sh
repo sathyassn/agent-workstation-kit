@@ -107,7 +107,7 @@ if [[ $(uname -s) == Linux ]]; then
         fail 'UFW default incoming/routed policies are not proven to be DROP'
       fi
       for port_proto in 22/tcp "$nomachine_port/tcp" "$nomachine_port/udp"; do
-        if grep -E "^${port_proto//\//\\/} on tailscale0[[:space:]]+ALLOW IN" <<<"$ufw_status" >/dev/null; then
+        if ufw_status_allows_in "$port_proto" tailscale0 <<<"$ufw_status"; then
           pass "UFW allows $port_proto on tailscale0"
         else
           fail "UFW lacks $port_proto allow on tailscale0"

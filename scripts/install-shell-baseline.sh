@@ -24,7 +24,7 @@ done
 
 [[ ${EUID:-$(id -u)} -ne 0 ]] || die 'Run as the target non-root account.'
 [[ -n "$antidote_ref" ]] || die 'Specify a reviewed Antidote release with --antidote-ref.'
-[[ "$antidote_ref" =~ ^[A-Za-z0-9._/-]+$ ]] || die 'Invalid Antidote ref.'
+[[ "$antidote_ref" != -* && "$antidote_ref" =~ ^[A-Za-z0-9._/-]+$ ]] || die 'Invalid Antidote ref.'
 
 if [[ -e "$HOME/.antidote" && ! -d "$HOME/.antidote/.git" ]]; then
   die "$HOME/.antidote exists but is not the expected Git checkout."
@@ -64,12 +64,12 @@ else
   log "Existing Antidote checkout matches approved commit $current_commit."
 fi
 
-declare -A managed_sources=(
-  ["$HOME/.zshrc"]="$repo_dir/dotfiles/zshrc.managed"
-  ["$HOME/.zsh_plugins.txt"]="$repo_dir/dotfiles/zsh_plugins.txt"
-)
-for destination in "${!managed_sources[@]}"; do
-  if [[ -e "$destination" ]] && ! cmp -s "${managed_sources[$destination]}" "$destination"; then
+# Indexed arrays also work with Apple's /bin/bash 3.2.
+managed_destinations=("$HOME/.zshrc" "$HOME/.zsh_plugins.txt")
+managed_sources=("$repo_dir/dotfiles/zshrc.managed" "$repo_dir/dotfiles/zsh_plugins.txt")
+for ((index=0; index<${#managed_destinations[@]}; index++)); do
+  destination=${managed_destinations[index]}
+  if [[ -e "$destination" ]] && ! cmp -s "${managed_sources[index]}" "$destination"; then
     if [[ "$APPLY_CHANGES" == true ]]; then
       die "$destination already exists and differs from the managed baseline. Merge it, then rerun."
     fi

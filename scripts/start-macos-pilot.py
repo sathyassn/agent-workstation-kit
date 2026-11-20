@@ -29,6 +29,8 @@ except ModuleNotFoundError:
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts/lib"))
+from readiness import source_evidence, execution_evidence  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -95,7 +97,7 @@ def clean_git_checkout_check(path: Path, name: str) -> Check:
     revision = run(["git", "-C", str(path), "rev-parse", "HEAD"])
     if revision.returncode != 0:
         return Check("FAIL", name, "cannot resolve the Git revision")
-    return Check("PASS", name, f"clean at {revision.stdout.strip()[:12]}")
+    return Check("PASS", name, f"clean at {revision.stdout.strip()}")
 
 
 def fleet_checks(fleet_root: Path, profile: Path | None) -> list[Check]:
@@ -263,7 +265,17 @@ def main() -> int:
     )
     parser.add_argument("--fleet-root", type=Path, required=True)
     parser.add_argument("--profile", type=Path)
+    parser.add_argument("--execution-context", choices=("host", "sandbox", "unknown"), default="unknown",
+                        help="operator attestation; run host checks outside the agent sandbox")
     args = parser.parse_args()
+    evidence = [source_evidence(ROOT),
+                source_evidence(args.fleet_root.expanduser().resolve(), "kit.lock"),
+                execution_evidence(args.execution_context)]
+    for status, detail in evidence:
+        print(f"{status} {detail}")
+    if any(status == "FAIL" for status, _ in evidence):
+        return 1
+
 
     fleet_root = args.fleet_root.expanduser().absolute()
     checks = [

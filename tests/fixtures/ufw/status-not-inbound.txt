@@ -1,0 +1,9 @@
+Status: active
+
+To                         Action      From
+--                         ------      ----
+22/tcp on tailscale0       ALLOW OUT   Anywhere
+4000/tcp on tailscale0     ALLOW FWD   Anywhere
+4000/udp                   ALLOW       Anywhere
+6768/tcp on tailscale0     DENY        Anywhere
+

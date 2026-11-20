@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -27,6 +28,13 @@ class GitDisciplineTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.policy = discipline.load_policy()
+
+    def test_new_git_preparing_stage_preserves_prepared_enforcement(self) -> None:
+        args = discipline.build_parser().parse_args(["reference-transaction", "preparing"])
+        discipline.run_reference_transaction(args.stage, io.StringIO("0 new HEAD\n"), self.policy)
+        with mock.patch.object(discipline, "_protected_sync_head", return_value=None):
+            with self.assertRaisesRegex(discipline.DisciplineError, "no configured upstream"):
+                discipline.run_reference_transaction("prepared", io.StringIO("old new refs/heads/main\n"), self.policy)
 
     def test_policy_is_self_contained_and_fail_closed(self) -> None:
         self.assertIn("docs/", self.policy.branch_prefixes)
@@ -310,6 +318,31 @@ class GitDisciplineIntegrationTests(unittest.TestCase):
         with mock.patch.object(discipline.subprocess, "run", side_effect=timeout):
             with self.assertRaisesRegex(discipline.DisciplineError, "10 minutes"):
                 discipline.run_pre_push(io.StringIO(update), self.policy)
+
+    def test_hook_lifecycle_allows_feature_worktree_and_ref_packing(self) -> None:
+        # Exercise the actual shims, not just the policy function.
+        self._git("switch", "-c", "feat/hook-lifecycle")
+        shutil.copytree(ROOT / ".codeflow", self.repo / ".codeflow")
+        (self.repo / "scripts").mkdir()
+        shutil.copyfile(SCRIPT, self.repo / "scripts/check_git_discipline.py")
+        self._git("add", ".codeflow", "scripts")
+        self._git("commit", "-qm", "test: install lifecycle fixture")
+        self._git("config", "core.hooksPath", ".codeflow/git-hooks")
+        worktree = self.repo.parent / (self.repo.name + "-linked")
+        try:
+            self._git("worktree", "add", "-b", "feat/linked-lifecycle", str(worktree))
+            self._git("pack-refs", "--all", "--no-prune")
+            main_before = self._git("rev-parse", "main").strip()
+            # Pruning and deleting have ambiguous hook input; fail closed.
+            for args in (("pack-refs", "--all"), ("update-ref", "-d", "refs/heads/main")):
+                blocked = subprocess.run(["git", *args], cwd=self.repo, capture_output=True, text=True)
+                self.assertNotEqual(0, blocked.returncode)
+                self.assertEqual(main_before, self._git("rev-parse", "main").strip())
+            result = subprocess.run(["git", "-C", str(worktree), "commit", "--allow-empty", "-m", "test: linked lifecycle"], capture_output=True, text=True)
+            self.assertEqual(0, result.returncode, result.stderr)
+        finally:
+            if worktree.exists():
+                self._git("worktree", "remove", str(worktree))
 
     def test_pre_push_gate_does_not_inherit_hook_git_context(self) -> None:
         update = (

@@ -470,6 +470,8 @@ def run_pre_push(stdin: TextIO, policy: Policy) -> None:
 
 def run_reference_transaction(stage: str, stdin: TextIO, policy: Policy) -> None:
     """Allow exact upstream syncs but block other protected local ref changes."""
+    # Git 2.54 adds preparing before refs are locked and symbolic refs resolve.
+    # Enforce the existing policy at prepared on every supported Git version.
     if stage != "prepared":
         return
     for line in stdin:
@@ -480,6 +482,12 @@ def run_reference_transaction(stage: str, stdin: TextIO, policy: Policy) -> None
         if ref.startswith("refs/heads/"):
             branch = ref.removeprefix("refs/heads/")
             if branch not in policy.protected_branches:
+                continue
+            # Packing a loose ref creates a packed record (old=zero) without
+            # changing its logical value. The zero-old-value packed record is safe when
+            # the logical ref already matches. Never allow ambiguous deletion.
+            current = git("rev-parse", "--verify", ref, check=False).strip()
+            if _is_zero_oid(_old_oid) and not _is_zero_oid(new_oid) and current == new_oid:
                 continue
             sync_head = _protected_sync_head(branch)
             if not sync_head:
@@ -569,7 +577,7 @@ def build_parser() -> argparse.ArgumentParser:
     reference = subparsers.add_parser(
         "reference-transaction", help="protect local branch refs"
     )
-    reference.add_argument("stage", choices=("prepared", "committed", "aborted"))
+    reference.add_argument("stage", choices=("preparing", "prepared", "committed", "aborted"))
     ci = subparsers.add_parser("ci", help="validate a pull-request commit range")
     ci.add_argument("--base", required=True)
     ci.add_argument("--head", required=True)

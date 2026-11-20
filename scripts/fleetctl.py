@@ -67,6 +67,13 @@ SECTION_KEYS = {
     "backup": {"target", "retention_days"},
     "maintenance": {"timezone", "update_window", "owner"},
 }
+OPTIONAL_KEYS = {
+    "tooling": {"apt_packages", "brew_formulae", "brew_casks", "mise_version", "mise_sha256"},
+    "accounts": {"macos_provisioning"},
+}
+for _section, _keys in OPTIONAL_KEYS.items():
+    SECTION_KEYS[_section] |= _keys
+
 READY_FIELDS = {
     "machine.asset_tag", "remote.tailscale_tailnet", "remote.desktop_lock_mode",
     "tooling.gws", "tooling.secrets_provider", "tooling.antidote_ref",
@@ -204,7 +211,7 @@ def validate_profile(profile: dict[str, Any], *, ready: bool) -> list[Issue]:
             continue
         for key in sorted(set(value) - allowed):
             issues.append(Issue(f"{section}.{key}", "unknown key"))
-        for key in sorted(allowed - set(value)):
+        for key in sorted(allowed - set(value) - OPTIONAL_KEYS.get(section, set())):
             issues.append(Issue(f"{section}.{key}", "required key is missing"))
     if issues:
         return issues
@@ -221,6 +228,27 @@ def validate_profile(profile: dict[str, Any], *, ready: bool) -> list[Issue]:
     resources = profile["resources"]
     backup = profile["backup"]
     maintenance = profile["maintenance"]
+
+    sys.path.insert(0, str(ROOT / "scripts/lib"))
+    from package_setup import valid_package
+    for key, kind, platform in (("apt_packages", "apt", "linux"), ("brew_formulae", "formulae", "macos"), ("brew_casks", "casks", "macos")):
+        values = tooling.get(key, [])
+        if not isinstance(values, list) or not all(valid_package(value, kind) for value in values):
+            issues.append(Issue(f"tooling.{key}", "must be a list of approved package names (no options, URLs or third-party taps)"))
+        elif len(values) != len(set(values)):
+            issues.append(Issue(f"tooling.{key}", "duplicate package selections"))
+        elif values and machine["platform"] != platform:
+            issues.append(Issue(f"tooling.{key}", f"requires platform {platform}"))
+    if "mise_version" in tooling or "mise_sha256" in tooling:
+        if not isinstance(tooling.get("mise_version"), str) or not re.fullmatch(r"202[6-9]\.\d{1,2}\.\d{1,2}", tooling.get("mise_version", "")):
+            issues.append(Issue("tooling.mise_version", "select an explicit reviewed version with its binary digest"))
+        if not isinstance(tooling.get("mise_sha256"), str) or not re.fullmatch(r"[a-f0-9]{64}", tooling.get("mise_sha256", "")):
+            issues.append(Issue("tooling.mise_sha256", "requires the independently reviewed official platform binary SHA-256"))
+        if machine["platform"] == "macos":
+            issues.append(Issue("tooling.mise_version", "macOS baseline uses Homebrew mise; do not select a second installation method"))
+    if "macos_provisioning" in accounts:
+        if machine["platform"] != "macos" or not one_of(accounts["macos_provisioning"], {"local", "managed"}):
+            issues.append(Issue("accounts.macos_provisioning", "requires macOS and local or managed selection"))
 
     namespace = deployment["namespace"]
     if not isinstance(namespace, str) or not re.fullmatch(r"[a-z0-9]{2,8}", namespace):
@@ -284,6 +312,8 @@ def validate_profile(profile: dict[str, Any], *, ready: bool) -> list[Issue]:
         issues.append(Issue("accounts.admins", "every administrator must use admin-NN"))
     if any(not value.startswith("svc-") for value in lists.get("services", [])):
         issues.append(Issue("accounts.services", "every service account must use svc-purpose"))
+    if set(lists.get("services", [])) & (humans | admins):
+        issues.append(Issue("accounts.services", "service identities must be separate from human/admin accounts"))
     for key in ("operators", "viewers"):
         extra = set(lists.get(key, [])) - humans
         if extra:
@@ -329,7 +359,7 @@ def validate_profile(profile: dict[str, Any], *, ready: bool) -> list[Issue]:
         issues.append(Issue("tooling.gws", "must be ask, install, or skip"))
     if not one_of(tooling["secrets_provider"], {"ask", "1password", "bitwarden", "both", "organization-vault"}):
         issues.append(Issue("tooling.secrets_provider", "unsupported selection"))
-    if tooling["antidote_ref"] != "ask" and (not isinstance(tooling["antidote_ref"], str) or not RELEASE_REF.fullmatch(tooling["antidote_ref"])):
+    if tooling["antidote_ref"] != "ask" and (not isinstance(tooling["antidote_ref"], str) or tooling["antidote_ref"].startswith("-") or not RELEASE_REF.fullmatch(tooling["antidote_ref"])):
         issues.append(Issue("tooling.antidote_ref", "must be ask or a reviewed release ref"))
 
     if not one_of(scm["gitlab_identity"], {"service-account", "none"}):
@@ -446,7 +476,11 @@ def phase_for(
     suffix = ["--apply"] if apply else []
     if name == "base":
         script = "bootstrap-linux.sh" if machine["platform"] == "linux" else "bootstrap-macos.sh"
-        return Phase(name, (str(ROOT / "scripts" / script), *suffix), machine["platform"] == "linux", "Base packages; external authentication remains manual.")
+        extras: list[str] = []
+        for key, flag in (("apt_packages", "--apt"), ("brew_formulae", "--formula"), ("brew_casks", "--cask")):
+            for package in tooling.get(key, []):
+                extras.extend((flag, package))
+        return Phase(name, (str(ROOT / "scripts" / script), *extras, *suffix), machine["platform"] == "linux", "Install missing baseline and selected packages; preserve existing versions; authentication remains separate.")
     if name == "identity":
         safety: list[str] = []
         if apply and recovery:
@@ -470,9 +504,13 @@ def phase_for(
         return Phase(name, command, True, "Sets stable OS names and installs a root-owned, non-secret local identity record.")
     if name == "accounts":
         if machine["platform"] == "macos":
-            return Phase(name, None, True, "Create macOS accounts through the documented human/MDM workflow.")
+            argv = [str(ROOT / "scripts/setup-accounts-macos.sh"), "--agent", accounts["agent"], "--management", accounts.get("macos_provisioning", "managed")]
+            for key, flag in (("humans", "--human"), ("admins", "--admin"), ("services", "--service")):
+                for account in accounts[key]:
+                    argv.extend((flag, account))
+            return Phase(name, (*argv, *suffix), True, "Local opt-in creates missing accounts with hidden vendor prompts; managed mode verifies MDM-provisioned accounts and preserves roles.")
         argv = [str(ROOT / "scripts/setup-accounts-linux.sh"), "--agent", accounts["agent"]]
-        for key, flag in (("humans", "--human"), ("admins", "--admin"), ("operators", "--operator"), ("viewers", "--viewer")):
+        for key, flag in (("humans", "--human"), ("admins", "--admin"), ("services", "--service"), ("operators", "--operator"), ("viewers", "--viewer")):
             for value in accounts[key]:
                 argv.extend((flag, value))
         argv.extend(suffix)
@@ -500,13 +538,15 @@ def phase_for(
         return Phase(name, (str(ROOT / "scripts/install-shell-baseline.sh"), "--antidote-ref", tooling["antidote_ref"], *suffix), False, "Run as the agent account; existing dotfiles are preserved.")
     if name == "user-tooling":
         argv = [str(ROOT / "scripts/install-user-tooling.sh"), "--agents"]
+        if "mise_version" in tooling:
+            argv.extend(("--mise-version", tooling["mise_version"], "--mise-sha256", tooling["mise_sha256"]))
         if tooling["gws"] == "install":
             argv.append("--gws")
         argv.extend(suffix)
         return Phase(name, tuple(argv), False, "Run as the agent account; authentication is a separate human ceremony.")
     if name == "workloads":
         if machine["platform"] == "macos":
-            return Phase(name, None, True, "Validate Chrome, OrbStack/Docker, and project-owned Playwright browsers through the macOS guide.")
+            return Phase(name, (str(ROOT / "scripts/check-project-workloads.sh"), "--agent", accounts["agent"], "--start-orbstack", *suffix), False, "Run in the agent-owned session; verify OrbStack. The helper can install project-locked Playwright browsers and run a digest-pinned container smoke test.")
         return Phase(name, (str(ROOT / "scripts/install-workloads-linux.sh"), "--agent", accounts["agent"], *suffix), True, "Installs rootless containers, Chromium, Xvfb, and browser libraries.")
     if name == "resources":
         if machine["platform"] == "macos":
@@ -542,7 +582,9 @@ def audit_declared_accounts(profile: dict[str, Any]) -> int:
         check(home.is_dir(), f"{account} has a home directory")
         if home.is_dir():
             check(home.stat().st_uid == entry.pw_uid, f"{account} owns its home directory")
-        check(entry.pw_shell.endswith("zsh"), f"{account} uses zsh")
+        if account == accounts["agent"]:
+            # Existing human/admin accounts are preserved with their own shell.
+            check(entry.pw_shell.endswith("zsh"), f"{account} uses zsh")
     admin_group = "sudo" if profile["machine"]["platform"] == "linux" else "admin"
     for account in accounts["admins"]:
         check(admin_group in account_groups(account), f"{account} belongs to {admin_group}")
@@ -1122,7 +1164,7 @@ def main() -> int:
         if args.connection_context == "local-console" and args.ssh_source_ip:
             print(f"ERROR {args.phase}: local-console must not include --ssh-source-ip", file=sys.stderr)
             return 2
-    if args.phase in {"shell", "user-tooling"} and pwd.getpwuid(os.getuid()).pw_name != profile["accounts"]["agent"]:
+    if (args.phase in {"shell", "user-tooling"} or (args.phase == "workloads" and profile["machine"]["platform"] == "macos")) and pwd.getpwuid(os.getuid()).pw_name != profile["accounts"]["agent"]:
         print(f"ERROR {args.phase}: run this phase as {profile['accounts']['agent']}, not root or a human account", file=sys.stderr)
         return 2
     phase = phase_for(
@@ -1146,6 +1188,7 @@ def main() -> int:
     print(f"EXEC {shlex.join(phase.command)}")
     child_env = os.environ.copy()
     child_env.pop("APPLY_CHANGES", None)
+    child_env["AWK_PYTHON"] = sys.executable
     return subprocess.run(phase.command, check=False, env=child_env).returncode
 
 

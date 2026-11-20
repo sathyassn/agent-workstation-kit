@@ -3,6 +3,72 @@
 This project follows Semantic Versioning. Version 0.x interfaces may change
 between minor releases while live-machine evidence is incorporated.
 
+## 0.2.0-rc.7 — Unreleased
+
+- Consolidated operator workflow into one command with a guided Rich/plain-text
+  walkthrough, validated input, explicit safe approvals, progress, status and
+  actionable retry/role-handoff guidance. UI packages are optional.
+
+- Added real owner-scope execution with portable reviewed plans, explicit host/
+  scope approval, live verification, automatic private receipts and failure resume.
+- Added profile-selected APT/Homebrew packages/apps with missing-only installs;
+  guarded fresh OpenSSH installation until validated hardening; and a pinned,
+  signature-reviewed mise bootstrap for new Linux accounts.
+- Added Mac local-account creation with hidden vendor password prompts, managed
+  account verification, project-locked Playwright/browser and digest-pinned
+  OrbStack container probes, plus executable TCP/SSH/SFTP/reconnect checks.
+- Fixed the shared installer for Apple's system Bash and made new Mac agent
+  shells discover the selected Homebrew installation.
+- Added regression and subprocess-fixture coverage for preview, approval, failed
+  phase resume, repeat runs, drift, tampered source and configuration preservation.
+- Fixed remote-hardening verification for profiles with more than one SSH user,
+  and stopped requiring zsh for preserved human and admin accounts; failed
+  account and SSH postconditions now print their reason.
+- Fixed the Ubuntu package check so each required unit must be enabled.
+- Fixed tailnet firewall verification in the setup verifier and `validate-host.sh`:
+  plain `ufw status` omits the IN direction for incoming rules, so a correct
+  hardening never verified. Plain and verbose output are both accepted;
+  outgoing and routed rules never count.
+- As root, the entry point now uses only system PATH tools and the system bash
+  before any check runs, because sudo on macOS keeps the caller's PATH.
+- Root now refuses to run any copy of the entry point other than a fully
+  root-owned `/opt/agent-workstation-kit`, for preview and status too. Root
+  APT installs and SSH-guard release run the same check.
+- Cancelling the walkthrough exits 130; a failed SSH-guard record removes its
+  masks, or names them when that fails; plan preview warns when the working
+  tree differs from its commit.
+
+Upgrade: schema-3 profiles remain valid; new package/account choices are optional.
+Use `scripts/setup-workstation.sh` to export a new execution bundle and preview
+owner scopes before approving them. Existing configurations and conflicting
+installed versions are preserved; a reviewed merge/upgrade may be needed. Keep
+root applies in matching root-owned `/opt` snapshots and use per-executor private
+journals. Software fixtures do not qualify fresh physical Ubuntu/Mac installation,
+account/Secure Token behavior, SSH postinst/recovery or GUI/reboot acceptance.
+Keep the fleet pin unchanged pending independent review and live qualification.
+
+## 0.2.0-rc.6 — Unreleased
+
+- Added a preview-only resumable setup plan with target/content binding and
+  private evidence checkpoints for Ubuntu and macOS.
+- Added generic remote Mac listener/TCP-before-pairing, Orca reconnect,
+  named-user Apple Screen Sharing, transfer, sleep and recovery acceptance.
+- Distinguished source worktrees from staged snapshots, full revision/version
+  evidence from remote freshness, and host attestation from sandbox probes.
+- Enabled non-pruning ref packing with a protected branch that has no upstream;
+  tested the installed hook lifecycle and retained ambiguous deletion guards.
+  Default ref pruning remains a documented maintenance limitation.
+- Clarified native Ethernet qualification, installer recovery boundaries,
+  architecture-specific Homebrew and independent per-role authentication.
+
+Upgrade: schema 3 remains unchanged. Run pilot readiness from the source
+worktree in an ordinary target-host terminal with `--execution-context host`.
+Keep journals outside the public kit; review the new plan and checkpoint scope
+before resuming. Optional app/source choices still require a reviewed private
+supplement and manual vendor steps. This candidate has no fresh Ubuntu or Mac
+hardware qualification; keep the fleet pin unchanged pending live evidence,
+independent review and approved release publication.
+
 ## 0.2.0-rc.5 — Unreleased
 
 - Expanded the private-fleet template with source-toolkit context, placeholder

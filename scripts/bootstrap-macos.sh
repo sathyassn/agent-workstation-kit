@@ -7,13 +7,19 @@ script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck disable=SC1091
 source "$script_dir/lib/common.sh"
 
-for arg in "$@"; do
-  case "$arg" in
-    --apply) APPLY_CHANGES=true ;;
+package_args=()
+check_only=false
+while (($#)); do
+  case "$1" in
+    --apply) APPLY_CHANGES=true; shift ;;
+    --formula) package_args+=(--formula "${2:?Missing formula}"); shift 2 ;;
+    --cask) package_args+=(--cask "${2:?Missing cask}"); shift 2 ;;
+    --check) check_only=true; shift ;;
     --help|-h) usage_mode; exit 0 ;;
-    *) die "Unknown option: $arg" ;;
+    *) die "Unknown option: $1" ;;
   esac
 done
+[[ "$check_only" != true || "$APPLY_CHANGES" != true ]] || die '--check and --apply are exclusive.'
 
 require_macos_for_apply
 [[ $(uname -s) == Darwin ]] || die 'This script supports macOS only.'
@@ -26,13 +32,14 @@ if ! command_exists brew; then
   die 'Homebrew is required but is not installed. Install it from brew.sh after reviewing the official installer.'
 fi
 
-formulae=(git git-lfs gh glab jq mise python@3.13 shellcheck tmux zsh-completions)
-casks=(ghostty google-chrome visual-studio-code orbstack)
-
 log "Mode: $([[ "$APPLY_CHANGES" == true ]] && printf APPLY || printf PREVIEW)"
-run brew update
-run brew install "${formulae[@]}"
-run brew install --cask "${casks[@]}"
+python_bin=$(find_toolkit_python)
+if [[ "$check_only" == true ]]; then
+  "$python_bin" "$script_dir/install-package-set.py" --platform macos ${package_args[@]+"${package_args[@]}"} --check
+  exit
+fi
+if [[ "$APPLY_CHANGES" == true ]]; then package_args+=(--apply); fi
+"$python_bin" "$script_dir/install-package-set.py" --platform macos ${package_args[@]+"${package_args[@]}"}
 run git lfs install
 
 cat <<'EOF'
@@ -41,7 +48,7 @@ Manual macOS checkpoints:
 1. FileVault, recovery key, Screen Sharing/NoMachine, Remote Login, firewall, and MDM.
 2. Privacy permissions for terminals, editors, browsers, and agent applications.
 3. Xcode license, runtimes, simulators, and project signing identities.
-4. Create named/admin-NN/agent-NN accounts using the macOS guide before shared operation.
+4. Continue the machine scope for selected local-account prompts or MDM account verification before shared operation.
 5. Install the pinned Herdr release through the user-tooling phase, then verify
    detach/reattach before relying on it for long-lived work.
 EOF

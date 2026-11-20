@@ -9,12 +9,16 @@ source "$script_dir/lib/common.sh"
 
 install_agents=false
 install_gws=false
+mise_version=''
+mise_sha256=''
 
 while (($#)); do
   case "$1" in
     --apply) APPLY_CHANGES=true; shift ;;
     --agents) install_agents=true; shift ;;
     --gws) install_gws=true; shift ;;
+    --mise-version) mise_version=${2:?Missing mise version}; shift 2 ;;
+    --mise-sha256) mise_sha256=${2:?Missing mise checksum}; shift 2 ;;
     --help|-h)
       cat <<'EOF'
 Usage: install-user-tooling.sh [--agents] [--gws] [--apply]
@@ -28,7 +32,30 @@ EOF
 done
 
 [[ ${EUID:-$(id -u)} -ne 0 ]] || die 'Run as the target human or agent-NN account, never root.'
-command_exists mise || die 'mise is required. Install it using the verified official installer or OS package first.'
+# A new Mac agent shell may not yet have loaded Homebrew's environment.
+if [[ $(uname -s) == Darwin ]]; then
+  if [[ -x /opt/homebrew/bin/mise ]]; then export PATH="/opt/homebrew/bin:$PATH";
+  elif [[ -x /usr/local/bin/mise ]]; then export PATH="/usr/local/bin:$PATH"; fi
+fi
+mise_args=()
+if [[ -n "$mise_version" || -n "$mise_sha256" ]]; then
+  [[ -n "$mise_version" && -n "$mise_sha256" ]] || die 'Both mise version and SHA-256 are required.'
+  mise_args=(--version "$mise_version" --sha256 "$mise_sha256")
+elif ! command_exists mise && [[ $(uname -s) == Linux ]]; then
+  mise_args=(--baseline)
+fi
+if ((${#mise_args[@]})); then
+  if [[ "$APPLY_CHANGES" == true ]]; then mise_args+=(--apply); fi
+  python_bin=$(find_toolkit_python)
+  "$python_bin" "$script_dir/install-mise.py" "${mise_args[@]}"
+  export PATH="$HOME/.local/bin:$PATH"
+fi
+if ! command_exists mise; then
+  if [[ "$APPLY_CHANGES" == true || ${#mise_args[@]} -eq 0 ]]; then
+    die 'mise is unavailable; complete the selected verified binary or Homebrew installation.'
+  fi
+  log 'PREVIEW mise will be available after the approved binary installation.'
+fi
 [[ "$install_agents" == true ]] || die '--agents is required by this baseline.'
 
 repo_dir=$(cd "$script_dir/.." && pwd)

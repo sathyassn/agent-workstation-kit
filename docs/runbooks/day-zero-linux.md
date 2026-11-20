@@ -178,7 +178,7 @@ From the toolkit root:
 ```bash
 cd "$HOME/setup/agent-workstation-kit"
 
-python3 scripts/start-linux-pilot.py \
+python3 scripts/start-linux-pilot.py --execution-context host \
   --fleet-root "$HOME/setup/acme-agent-workstation-fleet"
 ```
 
@@ -198,7 +198,7 @@ It may create ignored test caches inside the toolkit checkout. It never invokes
 It does not print serial-bearing hardware data unless explicitly requested:
 
 ```bash
-python3 scripts/start-linux-pilot.py \
+python3 scripts/start-linux-pilot.py --execution-context host \
   --fleet-root "$HOME/setup/acme-agent-workstation-fleet" \
   --profile machines/acme-ws-001.toml \
   --run-private-hardware-audit

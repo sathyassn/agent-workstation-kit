@@ -88,6 +88,15 @@ first_unsafe_ufw_rule() {
   return 1
 }
 
+# Read `ufw status` (plain or verbose) on stdin; succeed when RULE is allowed
+# inbound on INTERFACE. Plain output omits the IN direction for incoming rules.
+ufw_status_allows_in() {
+  local rule=$1 interface=$2
+  awk -v rule="$rule" -v iface="$interface" '
+    $1 == rule && $2 == "on" && $3 == iface && $4 == "ALLOW" && $5 != "OUT" && $5 != "FWD" { found = 1 }
+    END { exit !found }'
+}
+
 ufw_default_policies_are_safe() {
   local defaults=$1
   grep -Eq '^[[:space:]]*DEFAULT_INPUT_POLICY="?DROP"?[[:space:]]*$' <<<"$defaults" &&
@@ -132,4 +141,22 @@ usage_mode() {
 Scripts are preview-only by default. Add --apply after reviewing every action.
 No script accepts or writes credentials.
 EOF
+}
+
+find_toolkit_python() {
+  local candidate
+  if [[ -n ${AWK_PYTHON:-} ]]; then
+    "$AWK_PYTHON" -c 'import sys; raise SystemExit(sys.version_info < (3, 11))' || \
+      die 'AWK_PYTHON must select Python 3.11 or newer for source/package tooling.'
+    printf '%s\n' "$AWK_PYTHON"
+    return
+  fi
+  for candidate in python3 /opt/homebrew/bin/python3 /usr/local/bin/python3; do
+    command -v "$candidate" >/dev/null 2>&1 || continue
+    if "$candidate" -c 'import sys; raise SystemExit(sys.version_info < (3, 11))' >/dev/null 2>&1; then
+      printf '%s\n' "$candidate"
+      return
+    fi
+  done
+  die 'Python 3.11+ is required; complete the OS day-zero prerequisite or select AWK_PYTHON explicitly.'
 }

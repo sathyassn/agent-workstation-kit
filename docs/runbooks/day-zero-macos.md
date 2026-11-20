@@ -194,7 +194,7 @@ From the toolkit root:
 cd "$HOME/setup/agent-workstation-kit"
 
 PYTHON_BIN="$(brew --prefix python@3.13)/bin/python3.13"
-"$PYTHON_BIN" scripts/start-macos-pilot.py \
+"$PYTHON_BIN" scripts/start-macos-pilot.py --execution-context host \
   --fleet-root "$HOME/setup/acme-agent-workstation-fleet"
 ```
 

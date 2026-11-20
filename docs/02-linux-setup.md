@@ -165,3 +165,36 @@ runtime credential is brokered to `agent-NN`.
 Run the profile `workloads` phase as a named administrator. It installs rootless Podman with Docker CLI compatibility, Chromium, Xvfb, and supporting packages without adding `agent-NN` to the Docker group. Pin Playwright in each project and install that project's matching browser build. Install Grok Build from xAI's reviewed installer, then record its version.
 
 Apply the balanced resource policy only after measuring the node. Run browser, container, build, multi-agent, reconnect, reboot, backup, and restore tests described in [validation and operations](09-validation-and-operations.md).
+
+Use the [resumable setup plan](runbooks/resumable-setup.md) to bind approvals
+and checkpoint evidence to the target and exact plan before phase applies.
+
+## Installer and native-driver qualification
+
+Record exact Ubuntu image release, architecture, checksum/signature source,
+firmware, kernel and NIC driver/firmware versions. Test UEFI boot selection and
+keyboard input in both installer and encrypted cold-unlock screens before remote
+placement. Try the supported image's native Ethernet driver and current approved
+firmware first; record link, DHCP, throughput and reboot results. Use a vendor
+DKMS fallback only for a reproduced issue on an exact tested kernel/driver pair,
+with Secure Boot retained, signed-module recovery and rollback evidence. The
+hardware-specific guide is a conditional recovery path, not an unconditional
+first-install step. Do not generalize a pilot workaround to other hardware.
+
+Installer-media preparation is bounded by a reviewed image version, verified
+source digest, explicit target device identity/capacity and a tested recovery
+path. Unattended installation is a separate qualification task: evaluate the
+supported Ubuntu autoinstall mechanism in a disposable VM first, with explicit
+target disk selection and non-secret configuration. Destructive media writes or
+OS installation require human approval. No unattended installer is qualified by
+this documentation change.
+
+Installer reference checked 2026-11-19: [Canonical autoinstall reference](https://github.com/canonical/subiquity/blob/main/doc/reference/autoinstall-reference.rst).
+
+Base and account tooling are now driven through the
+[automated setup scopes](runbooks/resumable-setup.md). Optional
+`tooling.apt_packages` adds packages to the public baseline; installed selections
+are preserved. A new account can bootstrap mise from the signature-reviewed
+Linux binary catalog automatically before installing its runtimes/agent CLIs.
+Fresh OpenSSH installation stays guarded until remote hardening validates the
+policy and firewall; existing service overrides are preserved.

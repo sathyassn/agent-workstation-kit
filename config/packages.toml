@@ -1,0 +1,11 @@
+# Public package baseline. Optional profile selections add to these sets.
+# Uses already-approved APT repositories and Homebrew core/cask only.
+[linux]
+apt = [
+  "apt-transport-https", "build-essential", "ca-certificates", "curl", "fail2ban",
+  "git", "git-lfs", "gnupg", "jq", "openssh-server", "python3", "rsync",
+  "shellcheck", "tmux", "ufw", "unattended-upgrades", "unzip", "zip", "zsh", "htop"
+]
+[macos]
+formulae = ["git", "git-lfs", "gh", "glab", "jq", "mise", "python@3.13", "shellcheck", "tmux", "zsh-completions"]
+casks = ["ghostty", "google-chrome", "visual-studio-code", "orbstack"]
