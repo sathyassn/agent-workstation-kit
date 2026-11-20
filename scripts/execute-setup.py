@@ -223,7 +223,7 @@ def execute(plan, phases, journal, *, runner=None, verifier=None, binding=None):
             env.pop(name_to_remove, None)
         env["AWK_PYTHON"] = sys.executable
         if os.geteuid() == 0:
-            env = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": pwd.getpwuid(0).pw_dir, "LC_ALL": "C", "AWK_PYTHON": "/usr/bin/python3"}
+            env = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": pwd.getpwuid(0).pw_dir, "LC_ALL": "C", "AWK_PYTHON": "/usr/bin/python3", "PYTHONDONTWRITEBYTECODE": "1"}
         preview = [arg for arg in command if arg != "--apply"]
         locks = {"pass_fds": tuple(HELD_LOCKS)} if HELD_LOCKS else {}
         preview_result = subprocess.CompletedProcess(preview, 0) if name == "audit" else runner(preview, env=env, check=False, **locks)

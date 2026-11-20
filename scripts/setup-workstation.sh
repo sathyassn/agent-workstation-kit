@@ -8,7 +8,7 @@ if [[ $EUID -eq 0 ]]; then
   PATH=/usr/bin:/bin:/usr/sbin:/sbin
   export PATH
   if [[ "$BASH" != /bin/bash && "$BASH" != /usr/bin/bash ]]; then
-    printf '[agent-workstation] ERROR: %s\n' "As root, run this with the system bash: sudo /bin/bash scripts/setup-workstation.sh ... (this shell is $BASH)." >&2
+    printf '[agent-workstation] ERROR: %s\n' "As root, run the staged copy with the system bash: sudo /bin/bash /opt/agent-workstation-kit/scripts/setup-workstation.sh ... (this shell is $BASH)." >&2
     exit 5
   fi
 fi
@@ -46,7 +46,7 @@ if [[ $EUID -eq 0 ]]; then
   root_home=/root
   [[ $(uname -s) != Darwin ]] || root_home=/var/root
   exec /usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME="$root_home" PYTHONDONTWRITEBYTECODE=1 \
-    /usr/bin/python3 -I "$script_dir/lib/setup_cli.py" "$@"
+    /usr/bin/python3 -I -B "$script_dir/lib/setup_cli.py" "$@"
 fi
 # shellcheck disable=SC1091
 source "$script_dir/lib/common.sh"
