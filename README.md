@@ -4,7 +4,7 @@ Set up dedicated Ubuntu and macOS machines where AI coding agents (Codex,
 Claude Code, Grok Build) run long-lived work, with every change previewed
 before it is applied.
 
-Upcoming version: **0.2.0-rc.7**, not yet tagged. It stays a release candidate
+Current version: **0.2.0-rc.7**, a pre-release. It stays a release candidate
 until the Linux and macOS hardware exercises in the
 [public-release checklist](docs/13-public-release-checklist.md) are complete.
 Changes are listed in the [changelog](CHANGELOG.md).

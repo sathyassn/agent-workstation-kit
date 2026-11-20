@@ -11,7 +11,7 @@ step is in [docs/maintenance/releasing.md](docs/maintenance/releasing.md).
 
 ## [Unreleased]
 
-Planned as release 0.2.0-rc.7.
+## [0.2.0-rc.7] - 2026-11-20
 
 ### Added
 
