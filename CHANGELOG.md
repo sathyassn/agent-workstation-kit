@@ -12,8 +12,10 @@ between minor releases while live-machine evidence is incorporated.
   execution context it was given and never applies changes; execution and
   resume stay with `scripts/setup-workstation.sh`.
 - Readiness writes nothing to the checkouts: `make check` bytecode goes to a
-  temporary prefix and `git status` runs without optional locks. `fleetctl
-  setup` and planning refuse a private fleet root inside the public kit.
+  temporary prefix, the direct entry points write no bytecode, and `git status`
+  runs without optional locks. `fleetctl setup`, `fleetctl init --fleet-root`,
+  both readiness launchers and planning refuse a private fleet root inside the
+  public kit.
 - Expanded the private-fleet template with source-toolkit context, placeholder
   guidance, repository boundaries, validation, deployment flow and governance.
 - Added an explicit Bash 4+ validation gate that also fails when the selected

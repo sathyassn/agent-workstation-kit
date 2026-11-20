@@ -205,6 +205,38 @@ class FleetProfileTests(unittest.TestCase):
         self.assertEqual(2, result.returncode)
         self.assertIn("outside every public toolkit worktree", result.stderr)
 
+    def test_every_fleet_entry_point_refuses_a_fleet_inside_the_kit(self) -> None:
+        inside = str(ROOT / "templates/private-fleet")
+        commands = (
+            [str(ROOT / "scripts/fleetctl.py"), "--fleet-root", inside, "init", "machines/acme-ws-009.toml",
+             "--context", "work", "--namespace", "acme", "--hostname", "acme-ws-009", "--platform", "linux",
+             "--human", "alice", "--admin", "admin-01"],
+            [str(ROOT / "scripts/start-linux-pilot.py"), "--fleet-root", inside, "--profile", "machines/x.toml"],
+            [str(ROOT / "scripts/start-macos-pilot.py"), "--fleet-root", inside, "--profile", "machines/x.toml"],
+        )
+        for command in commands:
+            with self.subTest(script=Path(command[0]).name):
+                result = subprocess.run([sys.executable, *command], capture_output=True, text=True)
+                self.assertEqual(2, result.returncode, result.stdout + result.stderr)
+                self.assertIn("outside every public toolkit worktree", result.stderr)
+        self.assertFalse((ROOT / "templates/private-fleet/machines/acme-ws-009.toml").exists())
+
+    def test_handoff_draft_leaves_no_bytecode_in_the_kit(self) -> None:
+        import shutil
+        with tempfile.TemporaryDirectory() as directory:
+            kit = Path(directory) / "kit"
+            shutil.copytree(ROOT, kit, ignore=shutil.ignore_patterns(".git", "__pycache__", ".worktrees"))
+            fleet = Path(directory) / "fleet"
+            (fleet / "machines").mkdir(parents=True)
+            (fleet / "kit.lock").write_text(fleetctl.VERSION, encoding="utf-8")
+            profile = fleetctl.load_profile(ROOT / "config/profiles/work.example.toml")
+            target = fleet / "machines" / f"{profile['machine']['hostname']}.toml"
+            target.write_text((ROOT / "config/profiles/work.example.toml").read_text(encoding="utf-8"), encoding="utf-8")
+            result = subprocess.run([sys.executable, str(kit / "scripts/fleetctl.py"), "--fleet-root", str(fleet),
+                                     "setup", str(target), "--handoff-draft"], capture_output=True, text=True)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual([], [str(path) for path in kit.rglob("__pycache__")])
+
     def test_draft_command_states_the_host_context(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             args, target, profile = self.readiness_fixture(directory)
