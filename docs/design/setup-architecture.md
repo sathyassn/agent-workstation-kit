@@ -4,8 +4,9 @@
 
 - Status: proposed (design PR D0; no code yet)
 - Date: 2026-11-20
-- Source: the consolidated design on issue #5 (comment 7048343188), refined
-  against the code at the time of writing
+- Source: the consolidated design on issue #5 (comment 7048343188) and its
+  amendment on resolving "latest" (comment 7048398540), refined against the
+  code at the time of writing
 - Audience: maintainers and reviewers. The conductor agent and operators get
   their own pages as each part lands.
 
@@ -95,7 +96,9 @@ What the code does today, and the problem each fact causes:
 6. **Both OSes get equal care.** Every capability maps to the right tool on
    each OS, and the supported versions are explicit.
 7. **Pinned and vetted.** Every tool has an exact version, a verified source
-   and a recorded security review. `latest` is refused.
+   and a recorded security review. A newer version can be looked up, but only
+   `registry resolve` turns it into a pin, after the compatibility checks,
+   vetting and permission. Nothing floats at apply time.
 8. **Documented from one source.** Each setting states what it does, why, its
    options, the safe default, the recommendation, the risk and the undo.
 9. **Nothing ad hoc.** No hard-coded users, hosts or paths. Generic logic
@@ -347,9 +350,45 @@ preflight -> describe -> backup -> intent=applying -> apply (logged) -> verify -
 - **Generated from the registry:** `config/mise.toml`,
   `config/packages.toml`, `mise.lock` (installed with `--locked`), a Brewfile
   lock, apt pins and download pins.
-  - CI fails on a stale generated file or a `latest` value.
+  - CI fails on a stale generated file, or on a `latest` or range value in a
+    pin.
   - An overdue review warns, then fails after the grace period the registry
     states.
+- **`registry resolve TOOL` (T6).** Looking up a newer version is allowed,
+  but it becomes installable only through this flow:
+
+  ```text
+  lookup -> compatibility -> vetting -> permission -> pin + record -> install
+  ```
+
+  - **Lookup.** It finds the newest version from the entry's declared source.
+    The update watch or the conductor runs it.
+  - **Compatibility.** All four checks must pass:
+    - the version is supported on the platforms and architectures in the
+      support matrix;
+    - it meets the entry's constraints (other tools, runtimes, minimum OS);
+    - its checksum or signature verifies;
+    - a fixture smoke test passes (version output and the tool's doctor
+      probe).
+
+    On any failure the current pin stays, and the reason is reported.
+  - **Vetting.** Known vulnerabilities and maintainer status are looked up
+    and recorded in the entry.
+  - **Permission**, set per entry:
+    - automatic only for patch updates within a declared range, for tools
+      marked low risk;
+    - human approval for minor and major updates, for tools that run as root,
+      touch the network or security boundary, or handle credentials, and for
+      any update during a live setup.
+  - **Pin and record.** The approved version goes into the registry and the
+    generated locks through a kit pull request (generic tools) or a fleet pull
+    request (company tools), with a changelog entry. The change is logged
+    through the transaction layer. Only then is it installed.
+  - **Never** a floating version at apply time, a silent upgrade, or a version
+    on a machine that kit or fleet does not record. The T8 doctor reports an
+    unrecorded version as drift.
+  - The update-watch job, after T6, runs `registry resolve` on a schedule and
+    opens the resulting pull requests.
 - **Staging (T6).** `stage-release.sh` copies a reviewed revision to
   `/opt/agent-workstation-kit/releases/<rev>/`.
   - It verifies the tree digest and makes the tree root-owned.
@@ -390,7 +429,7 @@ What revert cannot undo, listed in every revert preview:
   - every phase's live verifier;
   - the receipt summary and stable point;
   - drift against the ledger and machine record, including changes that have
-    no record;
+    no record and tool versions the registry does not record;
   - `agent-settings check`;
   - the earlier doctor items.
 
@@ -484,7 +523,7 @@ D0 (this ADR, reviewed alone)
  -> T3 gates, hand-overs, scope order, dead-man timer
  -> T4 lockout and convergence fixes, account archive
  -> T5 schema, interview, schema 4, capabilities
- -> T6 tool registry, staging, day-zero one-liner, snapshots
+ -> T6 tool registry and resolve flow, staging, day-zero one-liner, snapshots
  -> T7 agent settings
  -> T8 doctor
  -> components: browser sign-in tunnel, corporate IPsec VPN, explainer refresh, update watch
