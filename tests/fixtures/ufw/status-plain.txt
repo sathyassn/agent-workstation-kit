@@ -1,0 +1,11 @@
+Status: active
+
+To                         Action      From
+--                         ------      ----
+22/tcp on tailscale0       ALLOW       Anywhere
+4000/tcp on tailscale0     ALLOW       Anywhere
+4000/udp on tailscale0     ALLOW       Anywhere
+22/tcp (v6) on tailscale0  ALLOW       Anywhere (v6)
+4000/tcp (v6) on tailscale0 ALLOW       Anywhere (v6)
+4000/udp (v6) on tailscale0 ALLOW       Anywhere (v6)
+

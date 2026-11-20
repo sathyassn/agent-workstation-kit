@@ -43,6 +43,30 @@ class SshdTests(unittest.TestCase):
         self.assertIn("sshd passwordauthentication is not no", pv.sshd_problems(text, ["alice", "bob", "admin-01"], "agent-01"))
 
 
+UFW = ROOT / "tests/fixtures/ufw"
+
+
+class UfwStatusTests(unittest.TestCase):
+    def test_plain_status_without_direction_verifies(self):
+        status = (UFW / "status-plain.txt").read_text()
+        for rule in ("22/tcp", "4000/tcp", "4000/udp"):
+            self.assertTrue(pv.ufw_allows_in(status, rule, "tailscale0"), rule)
+
+    def test_verbose_status_with_in_direction_verifies(self):
+        status = (UFW / "status-verbose.txt").read_text()
+        for rule in ("22/tcp", "4000/tcp", "4000/udp"):
+            self.assertTrue(pv.ufw_allows_in(status, rule, "tailscale0"), rule)
+
+    def test_outgoing_routed_unscoped_and_deny_rules_do_not_count(self):
+        status = (UFW / "status-not-inbound.txt").read_text()
+        for rule in ("22/tcp", "4000/tcp", "4000/udp", "6768/tcp"):
+            self.assertFalse(pv.ufw_allows_in(status, rule, "tailscale0"), rule)
+
+    def test_other_interface_does_not_count(self):
+        status = (UFW / "status-plain.txt").read_text()
+        self.assertFalse(pv.ufw_allows_in(status, "22/tcp", "eth0"))
+
+
 class AccountTests(unittest.TestCase):
     def setUp(self):
         self.home = tempfile.TemporaryDirectory()
