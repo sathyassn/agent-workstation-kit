@@ -281,8 +281,14 @@ def main() -> int:
     args = parser.parse_args()
     sys.path.insert(0, str(ROOT / "scripts/lib"))
     from path_safety import outside_kit
-    if not outside_kit(args.fleet_root.expanduser().absolute(), ROOT):
-        parser.error("the private fleet root must be outside every public toolkit worktree")
+    try:
+        inside = not outside_kit(args.fleet_root.expanduser().absolute(), ROOT)
+    except ValueError as error:
+        print(f"ERROR fleet root: {error}", file=sys.stderr)
+        return 2
+    if inside:
+        print("ERROR fleet root: the private fleet root must be outside every public toolkit worktree", file=sys.stderr)
+        return 2
     evidence = [source_evidence(ROOT),
                 source_evidence(args.fleet_root.expanduser().resolve(), "kit.lock"),
                 execution_evidence(args.execution_context)]
