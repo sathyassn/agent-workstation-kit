@@ -5,6 +5,17 @@ between minor releases while live-machine evidence is incorporated.
 
 ## 0.2.0-rc.7 — Unreleased
 
+- Added `fleetctl setup PROFILE` for fleet-managed targets: `--handoff-draft`
+  prints a reviewable host handoff and writes nothing; readiness checks the
+  committed profile and handoff, clean source checkouts and optional exact
+  revisions, then runs the platform readiness launcher. It states the
+  execution context it was given and never applies changes; execution and
+  resume stay with `scripts/setup-workstation.sh`.
+- Expanded the private-fleet template with source-toolkit context, placeholder
+  guidance, repository boundaries, validation, deployment flow and governance.
+- Added an explicit Bash 4+ validation gate that also fails when the selected
+  shell is not Bash, plus macOS contributor instructions. macOS readiness
+  uses the Homebrew Bash that the macOS day-zero guide now installs.
 - Consolidated operator workflow into one command with a guided Rich/plain-text
   walkthrough, validated input, explicit safe approvals, progress, status and
   actionable retry/role-handoff guidance. UI packages are optional.
@@ -86,16 +97,12 @@ independent review and approved release publication.
 
 ## 0.2.0-rc.5 — Unreleased
 
-- Expanded the private-fleet template with source-toolkit context, placeholder
-  guidance, repository boundaries, validation, deployment flow and governance.
 - Closed final cross-model release-review gaps in resource-limit boundaries,
   macOS identity/runtime consistency, remote-access hardening, agent session
   delegation, pilot validation, public CI and contributor/security guidance.
 - Added regression coverage for the corrected first-use and policy paths.
 - Allowed GitHub-authenticated Dependabot branch names and generated PR/commit
   bodies while retaining conventional subjects, secret scans, and test gates.
-- Added an explicit Bash 4+ validation gate and macOS contributor instructions
-  so Linux shell tests fail clearly instead of aborting under Apple Bash 3.2.
 
 ## 0.2.0-rc.4 — Unreleased
 
