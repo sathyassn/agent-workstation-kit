@@ -17,8 +17,9 @@ fleet data, organization-only policy, personal paths, or credentials.
    ```
 
    macOS ships Bash 3.2, which cannot run the Linux shell-behavior fixtures.
-   Install current Bash and the remaining checks with Homebrew, then select that
-   Bash explicitly:
+   Install current Bash and the remaining checks with Homebrew. When Homebrew's
+   `bin` comes before `/bin` on your PATH, plain `make ci-check` finds that Bash;
+   otherwise select it explicitly:
 
    ```bash
    brew install bash python@3.13 shellcheck
@@ -49,8 +50,7 @@ fleet data, organization-only policy, personal paths, or credentials.
 8. Update examples, tests, documentation, and `CHANGELOG.md` when behavior or
    profile fields change.
 9. Run `make ci-check` and `make public-check` before requesting review. On
-   macOS, keep using the reviewed `BASH_BIN` override above. Include
-   the result plus any
+   macOS, use Bash 4 or newer as described above. Include the result plus any
    untested live-machine assumptions in the pull request. Hosted CI validates
    the exact commit range and pull-request body with the same policy.
 
