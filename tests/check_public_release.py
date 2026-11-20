@@ -83,8 +83,15 @@ def deterministic_failures(
     if not SEMVER.fullmatch(version):
         failures.append("VERSION is not valid Semantic Versioning")
     changelog = root / "CHANGELOG.md"
-    if version and changelog.is_file() and f"## {version}" not in changelog.read_text(encoding="utf-8"):
-        failures.append("CHANGELOG.md has no entry for VERSION")
+    if version and changelog.is_file():
+        text = changelog.read_text(encoding="utf-8")
+        headings = [line for line in text.splitlines() if line.startswith("## ")]
+        if not headings or headings[0] != "## [Unreleased]":
+            failures.append("CHANGELOG.md must start with a ## [Unreleased] section (Keep a Changelog)")
+        released = re.search(r"^## \[" + re.escape(version) + r"\] - \d{4}-\d{2}-\d{2}$", text, re.M)
+        planned = f"Planned as release {version}." in text.split("\n## ", 2)[1] if headings and headings[0] == "## [Unreleased]" else False
+        if not (released or planned):
+            failures.append("CHANGELOG.md has neither a dated ## [VERSION] heading nor an [Unreleased] section planned as VERSION")
     readme = root / "README.md"
     if version and readme.is_file() and version not in readme.read_text(encoding="utf-8"):
         failures.append("README.md does not mention VERSION")
