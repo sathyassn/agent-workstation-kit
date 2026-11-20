@@ -8,7 +8,9 @@ profile and runs the existing readiness checks. It never applies changes.
 Execution, receipts and resume after a failure use `scripts/setup-workstation.sh`
 ([automated and resumable setup](resumable-setup.md)). Use
 Python 3.11 or newer, with the interpreter prepared in your platform's
-day-zero guide. The examples use `python3`.
+day-zero guide. The examples use `python3`; on macOS use `"$PYTHON_BIN"` from
+[day-zero macOS](day-zero-macos.md) instead, because `/usr/bin/python3` can be
+3.9 without the `tomllib` module. The printed handoff does this for you.
 
 ## Prepare a new target
 
