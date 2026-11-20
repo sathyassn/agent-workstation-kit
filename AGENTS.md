@@ -59,108 +59,226 @@ it before acting. `CLAUDE.md` includes it.
 
 ## 4. Task recipes
 
-Each recipe lists commands, what success looks like, how to verify, and when to
-stop. Run commands from the kit checkout unless a step says otherwise.
+Each recipe gives the commands, what success looks like, how to verify it, and
+when to stop and ask. Run commands from the kit checkout unless a step says
+otherwise. Placeholders:
+
+- `FLEET`: the private fleet checkout.
+- `HOST`: the machine's technical hostname, as in `machines/HOST.toml`.
+- `PRIVATE`: the absolute path of a private folder outside every kit checkout.
+  The kit refuses plans and journals inside a checkout.
+- `JOURNAL`: one private journal file per executing account, in a folder that
+  account owns with mode `0700`.
+
+Work marked "planned: issue #5, step N" is not built yet. Step N is the order
+in the plan on issue #5; it is not a pull request number.
 
 ### Set up a new Ubuntu machine
 
-`FLEET` is the private fleet checkout. `PRIVATE` is the absolute path of a
-private folder outside every kit checkout; the kit refuses plans and journals
-inside a checkout.
-
-1. Follow [day-zero Linux](docs/runbooks/day-zero-linux.md) up to the readiness
+1. Follow [day-zero Linux](docs/runbooks/day-zero-linux.md) up to its readiness
    check. The firmware, installer and disk-encryption steps are human steps.
-2. Readiness, run by the person in an ordinary terminal on the target (see the
-   attestation rule above): `python3 scripts/fleetctl.py --fleet-root FLEET setup machines/HOST.toml --execution-context host`
-   - Success: no `FAIL` line, then `READY: ...` and a hand-off prompt. Exit 0.
-   - Stop: on any `FAIL`, report it and ask. Report `NEXT` lines; they are not failures.
-3. Export the plan: `scripts/setup-workstation.sh plan --fleet-root FLEET --profile machines/HOST.toml --export-plan PRIVATE/execution-plan.json`
-4. Work through the scopes in order: `packages`, `machine`, `agent`, then
-   `resources` (only after the node is measured under load) and `audit`.
-   - Preview: `scripts/setup-workstation.sh run --plan-file PRIVATE/execution-plan.json --scope SCOPE`
-     prints the phases and an execution plan ID. Show it to the person and stop.
-   - Apply, after approval: the same command plus `--apply --approve-plan ID --confirm-target HOST --execution-context host --journal JOURNAL`.
-     `JOURNAL` is one private journal per executing account, in a folder that
-     account owns with mode `0700`.
-   - Root scopes are run by the person from the staged copy, reading the plan
-     staged under `/opt/agent-workstation-fleet/plans/`, with a journal in
-     a root-owned folder and `--confirm-recovery-tested` once console recovery
-     has actually been tested: on Ubuntu every scope except `agent`, on macOS
-     every scope except `packages` and `agent`. See [resumable setup](docs/runbooks/resumable-setup.md).
-   - Success: each phase prints `PASS NAME live postconditions`. Exit 0.
-   - Verify: `scripts/setup-workstation.sh status --plan-file PRIVATE/execution-plan.json --scope SCOPE --journal JOURNAL`
-     lists each phase as recorded and names the next candidate.
-   - Stop: exit 3 (a person must act), 2 (wrong account or refused input) or 1 (a phase failed).
 
-These commands change in PR 2 to `setup-workstation.sh admin`, `user` and `doctor`.
+2. Readiness. The person runs this in an ordinary terminal on the target (see
+   the attestation rule in section 3):
+
+   ```bash
+   python3 scripts/fleetctl.py --fleet-root FLEET \
+     setup machines/HOST.toml --execution-context host
+   ```
+
+   - Success: no `FAIL` line, then `READY: ...` and a hand-off prompt. Exit 0.
+   - Stop: on any `FAIL`, report it and ask. Report `NEXT` lines; they are not
+     failures.
+
+3. Export the plan:
+
+   ```bash
+   scripts/setup-workstation.sh plan --fleet-root FLEET \
+     --profile machines/HOST.toml --export-plan PRIVATE/execution-plan.json
+   ```
+
+   - Success: the settings and scope tables, then `Exported execution bundle`. Exit 0.
+   - Stop: on any `ERROR` line.
+
+4. Run the scopes in this order: `packages`, `machine`, `agent`, `resources`
+   (only after the node has been measured under load), then `audit`. For each
+   scope:
+
+   1. Preview, then show the output to the person and stop:
+
+      ```bash
+      scripts/setup-workstation.sh run \
+        --plan-file PRIVATE/execution-plan.json --scope SCOPE
+      ```
+
+      It prints the phases and an execution plan ID.
+   2. Apply after the person approves that preview:
+
+      ```bash
+      scripts/setup-workstation.sh run \
+        --plan-file PRIVATE/execution-plan.json --scope SCOPE \
+        --apply --approve-plan ID --confirm-target HOST \
+        --execution-context host --journal JOURNAL
+      ```
+
+   3. Verify:
+
+      ```bash
+      scripts/setup-workstation.sh status \
+        --plan-file PRIVATE/execution-plan.json --scope SCOPE --journal JOURNAL
+      ```
+
+      It lists each phase as recorded and names the next candidate.
+
+   - Success: each phase prints `PASS NAME live postconditions`. Exit 0.
+   - Stop: exit 3 (a person must act), 2 (wrong account or refused input) or 1
+     (a phase failed).
+
+5. **Root scopes are the person's.** On Ubuntu every scope except `agent` runs
+   as root. The person runs it from the staged copy, reading the plan staged
+   under `/opt/agent-workstation-fleet/plans/`, with a journal in a root-owned
+   folder. They add `--confirm-recovery-tested` only once console recovery has
+   actually been tested. See [resumable setup](docs/runbooks/resumable-setup.md).
+
+Planned: issue #5, step 2. These steps become `setup-workstation.sh admin`,
+`user` and `doctor`.
 
 ### Set up a new Mac
 
-Follow [day-zero macOS](docs/runbooks/day-zero-macos.md), then the same steps as
-Ubuntu with a `machines/HOST.toml` whose platform is `macos`. Run the `packages`
-scope as the Homebrew owner, never root. Setup Assistant, MDM, FileVault,
-privacy prompts and Screen Sharing are human steps.
+1. Follow [day-zero macOS](docs/runbooks/day-zero-macos.md) up to its readiness
+   check. Setup Assistant, MDM enrolment, FileVault, privacy prompts and Screen
+   Sharing are human steps. Use the day-zero `"$PYTHON_BIN"` wherever a step
+   runs Python.
+2. Run readiness, export the plan, and run the scopes exactly as in steps 2 to 4
+   of the Ubuntu recipe, with a profile whose platform is `macos`.
+3. Run the `packages` scope as the named Homebrew owner, never as root. Run the
+   `agent` scope in the agent account's own session.
+4. **Root scopes are the person's.** On macOS, `machine`, `resources` and
+   `audit` run as root from the staged copy, as in step 5 of the Ubuntu recipe.
+
+- Success: readiness ends `READY: ...`, and each scope's phases print `PASS NAME
+  live postconditions`. Exit 0.
+- Verify: `status` for each scope, as in Ubuntu step 4.3.
+- Stop: at every human step above, and on exit 3, 2 or 1.
 
 ### Run the doctor and act on its report
 
-1. `scripts/setup-workstation.sh doctor` checks OS, Python, git, ssh and the
-   package manager. It changes nothing.
-2. For the full host audit, the person runs
-   `sudo /bin/bash /opt/agent-workstation-kit/scripts/validate-host.sh AGENT_ACCOUNT`.
-3. Act on each `FAIL`: rerun the phase that owns it (preview first), or hand it
-   over. Report each `WARN` without acting on it.
+1. Run the doctor. It changes nothing:
 
-`doctor --fix`, `--json` and the update and expiry checks arrive in PR 3.
+   ```bash
+   scripts/setup-workstation.sh doctor
+   ```
+
+2. For the full host audit, the person runs:
+
+   ```bash
+   sudo /bin/bash /opt/agent-workstation-kit/scripts/validate-host.sh AGENT_ACCOUNT
+   ```
+
+- Success: the doctor's table shows no `missing` entry and exits 0. The audit
+  prints no `FAIL` line.
+- Verify: rerun both after acting on a finding.
+- Stop: for each `FAIL`, either rerun the phase that owns it (preview first) or
+  hand it over. Report each `WARN` without acting on it.
+
+`doctor --fix` and the update and expiry checks are planned: issue #5, step 3.
 
 ### Add or remove an optional tool for one machine
 
 1. Edit the machine profile in the private fleet. Today the optional switches
    are `tooling.gws` (`install` or `skip`) and the package lists
    `tooling.apt_packages`, `tooling.brew_formulae` and `tooling.brew_casks`.
-2. Validate: `python3 scripts/fleetctl.py --fleet-root FLEET validate machines/HOST.toml --ready`.
-   Success prints no `ERROR` lines and exits 0.
+2. Validate:
+
+   ```bash
+   python3 scripts/fleetctl.py --fleet-root FLEET validate machines/HOST.toml --ready
+   ```
+
 3. Commit the profile through the fleet's review, export a new plan, and preview
    the `packages` or `agent` scope.
 
-PR 2a replaces this with one `[components]` table in the profile.
+- Success: `validate` prints no `ERROR` line and exits 0, and the scope preview
+  lists the added or removed package.
+- Verify: after the approved apply, `status` for that scope.
+- Stop: on any `ERROR` line, or if the preview changes anything other than the
+  tool you edited.
+
+One `[components]` table in the profile replaces these switches (planned:
+issue #5, step 4).
 
 ### Add a new component to the kit
 
 1. Add the install step to the phase script that owns it, or the tool to
    `config/mise.toml` or `config/packages.toml`. It must preview by default,
    check before acting, and be idempotent.
-2. Add its live check to `scripts/lib/phase_verification.py` and its tests.
+2. Add its live check to `scripts/lib/phase_verification.py`, with tests.
 3. Record the upstream source in [primary sources](docs/11-primary-sources.md).
-4. Add a `CHANGELOG.md` entry and update this file if a command or path changed.
-5. Run `make ci-check` and `make public-check`.
+4. Add a `CHANGELOG.md` entry, and update this file if a command or path changed.
+5. Run the gates:
+
+   ```bash
+   make ci-check
+   make public-check
+   ```
+
+- Success: both gates exit 0, and a test shows the preview changes nothing and
+  a repeat apply changes nothing.
+- Verify: the new tests fail without the change.
+- Stop: if the component needs `sudo`, a secret, or a new network source that is
+  not pinned and verified. Ask first.
 
 ### Update after an upstream change
 
 1. Check the component's upstream source in [primary sources](docs/11-primary-sources.md).
-2. Change the pin, checksum or config key in a focused pull request with a test.
+2. Change the pin, checksum or config key in a focused pull request, with a test.
 3. Note the change under `Changed` or `Fixed` in `CHANGELOG.md`.
 
-The update-watch register and `doctor --updates` arrive in PR 3.
+- Success: `make ci-check` and `make public-check` exit 0 with the new pin.
+- Verify: the recorded checksum matches the vendor's published value.
+- Stop: if the vendor publishes no strong checksum or signature, or if the
+  change alters a default or a security setting. Ask first.
+
+The update-watch register and `doctor --updates` are planned: issue #5, step 3.
 
 ### Cut a release
 
 Follow [releasing](docs/maintenance/releasing.md). Prepare the release pull
 request; the owner decides, tags and publishes.
 
+- Success: the release pull request passes both gates.
+- Stop: before any tag or release; those are the owner's.
+
 ### Adopt the kit in a private fleet
 
-1. Copy `templates/private-fleet/` into a new private repository; protect its
+1. Copy `templates/private-fleet/` into a new private repository. Protect its
    default branch and require review.
-2. Set `kit.lock` to the kit release you use.
-3. Create a profile: `scripts/setup-workstation.sh init machines/HOST.toml --fleet-root FLEET --context work --namespace NS --hostname HOST --platform linux --human NAME --admin ADMIN`
-   previews; add `--write` to create the draft. Review it in the fleet repository.
-4. Validate the fleet: `python3 scripts/validate-fleet.py FLEET`. Exit 0 means valid.
+2. Set `kit.lock` to the kit version you use.
+3. Preview a profile, then add `--write` to create the draft:
+
+   ```bash
+   scripts/setup-workstation.sh init machines/HOST.toml --fleet-root FLEET \
+     --context work --namespace NS --hostname HOST --platform linux \
+     --human NAME --admin ADMIN
+   ```
+
+4. Review the draft in the fleet repository, then validate the whole fleet:
+
+   ```bash
+   python3 scripts/validate-fleet.py FLEET
+   ```
+
+- Success: the preview names the draft and writes nothing. With `--write`, the
+  draft exists. `validate-fleet.py` exits 0.
+- Verify: rerun `validate-fleet.py` after every profile change.
+- Stop: on any `ERROR`, or if a value would name a real organisation in this
+  public repository.
 
 See [guided fleet setup](docs/runbooks/guided-fleet-setup.md).
 
 ## 5. Reading the output
 
-There is no `--json` output yet; PR 2 adds it. Today, parse these lines:
+There is no `--json` output yet (planned: issue #5, step 2). Today, parse these
+lines:
 
 | Source | Line format |
 |---|---|
@@ -205,10 +323,14 @@ verify command passes.
   and mark a breaking interface or schema change explicitly.
 - Keep the hooks on: `git config core.hooksPath .codeflow/git-hooks`.
 - Every change to `scripts/`, `config/` or `templates/` adds a bullet under
-  `## [Unreleased]` in `CHANGELOG.md`; `make repo-check` enforces it.
+  `## [Unreleased]` in `CHANGELOG.md`; `make repo-check` enforces it against
+  `origin/main` (or `CHANGELOG_BASE`), and prints a note when it has no base.
 - When a change adds, renames or removes a command, flag or file location,
-  update this file in the same pull request. `make repo-check` checks that the
-  paths and `setup-workstation.sh` actions named here exist.
+  update this file in the same pull request. `make repo-check` checks that
+  every path named here exists, and that each `setup-workstation.sh` action and
+  `fleetctl.py` subcommand exists and defines the flags used with it (against
+  its own `--help`). It does not check other scripts' flags, prose, or lines
+  marked "planned: issue #5".
 - Run `make check` while working and `make ci-check` plus `make public-check`
   before review. List live-machine gaps in the pull request.
 - Treat `config/profiles/*.example.toml` as templates. Use ignored
