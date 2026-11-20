@@ -899,7 +899,7 @@ def setup_revision(root: Path, label: str, expected: str | None) -> str:
 
     if not (root / ".git").exists():
         raise ValueError(f"{label}: no Git metadata at {root}; use the reviewed source checkout")
-    if git("rev-parse", "--show-toplevel") != str(root.resolve()):
+    if Path(git("rev-parse", "--show-toplevel")).resolve() != root.resolve():
         raise ValueError(f"{label}: use the source checkout root at {root}")
     revision = git("rev-parse", "HEAD")
     if expected and revision != expected:
@@ -932,6 +932,7 @@ def guided_setup(args: argparse.Namespace, path: Path, profile: dict[str, Any]) 
         ]
         if platform == "linux":
             command.extend(["--expected-ubuntu", ubuntu])
+        command.extend(["--execution-context", "host"])
         boot = (
             "Review the Ubuntu release and disk plan. Prove console access and LUKS recovery."
             if platform == "linux" else
@@ -958,7 +959,9 @@ recovery owner, package decisions and remaining work before committing.
 1. Follow the kit's `docs/runbooks/{guide}` from the local console. {boot}
 2. Complete day-zero prerequisites. Use the reviewed kit and fleet source
    checkouts and substitute the fleet path in the command below.
-3. Run readiness. Resolve failures and rerun the same command from source.
+3. Run readiness from an ordinary terminal on the target (not an agent
+   sandbox); `--execution-context host` states that. Resolve failures and
+   rerun the same command from source.
 4. Start the setup agent with this handoff and the stopping point above.
    Review the ordered plan. Preview each remaining phase and apply only
    approved changes from the required execution context.
@@ -998,6 +1001,8 @@ operator at approval, authentication and recovery steps.""")
     command = [sys.executable, str(ROOT / "scripts" / launcher), "--fleet-root", str(fleet), "--profile", str(relative)]
     if platform == "linux":
         command.extend(["--expected-ubuntu", ubuntu])
+    # The launchers fail closed unless the operator states a host terminal.
+    command.extend(["--execution-context", args.execution_context])
     result = subprocess.run(command, cwd=ROOT, check=False)
     if result.returncode == 0:
         print(f"Use the reviewed host handoff at {fleet / handoff} when starting the setup agent.")
@@ -1032,6 +1037,8 @@ def main() -> int:
     setup.add_argument("--expected-ubuntu", help="reviewed Ubuntu release (default: 24.04)")
     setup.add_argument("--kit-revision", help="require the exact reviewed toolkit commit")
     setup.add_argument("--fleet-revision", help="require the exact reviewed fleet commit")
+    setup.add_argument("--execution-context", choices=("host", "sandbox", "unknown"), default="unknown",
+                       help="state that readiness runs in an ordinary target-host terminal (host); anything else reports NOT READY")
     run = subs.add_parser("run", help="run exactly one phase")
     run.add_argument("profile", type=Path)
     run.add_argument("phase", choices=PHASES)
