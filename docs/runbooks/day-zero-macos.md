@@ -120,10 +120,14 @@ shasum -a 256 "$BREW_INSTALL_DIR/homebrew-install.sh"
 less "$BREW_INSTALL_DIR/homebrew-install.sh"
 /bin/bash "$BREW_INSTALL_DIR/homebrew-install.sh"
 
-brew install python@3.13
+brew install python@3.13 bash
 PYTHON_BIN="$(brew --prefix python@3.13)/bin/python3.13"
 "$PYTHON_BIN" --version
+"$(brew --prefix bash)/bin/bash" --version
 ```
+
+The kit's shell checks need Bash 4 or newer; macOS ships Bash 3.2 as
+`/bin/bash`. Readiness uses the Homebrew Bash installed here.
 
 The installer URL moves over time and this repository does not claim a pinned
 publisher checksum. If policy requires an internally distributed package, use

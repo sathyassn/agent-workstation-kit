@@ -23,7 +23,8 @@ bash-check:
 		echo "Bash 4 or newer is required; command not found: $(BASH_BIN)" >&2; \
 		exit 1; \
 	fi
-	@major=$$("$(BASH_BIN)" -c 'printf "%s\n" "$${BASH_VERSINFO[0]}"'); \
+	@major=$$("$(BASH_BIN)" -c 'printf "%s\n" "$${BASH_VERSINFO[0]}"' 2>/dev/null); \
+	case "$$major" in ''|*[!0-9]*) major=0 ;; esac; \
 	if [ "$$major" -lt 4 ]; then \
 		"$(BASH_BIN)" --version | sed -n '1p' >&2; \
 		echo 'Bash 4 or newer is required for Linux shell validation.' >&2; \
