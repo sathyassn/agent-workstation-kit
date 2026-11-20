@@ -21,6 +21,9 @@ import socket
 import stat
 import subprocess
 import sys
+
+# Readiness and planning are read-only: never write bytecode caches.
+sys.dont_write_bytecode = True
 import tomllib
 import unicodedata
 import uuid
@@ -1076,6 +1079,10 @@ def main() -> int:
                 parser.error("provide full lowercase Git commit IDs")
 
     if args.command == "init":
+        # Without --fleet-root, init may write an ignored local experiment.
+        if args.fleet_root is not None and not private_root_outside_kit(args.fleet_root.expanduser().absolute()):
+            print("ERROR fleet root: the private fleet root must be outside every public toolkit worktree", file=sys.stderr)
+            return 2
         if lock_error := fleet_lock_issue(args.fleet_root):
             print(f"ERROR kit.lock: {lock_error}", file=sys.stderr)
             return 2

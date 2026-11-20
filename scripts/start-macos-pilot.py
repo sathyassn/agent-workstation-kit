@@ -14,6 +14,9 @@ import tempfile
 import shutil
 import subprocess
 import sys
+
+# Readiness and planning are read-only: never write bytecode caches.
+sys.dont_write_bytecode = True
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -276,6 +279,10 @@ def main() -> int:
     parser.add_argument("--execution-context", choices=("host", "sandbox", "unknown"), default="unknown",
                         help="operator attestation; run host checks outside the agent sandbox")
     args = parser.parse_args()
+    sys.path.insert(0, str(ROOT / "scripts/lib"))
+    from path_safety import outside_kit
+    if not outside_kit(args.fleet_root.expanduser().absolute(), ROOT):
+        parser.error("the private fleet root must be outside every public toolkit worktree")
     evidence = [source_evidence(ROOT),
                 source_evidence(args.fleet_root.expanduser().resolve(), "kit.lock"),
                 execution_evidence(args.execution_context)]
