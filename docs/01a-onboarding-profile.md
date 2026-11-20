@@ -90,15 +90,18 @@ apply one phase, and verify it before continuing:
 
 ```bash
 ./scripts/fleetctl.py run /path/to/acme-ws-001.toml accounts
-cd /opt/agent-workstation-kit
-sudo ./scripts/fleetctl.py \
+# Ubuntu, from the root-owned staged copies:
+sudo /usr/bin/python3 -I -B /opt/agent-workstation-kit/scripts/fleetctl.py \
   --fleet-root /opt/agent-workstation-fleet \
   run machines/acme-ws-001.toml accounts --apply
 ```
 
 The apply command is valid only after the reviewed toolkit and fleet snapshots
-have been staged as root-owned, non-writable trees. Follow the Linux or macOS
-staging runbook; never apply from an ordinary user checkout.
+have been staged as root-owned, non-writable trees. Follow the Linux staging
+runbook; never apply from an ordinary user checkout, and never let `sudo` pick
+the interpreter from PATH. On macOS, use the staged `setup-workstation.sh run`
+in [automated and resumable setup](runbooks/resumable-setup.md) instead: the
+system Python there is 3.9, and Homebrew's Python belongs to a user.
 
 Machine identity and remote hardening also require an explicit recovery
 confirmation when applying. The `shell`

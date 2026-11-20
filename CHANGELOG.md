@@ -35,13 +35,15 @@ between minor releases while live-machine evidence is incorporated.
   root-owned `/opt/agent-workstation-kit`, for preview and status too. Root
   APT installs and SSH-guard release run the same check.
 - Remote-hardening verification evaluates `sshd -T -C` for every declared SSH
-  user and the agent, from loopback and a tailnet address, so a `Match` block
-  that re-enables passwords fails. Account verification now also proves that
+  user and the agent, from loopback and a tailnet address, and refuses any
+  `Match` block that sets password, keyboard-interactive or root-login options,
+  since test mode cannot evaluate every `Match` criterion. Account verification now also proves that
   the agent and service accounts hold no sudoers command grant.
 - A running phase keeps the journal lock until it exits, so killing only the
   executor can no longer let a rerun start the same phase alongside it.
-- As root, staged helpers use a system PATH, clear interpreter variables and run
-  Python isolated. The runbook states the root rule: run only absolute staged
+- As root, staged helpers re-run themselves with an empty environment and run
+  Python isolated without bytecode (`python3 -I -B`); the macOS package step
+  refuses root. The runbook states the root rule: run only absolute staged
   paths through a system interpreter, never `sudo` on a user checkout.
 - Preview, status and doctor no longer write bytecode caches; the guided plan
   export creates no folders; planning refuses a fleet root inside the kit.
