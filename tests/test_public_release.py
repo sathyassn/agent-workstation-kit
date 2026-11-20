@@ -28,7 +28,7 @@ class PublicReleaseTests(unittest.TestCase):
             path.touch()
         (root / "VERSION").write_text(f"{version}\n", encoding="utf-8")
         (root / "CHANGELOG.md").write_text(
-            f"# Changelog\n\n## {version} — Unreleased\n",
+            f"# Changelog\n\n## [Unreleased]\n\nPlanned as release {version}.\n",
             encoding="utf-8",
         )
         (root / "README.md").write_text(f"Current version: {version}\n", encoding="utf-8")
@@ -95,7 +95,21 @@ class PublicReleaseTests(unittest.TestCase):
             failures = public_release.deterministic_failures(
                 root, require_license=False, tracked=[]
             )
-            self.assertIn("CHANGELOG.md has no entry for VERSION", failures)
+            self.assertIn("CHANGELOG.md must start with a ## [Unreleased] section (Keep a Changelog)", failures)
+            self.assertIn("CHANGELOG.md has neither a dated ## [VERSION] heading nor an [Unreleased] section planned as VERSION", failures)
+
+    def test_changelog_accepts_a_dated_release_heading_for_version(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_repository(root)
+            version = (root / "VERSION").read_text(encoding="utf-8").strip()
+            (root / "CHANGELOG.md").write_text(
+                f"# Changelog\n\n## [Unreleased]\n\n## [{version}] - 2026-11-20\n", encoding="utf-8")
+            failures = public_release.deterministic_failures(root, require_license=False, tracked=[])
+            self.assertFalse([failure for failure in failures if "CHANGELOG" in failure], failures)
+            (root / "CHANGELOG.md").write_text(f"# Changelog\n\n## [{version}] - 2026-11-20\n", encoding="utf-8")
+            failures = public_release.deterministic_failures(root, require_license=False, tracked=[])
+            self.assertIn("CHANGELOG.md must start with a ## [Unreleased] section (Keep a Changelog)", failures)
 
     def test_private_or_generated_tracked_paths_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
