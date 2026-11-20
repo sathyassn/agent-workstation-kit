@@ -17,6 +17,8 @@ Describe the problem and the smallest change that addresses it.
 - [ ] Privileged, credential, recovery, and destructive boundaries are explicit.
 - [ ] Repeat-apply and rollback behavior were considered.
 - [ ] Tests and documentation were updated where applicable.
+- [ ] `CHANGELOG.md` has an `[Unreleased]` bullet for each change, linked to this PR.
+- [ ] `AGENTS.md` is updated if a command, flag or file location changed.
 - [ ] `make ci-check` passes (including ShellCheck).
 - [ ] Live-machine gaps or assumptions are listed below.
 
