@@ -107,6 +107,104 @@ class FleetProfileTests(unittest.TestCase):
                 self.assertEqual(2, result.returncode)
                 self.assertIn(str(target.relative_to(fleet)), result.stderr)
 
+    def readiness_fixture(self, directory: str, template: str = "work.example.toml"):
+        fleet = Path(directory)
+        profile = fleetctl.load_profile(ROOT / "config/profiles" / template)
+        hostname = profile["machine"]["hostname"]
+        target = fleet / "machines" / f"{hostname}.toml"
+        target.parent.mkdir()
+        target.write_text((ROOT / "config/profiles" / template).read_text(encoding="utf-8"), encoding="utf-8")
+        (fleet / "handoffs").mkdir()
+        (fleet / "handoffs" / f"{hostname}-bootstrap.md").write_text("# reviewed\n", encoding="utf-8")
+        args = argparse.Namespace(
+            fleet_root=fleet, handoff_draft=False, expected_ubuntu=None,
+            kit_revision=None, fleet_revision=None, execution_context="host",
+        )
+        return args, target, profile
+
+    def run_readiness(self, args, target, profile, *, platform="linux", euid=1000,
+                      committed=0, launcher_code=0):
+        """Run readiness with host facts stubbed; return (exit code, launcher argv)."""
+        launched = []
+
+        def run(command, **kwargs):
+            if command[:2] == ["git", "-C"] and "cat-file" in command:
+                return subprocess.CompletedProcess(command, committed)
+            launched.append(command)
+            return subprocess.CompletedProcess(command, launcher_code)
+
+        with mock.patch.object(fleetctl, "actual_platform", return_value=platform), \
+                mock.patch.object(fleetctl.os, "geteuid", return_value=euid), \
+                mock.patch.object(fleetctl, "setup_revision", return_value="a" * 40), \
+                mock.patch.object(fleetctl.subprocess, "run", side_effect=run), \
+                mock.patch("sys.stdout"):
+            code = fleetctl.guided_setup(args, target, profile)
+        return code, launched
+
+    def test_readiness_forwards_context_release_and_exit_code(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            args, target, profile = self.readiness_fixture(directory)
+            args.expected_ubuntu = "26.04"
+            code, launched = self.run_readiness(args, target, profile, launcher_code=1)
+            self.assertEqual(1, code)
+            self.assertEqual(1, len(launched))
+            command = launched[0]
+            self.assertEqual("start-linux-pilot.py", Path(command[1]).name)
+            self.assertEqual("host", command[command.index("--execution-context") + 1])
+            self.assertEqual("26.04", command[command.index("--expected-ubuntu") + 1])
+            args.execution_context = "unknown"
+            _, launched = self.run_readiness(args, target, profile)
+            self.assertEqual("unknown", launched[0][launched[0].index("--execution-context") + 1])
+
+    def test_readiness_refuses_wrong_host_root_and_unreviewed_handoff(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            args, target, profile = self.readiness_fixture(directory)
+            handoff = target.parents[1] / "handoffs" / f"{profile['machine']['hostname']}-bootstrap.md"
+            for kwargs, message in (
+                ({"platform": "macos"}, "selected linux workstation"),
+                ({"euid": 0}, "non-root"),
+                ({"committed": 1}, "commit the reviewed handoff"),
+            ):
+                with self.subTest(**kwargs), self.assertRaisesRegex(ValueError, message):
+                    self.run_readiness(args, target, profile, **kwargs)
+            handoff.unlink()
+            with self.assertRaisesRegex(ValueError, "review and commit"):
+                self.run_readiness(args, target, profile)
+            handoff.symlink_to(target)
+            with self.assertRaisesRegex(ValueError, "review and commit"):
+                self.run_readiness(args, target, profile)
+
+    def test_ubuntu_release_is_refused_for_macos_profiles(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            args, target, profile = self.readiness_fixture(directory, "macos-work.example.toml")
+            args.expected_ubuntu = "24.04"
+            with self.assertRaisesRegex(ValueError, "Linux profiles"):
+                self.run_readiness(args, target, profile, platform="macos")
+
+    def test_setup_options_are_validated_before_any_check(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fleet = Path(directory)
+            base = [sys.executable, str(ROOT / "scripts/fleetctl.py"), "--fleet-root", directory,
+                    "setup", str(fleet / "machines/x.toml")]
+            for extra, message in (
+                (["--expected-ubuntu", "24.4"], "YY.MM"),
+                (["--kit-revision", "abc"], "full lowercase"),
+                (["--handoff-draft", "--fleet-revision", "a" * 40], "readiness only"),
+                (["--execution-context", "laptop"], "invalid choice"),
+            ):
+                with self.subTest(extra=extra):
+                    result = subprocess.run([*base, *extra], capture_output=True, text=True)
+                    self.assertEqual(2, result.returncode)
+                    self.assertIn(message, result.stderr)
+
+    def test_draft_command_states_the_host_context(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            args, target, profile = self.readiness_fixture(directory)
+            args.handoff_draft = True
+            with mock.patch("sys.stdout", new_callable=__import__("io").StringIO) as output:
+                self.assertEqual(0, fleetctl.guided_setup(args, target, profile))
+            self.assertIn("--execution-context host", output.getvalue())
+
     def test_setup_revision_rejects_staged_subdirectory_and_wrong_pin(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory)
