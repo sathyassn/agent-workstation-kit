@@ -103,6 +103,77 @@ class SudoGrantTests(unittest.TestCase):
                          ["cannot prove that svc has no sudoers command grant"])
 
 
+class SshdMatchOverrideTests(unittest.TestCase):
+    def config(self, folder, main, drop_in=None):
+        root = Path(folder)
+        (root / "sshd_config.d").mkdir()
+        (root / "sshd_config").write_text(main.replace("DROPINS", str(root / "sshd_config.d") + "/*.conf"))
+        if drop_in is not None:
+            (root / "sshd_config.d/50-local.conf").write_text(drop_in)
+        return root / "sshd_config"
+
+    def test_kit_style_config_without_match_passes(self):
+        with tempfile.TemporaryDirectory() as folder:
+            config = self.config(folder, "Include DROPINS\nPasswordAuthentication no\n",
+                                 "AllowUsers alice\nPasswordAuthentication no\n")
+            self.assertEqual(pv.sshd_match_problems(config), [])
+
+    def test_match_that_sshd_test_mode_cannot_see_fails_closed(self):
+        # `sshd -T -C` never matches LocalPort without lport=, so only this scan sees it.
+        with tempfile.TemporaryDirectory() as folder:
+            config = self.config(folder, "Include DROPINS\n",
+                                 "Match LocalPort 2222\n    PasswordAuthentication yes\n")
+            problems = pv.sshd_match_problems(config)
+            self.assertEqual(1, len(problems))
+            self.assertIn("sets passwordauthentication", problems[0])
+
+    def test_match_with_unrelated_keywords_passes(self):
+        with tempfile.TemporaryDirectory() as folder:
+            config = self.config(folder, "Include DROPINS\nMatch User alice\n    X11Forwarding no\n")
+            self.assertEqual(pv.sshd_match_problems(config), [])
+
+    def test_match_opened_in_an_include_covers_later_lines(self):
+        with tempfile.TemporaryDirectory() as folder:
+            config = self.config(folder, "Include DROPINS\nPermitRootLogin yes\n",
+                                 "Match Group staff\n    X11Forwarding no\n")
+            self.assertIn("sets permitrootlogin", pv.sshd_match_problems(config)[0])
+
+    def test_include_inside_match_and_unreadable_config_fail_closed(self):
+        with tempfile.TemporaryDirectory() as folder:
+            config = self.config(folder, "Match Address 100.101.0.0/16\n    Include DROPINS\n",
+                                 "KbdInteractiveAuthentication=yes\n")
+            self.assertIn("sets kbdinteractiveauthentication", pv.sshd_match_problems(config)[0])
+        self.assertEqual(pv.sshd_match_problems(Path("/nonexistent/sshd_config")),
+                         ["cannot read sshd configuration /nonexistent/sshd_config"])
+
+
+class VerifierWiringTests(unittest.TestCase):
+    """Removing a check from verify_phase or accounts_match must fail here."""
+
+    def plan(self):
+        profile = {"machine": {"platform": "linux"}, "remote": {"nomachine_port": 4000},
+                   "accounts": {"agent": "agent-01", "humans": ["alice"], "admins": ["admin-01"],
+                                "services": ["svc"], "operators": [], "viewers": [], "ssh_users": ["alice", "admin-01"]}}
+        return {"profile": profile, "phases": [{"name": "remote-hardening", "command": ["KIT/x"]}]}
+
+    def test_remote_hardening_runs_conditional_and_match_checks(self):
+        with mock.patch.object(pv, "probe", return_value=subprocess.CompletedProcess([], 0, HARDENED.replace("allowusers bob\n", ""), "")), \
+                mock.patch.object(pv, "sshd_conditional_problems", return_value=["conditional"]) as conditional, \
+                mock.patch.object(pv, "sshd_match_problems", return_value=["match"]) as match, \
+                mock.patch("sys.stdout") as output:
+            self.assertFalse(pv.verify_phase(self.plan(), "remote-hardening", ROOT))
+        conditional.assert_called_once_with(["alice", "admin-01", "agent-01"])
+        match.assert_called_once_with()
+
+    def test_accounts_include_the_sudo_grant_check(self):
+        profile = self.plan()["profile"]
+        with mock.patch.object(pv, "account_problems", return_value=[]), \
+                mock.patch.object(pv, "sudo_grant_problems", return_value=["agent-01 has a sudoers command grant"]) as sudo, \
+                mock.patch("sys.stdout"):
+            self.assertFalse(pv.accounts_match(profile))
+        sudo.assert_called_once_with(["agent-01", "svc"])
+
+
 UFW = ROOT / "tests/fixtures/ufw"
 
 
