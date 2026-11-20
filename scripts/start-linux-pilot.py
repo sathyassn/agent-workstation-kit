@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import tempfile
 import shutil
 import subprocess
 import sys
@@ -84,7 +85,7 @@ def resolve_profile(fleet_root: Path, profile: Path) -> tuple[Path | None, str |
 def repository_check() -> Check:
     if shutil.which("git") is None:
         return Check("FAIL", "toolkit checkout", "git is unavailable")
-    status = run(["git", "status", "--porcelain", "--untracked-files=all"])
+    status = run(["git", "--no-optional-locks", "status", "--porcelain", "--untracked-files=all"])
     if status.returncode != 0:
         return Check("FAIL", "toolkit checkout", status.stderr.strip() or "git status failed")
     if status.stdout.strip():
@@ -182,7 +183,7 @@ def fleet_repository_check(fleet_root: Path, profile: Path | None) -> Check:
     if shutil.which("git") is None:
         return Check("FAIL", "private fleet revision", "git is unavailable")
     status = run(
-        ["git", "-C", str(fleet_root), "status", "--porcelain", "--untracked-files=all"]
+        ["git", "--no-optional-locks", "-C", str(fleet_root), "status", "--porcelain", "--untracked-files=all"]
     )
     if status.returncode != 0:
         return Check(
@@ -250,7 +251,10 @@ def preflight_check(path: Path = ROOT / "scripts/preflight.sh") -> Check:
 def repository_suite_check() -> Check:
     if shutil.which("make") is None:
         return Check("FAIL", "repository checks", "make is unavailable")
-    result = subprocess.run(["make", "check"], cwd=ROOT, check=False)
+    # Readiness is read-only: keep make check's bytecode out of the checkout.
+    with tempfile.TemporaryDirectory(prefix="awk-readiness-") as cache:
+        environment = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "PYTHONPYCACHEPREFIX": cache}
+        result = subprocess.run(["make", "check"], cwd=ROOT, check=False, env=environment)
     return Check(
         "PASS" if result.returncode == 0 else "FAIL",
         "repository checks",

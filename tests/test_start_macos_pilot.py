@@ -211,6 +211,10 @@ class StartMacosPilotTests(unittest.TestCase):
 
         def run(command, **kwargs):
             commands.append(command)
+            # Readiness is read-only: bytecode goes to a temporary prefix, never the checkout.
+            environment = kwargs["env"]
+            self.assertEqual("1", environment["PYTHONDONTWRITEBYTECODE"])
+            self.assertFalse(Path(environment["PYTHONPYCACHEPREFIX"]).is_relative_to(ROOT))
             return subprocess.CompletedProcess(command, 0)
 
         with mock.patch.object(start_macos_pilot.shutil, "which", return_value="/usr/bin/make"), \
