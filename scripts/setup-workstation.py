@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Preview the setup plan and resume from operator-attested private checkpoints.
 
-This command never applies changes, authenticates vendors or records approval.
+This command never applies host changes, authenticates vendors or records
+approval. --export-plan writes only the new private plan file it names.
 """
 from __future__ import annotations
 import argparse
@@ -126,6 +127,9 @@ def main() -> int:
         pending = remaining(identity, journal)
         print(f"PREVIEW ONLY | version={fleetctl.VERSION} | target={profile['machine']['hostname']} uuid={profile['machine']['uuid']}")
         print(f"Source revision: {revision} (current content bound below; remote freshness unverified)")
+        dirty = subprocess.run(["git", "status", "--porcelain"], cwd=ROOT, check=True, capture_output=True, text=True).stdout.strip()
+        if dirty:
+            print("WARNING: the working tree differs from that revision; the plan binds the current files, not the commit. Commit or discard the changes before review.")
         if args.details or args.journal:
             print(f"Source review ID (not execution approval): {identity}")
         from terminal_ui import UI

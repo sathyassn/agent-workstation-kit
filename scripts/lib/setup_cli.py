@@ -324,7 +324,7 @@ def main(arguments=None):
         return 2
     except (KeyboardInterrupt, EOFError):
         ui.say("Cancelled. Previously verified receipts are retained; no additional phase will be started.")
-        return 130 if sys.exc_info()[0] is KeyboardInterrupt else 0
+        return 130
     except (OSError, ValueError, KeyError, TypeError, ImportError) as error:
         ui.say("Stopped: " + str(error), "red")
         ui.say("Check the displayed path/runtime, then retry. No later phase was started.")
