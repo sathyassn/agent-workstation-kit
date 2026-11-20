@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 # The public entry point; OS-specific scripts remain implementation helpers.
 set -Eeuo pipefail
+if [[ $EUID -eq 0 ]]; then
+  # sudo on macOS keeps the caller's PATH, and `env bash` may have picked a
+  # user-owned bash. Before any external command runs as root, use only system
+  # tools, and refuse any interpreter other than the system bash.
+  PATH=/usr/bin:/bin:/usr/sbin:/sbin
+  export PATH
+  if [[ "$BASH" != /bin/bash && "$BASH" != /usr/bin/bash ]]; then
+    printf '[agent-workstation] ERROR: %s\n' "As root, run this with the system bash: sudo /bin/bash scripts/setup-workstation.sh ... (this shell is $BASH)." >&2
+    exit 5
+  fi
+fi
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # Succeed only when PATH and every parent directory are root-owned, not
 # symlinks, and not group/world writable. Used before any root execution.
@@ -21,7 +32,7 @@ path_is_root_controlled() {
   done
 }
 
-if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
+if [[ $EUID -eq 0 ]]; then
   # Root runs only the reviewed root-owned snapshot, for preview and status too.
   # Nothing from the checkout is sourced or executed before this check.
   staged_root=/opt/agent-workstation-kit

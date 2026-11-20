@@ -208,6 +208,51 @@ hostile_driver_preview=$(APPLY_CHANGES=true PATH="$fixture_dir:$PATH" \
   "$repo_dir/scripts/install-ms-s1-r8127-dkms.sh")
 grep -Fq 'Preview only' <<<"$hostile_driver_preview"
 
+# Plain `ufw status` omits the IN direction; verbose output shows it. Both must
+# verify, while outgoing, routed and unscoped rules must not.
+(
+  # shellcheck disable=SC1091
+  source "$repo_dir/scripts/lib/common.sh"
+  for form in plain verbose; do
+    for rule in 22/tcp 4000/tcp 4000/udp; do
+      ufw_status_allows_in "$rule" tailscale0 <"$repo_dir/tests/fixtures/ufw/status-$form.txt" ||
+        { printf 'Expected %s to verify in %s ufw status.\n' "$rule" "$form" >&2; exit 1; }
+    done
+  done
+  for rule in 22/tcp 4000/tcp 4000/udp 6768/tcp; do
+    if ufw_status_allows_in "$rule" tailscale0 <"$repo_dir/tests/fixtures/ufw/status-not-inbound.txt"; then
+      printf 'Expected %s not to count as an inbound tailscale0 allow.\n' "$rule" >&2
+      exit 1
+    fi
+  done
+)
+
+# The Ubuntu package check needs every required unit enabled, not just one:
+# `systemctl is-enabled a b c` succeeds when any one of them is enabled.
+if grep -qs '^ID=ubuntu$' /etc/os-release; then
+  check_stubs="$fixture_dir/package-check"
+  mkdir -p "$check_stubs"
+  printf '%s\n' '#!/bin/sh' 'exit 0' >"$check_stubs/python3"
+  # Report fail2ban disabled and both apt timers enabled.
+  printf '%s\n' '#!/bin/sh' '[ "$1" = is-enabled ] || exit 1' \
+    'for unit; do case "$unit" in fail2ban) exit 1 ;; esac; done' 'exit 0' >"$check_stubs/systemctl"
+  chmod 0755 "$check_stubs/python3" "$check_stubs/systemctl"
+  if PATH="$check_stubs:$PATH" "$repo_dir/scripts/bootstrap-linux.sh" --check >/dev/null 2>&1; then
+    printf 'Expected a disabled fail2ban to fail the package check.\n' >&2
+    exit 1
+  fi
+  printf '%s\n' '#!/bin/sh' '[ "$1" = is-enabled ] || exit 1' 'exit 0' >"$check_stubs/systemctl"
+  PATH="$check_stubs:$PATH" "$repo_dir/scripts/bootstrap-linux.sh" --check >/dev/null
+else
+  printf 'SKIP package unit check: needs Ubuntu (/etc/os-release); runs in hosted CI.\n'
+fi
+
+# As root the wrapper must fix PATH and the interpreter before any external
+# command runs, so the root block must come first after the shell options.
+first_code=$(grep -vE '^[[:space:]]*(#|$)' "$repo_dir/scripts/setup-workstation.sh" | sed -n '2,4p')
+grep -Fq 'if [[ $EUID -eq 0 ]]; then' <<<"$first_code"
+grep -Fq 'PATH=/usr/bin:/bin:/usr/sbin:/sbin' <<<"$first_code"
+
 # Root may run only a root-owned, non-writable staged copy. The guard is
 # defined in the wrapper itself so root sources nothing from the checkout first.
 guard_fn=$(sed -n '/^path_is_root_controlled() {/,/^}/p' "$repo_dir/scripts/setup-workstation.sh")

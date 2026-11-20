@@ -25,6 +25,12 @@ between minor releases while live-machine evidence is incorporated.
   and stopped requiring zsh for preserved human and admin accounts; failed
   account and SSH postconditions now print their reason.
 - Fixed the Ubuntu package check so each required unit must be enabled.
+- Fixed tailnet firewall verification in the setup verifier and `validate-host.sh`:
+  plain `ufw status` omits the IN direction for incoming rules, so a correct
+  hardening never verified. Plain and verbose output are both accepted;
+  outgoing and routed rules never count.
+- As root, the entry point now uses only system PATH tools and the system bash
+  before any check runs, because sudo on macOS keeps the caller's PATH.
 - Root now refuses to run any copy of the entry point other than a fully
   root-owned `/opt/agent-workstation-kit`, for preview and status too. Root
   APT installs and SSH-guard release run the same check.
