@@ -197,6 +197,14 @@ class FleetProfileTests(unittest.TestCase):
                     self.assertEqual(2, result.returncode)
                     self.assertIn(message, result.stderr)
 
+    def test_setup_refuses_a_fleet_root_inside_the_public_kit(self) -> None:
+        result = subprocess.run(
+            [sys.executable, str(ROOT / "scripts/fleetctl.py"), "--fleet-root", str(ROOT / "templates/private-fleet"),
+             "setup", "machines/acme-ws-001.toml", "--handoff-draft"],
+            capture_output=True, text=True)
+        self.assertEqual(2, result.returncode)
+        self.assertIn("outside every public toolkit worktree", result.stderr)
+
     def test_draft_command_states_the_host_context(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             args, target, profile = self.readiness_fixture(directory)

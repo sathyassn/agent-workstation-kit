@@ -11,6 +11,9 @@ between minor releases while live-machine evidence is incorporated.
   revisions, then runs the platform readiness launcher. It states the
   execution context it was given and never applies changes; execution and
   resume stay with `scripts/setup-workstation.sh`.
+- Readiness writes nothing to the checkouts: `make check` bytecode goes to a
+  temporary prefix and `git status` runs without optional locks. `fleetctl
+  setup` and planning refuse a private fleet root inside the public kit.
 - Expanded the private-fleet template with source-toolkit context, placeholder
   guidance, repository boundaries, validation, deployment flow and governance.
 - Added an explicit Bash 4+ validation gate that also fails when the selected
