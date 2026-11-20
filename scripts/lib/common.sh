@@ -6,6 +6,19 @@ set -Eeuo pipefail
 # current process. Never inherit it from a caller's shell or fleet runner.
 APPLY_CHANGES=false
 
+# As root, never trust the caller's environment: sudo on macOS keeps PATH, and
+# interpreter variables can load code. Use system tools and an isolated Python.
+# This protects a staged helper; it cannot protect a checkout someone edited.
+# shellcheck disable=SC2034 # used by scripts that source this library
+KIT_PYTHON=(python3)
+if [[ ${EUID:-$(/usr/bin/id -u)} -eq 0 ]]; then
+  PATH=/usr/bin:/bin:/usr/sbin:/sbin
+  export PATH
+  unset BASH_ENV ENV CDPATH PYTHONPATH PYTHONHOME PYTHONSTARTUP PYTHONUSERBASE PYTHONINSPECT
+  # shellcheck disable=SC2034
+  KIT_PYTHON=(/usr/bin/python3 -I)
+fi
+
 log() {
   printf '[agent-workstation] %s\n' "$*"
 }
