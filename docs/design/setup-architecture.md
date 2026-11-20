@@ -7,7 +7,7 @@
 - Source: the consolidated design on issue #5 (comment 7048343188) and its
   amendments on resolving "latest" (7048398540), OS support (7048442102) and
   the tunnel's order (7048586326). It is refined against the code, and revised
-  after the D0 adversarial review (round 1).
+  after rounds 1 and 2 of the D0 adversarial review.
 - Audience: maintainers and reviewers. The conductor agent and operators get
   their own pages as each part lands.
 - Numbering: this is decision 0005. It lives in `docs/design/` because the
@@ -69,7 +69,7 @@ approve repair or revert <-----  on failure: read the failure record,     S8a Au
 |---|---|
 | Setup user | The admin account used at day zero (for example `bootstrap-admin`). It is a sudoer, but the conductor running in it never runs `sudo`. |
 | Conductor | The agent CLI that drives the run by following the AGENTS.md recipe. It never holds root and never sees a secret. |
-| Stage | A step in the setup order, S0 to S8. Each stage is exactly one executor scope; `--scope` takes the stage's name, such as `packages` or `remote`. |
+| Stage | A step in the setup order, S0 to S8. Each stage is exactly one executor scope; `--scope` takes the stage's name, such as `packages` or `remote`. Some scopes share a name with a phase inside them: scope `identity` holds the phases `identity` and `accounts`, and scope `audit` holds the phase `audit`. |
 | Gate | A one-phase scope with a read-only probe and a hand-over, G0 to G3. |
 | Phase | One kit script inside a scope. Phase names stay as they are today. |
 | Run | One executor invocation. Its run ID is 32 lower-case hex characters. |
@@ -142,11 +142,11 @@ What the code does today, and the problem each fact causes:
 | S0 Configure | interview, machine TOML, `plan` | same | setup user (conductor) | yes (a file in the fleet) |
 | G0 `recovery` | console recovery tested | same, with the recovery key | human; probe: attestation typed at the gate | n/a |
 | S1 `stage` | versioned `/opt` release (T6), state folders, baseline | same | root | no; removed by the documented uninstall |
-| S2 `packages` | dpkg repair, apt packages, vendor packages, hardware drivers, mesh VPN client, SSH install guard | Homebrew formulae and casks, mesh VPN client | root / package owner (macOS) | yes (ledger) |
-| S3 `identity` | hostname, `/etc/hosts` block, accounts and groups | computer names; accounts created without a usable password | root | yes (homes archived) |
-| G1 `access` | passwords, SSH keys, mesh VPN up | passwords, secure tokens, mesh VPN up (system extension approved), Remote Login enabled | human; root probe | n/a |
+| S2 `packages` | dpkg repair, apt packages, vendor packages, hardware drivers, mesh VPN client; install guard on SSH and remote desktop | Homebrew formulae and casks (package owner); mesh VPN client from the vendor `.pkg` (root sub-phase) | root, or package owner for Homebrew | yes (ledger) |
+| S3 `identity` | hostname, `/etc/hosts` block, accounts and groups | computer names; accounts created with a disabled password | root | yes (homes archived, from T4) |
+| G1 `access` | passwords, SSH keys, mesh VPN up, a second tailnet device holding a named user's key | passwords, secure tokens, mesh VPN up (system extension approved), Remote Login and Screen Sharing enabled for named users only, a second tailnet device | human; conductor polls the non-root probes, root check once at the end | n/a |
 | S4 `services` | agentctl (atomic sudoers), workloads | none | root | yes |
-| S5 `remote` | SSH and firewall hardening, alone, under the dead-man timer | SSH limited to named users, Application Firewall checked, under a launchd dead-man | root | yes, under the timer |
+| S5 `remote` | SSH and firewall hardening, alone, under the dead-man timer; releases the SSH and remote-desktop install guards | SSH limited to named users, Application Firewall checked, under a launchd dead-man | root | yes, under the timer |
 | G2 `session` | agent desktop or console session; the conductor's CLI signed in there | same, plus privacy prompts; FileVault verified | human; agent-account probe | n/a |
 | S6 `agent` | shell, mise tools, agent settings | same, plus workloads (OrbStack needs the agent's GUI session) | agent account | yes |
 | G3 `sign-ins` | provider sign-ins | same | human; agent-account probe | revoke by hand-over |
@@ -158,14 +158,25 @@ What the code does today, and the problem each fact causes:
   stops with the next step when an earlier stage is not verified.
 - **Deferring S7.** S7 is the only stage that can be deferred, because it
   needs a measured load. The deferral is recorded in the receipts.
-- **The stable point** is tagged after S8a and S8b pass.
-- **Gate owners.** A gate's probe runs as the gate's owner. G1's probes read
-  root-only files, so G1 runs through the staged root executor. Its approval
-  is low risk because a probe is read-only. The records of every gate go to
-  the public export.
-- **Recovery attestation** is given once, at G0, before any change, and
-  recorded. S3 `identity` and S5 `remote` check that G0 is recorded. Other
-  root scopes stop asking for `--confirm-recovery-tested`.
+- **The stable point** is tagged by root after S8a passes and root has
+  checked S8b's record live.
+- **Gate owners and records.**
+  - **Root gates.** G0 and the root half of G1 run through the staged root
+    executor, so their records are root's. The approval is low risk, because
+    a probe is read-only.
+  - **Polling G1.** The conductor polls G1's non-root probes as often as it
+    likes: mesh VPN up, Remote Login reachable over the tailnet, and on macOS
+    `com.apple.access_ssh` listing only named users. When they pass, the human
+    runs the root check once.
+  - **Agent records.** G2, G3, S6 and S8b records are kept in the agent
+    account's store. Root reads them to show status, never as the authority
+    for a root step.
+  - **Root's records.** Root writes its own records, and the `stable` tag, to
+    the public export.
+- **Recovery attestation** is given once, at G0, through the root executor,
+  before any change. S3 `identity` and S5 `remote` check the root G0 record.
+  Until T3 introduces G0, the existing `--confirm-recovery-tested` flags stay;
+  T3 removes them in the same PR.
 
 ### 3. One apply path (T1)
 
@@ -173,11 +184,14 @@ What the code does today, and the problem each fact causes:
   and the read-only `audit` stay. T1 updates every document that shows it
   (context table) and adds a repository check that fails if one returns.
 - **Every root script is a phase or a recorded change.**
-  - `install-local-deb-linux.sh` (vendor packages) and
-    `install-ms-s1-r8127-dkms.sh` (a hardware driver) become S2 phases,
-    selected by the profile.
-  - Until T5 turns them into components, they can be applied only through
-    `propose-change` (section 5).
+  - T1 turns `install-local-deb-linux.sh` (vendor packages) and
+    `install-ms-s1-r8127-dkms.sh` (a hardware driver) into S2 phases,
+    selected by the profile. T5 makes them components.
+  - **Remote desktop.** The SSH install guard is extended to the remote
+    desktop: NoMachine's server is disabled when it is installed, and stays
+    disabled until S5 has the firewall in place and releases it. This is the
+    exposure the SSH guard already prevents (`package_setup.py`
+    `guard_new_ssh_install`).
 - **Run token.** With `--apply`, a phase starts only if both of these hold:
   - it inherited the executor's held journal lock: the descriptor's device
     and inode match the lock file, and a fresh non-blocking lock attempt
@@ -188,6 +202,10 @@ What the code does today, and the problem each fact causes:
   `common.sh` adds only `AWK_RUN_ID` to its clean re-run, validated. This
   rejects tokens left by a crashed run. It guards against bypass by mistake,
   not against root.
+- **The run ID does not reach tools.** After its check, the phase removes
+  `AWK_RUN_ID` from its environment. The `run` helper in `common.sh`, and
+  Python's default `close_fds`, keep the executor's descriptors from every
+  tool the phase starts.
 - **Staged-root check.** `path_safety.require_staged_root()` is extended to
   every Python phase that runs as root. The root block of `common.sh` gets the
   same check.
@@ -196,7 +214,8 @@ What the code does today, and the problem each fact causes:
 - **One OS policy.** The platform check (section 9) replaces all four version
   checks in the context table.
 - **CI** gains a macOS job and a Python 3.9 job. Root executor code must run
-  on 3.9.
+  on 3.9. Where hosted runners lack a supported macOS version, a recorded run
+  on a real machine is the evidence.
 - **Fleet scripts** have no apply path of their own; they call the kit's.
 
 ### 4. The agent interface (T1, extended by each PR)
@@ -251,6 +270,9 @@ What the code does today, and the problem each fact causes:
   the one sign-in that moves earlier than G3. The conductor runs S6, G3 and
   S8b from there. On Linux the agent account is denied SSH, so this is a
   desktop or console session.
+- **Reverts past S3** remove the agent account. They are therefore driven
+  from the setup user, and the executor refuses to remove the account its
+  caller is running in.
 
 ### 5. The transaction layer (T2)
 
@@ -279,14 +301,15 @@ preflight -> describe -> backup -> intent=applying -> apply (logged) -> verify -
   still `applying` blocks everything else (exit 4) until it is handled:
   - it is restored from its manifest, then reapplied. There is no
     verify-only shortcut, because a half-applied state can pass verify;
-  - `--restore-only` stops after the restore.
+  - `setup-workstation.sh resume` does this, and is the command that clears
+    exit 4; `--restore-only` stops after the restore.
 - **Restore** writes `status=restoring` first. The manifest is replayed in
   reverse, then the validators run (`sshd -t`, `visudo -c`, `ufw status`).
   Restore is idempotent, and a `restoring` phase is always finished before
   anything else runs.
 - **Signals and the terminal.**
-  - Each phase runs in its own session and ignores SIGHUP. Its output goes to
-    the log first; a lost terminal never stops it.
+  - The executor and each phase ignore SIGHUP, and each phase runs in its own
+    session. Output goes to the log first; a lost terminal never stops a run.
   - On SIGINT or SIGTERM, the executor stops at the next safe point: it lets
     the running phase finish, or after a grace period stops it, leaving the
     intent record for the next start. It then exits 130.
@@ -310,6 +333,7 @@ preflight -> describe -> backup -> intent=applying -> apply (logged) -> verify -
     preview says that it is not the pre-kit state.
 - **Ownership ledger.** Each item is recorded as one of:
   - `created`: absent before;
+  - `created-auto`: a package pulled in as a dependency;
   - `changed`: existed, now different;
   - `removed`: existed, deleted by the kit, such as a legacy drop-in or an
     unmasked unit.
@@ -318,7 +342,6 @@ preflight -> describe -> backup -> intent=applying -> apply (logged) -> verify -
   phase reports about itself. Revert deletes `created` items, restores
   `changed` ones and recreates `removed` ones.
 - **Packages:**
-  - packages pulled in as dependencies are recorded as `created-auto`;
   - before removing any package, revert simulates the removal (`apt-get -s
     remove`, `brew uninstall --dry-run`), and any package beyond the ledger's
     list is a conflict that stops the step;
@@ -341,10 +364,11 @@ preflight -> describe -> backup -> intent=applying -> apply (logged) -> verify -
     revert can be reverted.
   - **Drift.** An item whose digest changed after the point is a conflict. The
     revert stops there until the human chooses to keep or overwrite it.
-  - **Not before T3 and T4.** In T2, revert refuses with exit 2, naming the PR
-    that adds the safeguard, any step that:
-    - removes an account (T4 archives homes and T3 proves access first);
-    - touches SSH or the firewall (T3 arms the timer).
+  - **Not before T3 and T4.** Revert refuses with exit 2, naming the PR that
+    adds the safeguard:
+    - steps that touch SSH or the firewall, until T3 adds the timer;
+    - steps that remove an account, until T4 adds the home archive (T4 also
+      uses T3's access proof).
 - **Logs.**
   - The executor tees phase output to the terminal and to the phase log
     (0600), through one redactor. The redactor masks token shapes,
@@ -355,11 +379,12 @@ preflight -> describe -> backup -> intent=applying -> apply (logged) -> verify -
   - **Phases never prompt.** Every secret is entered at a gate, in the native
     tool.
 - **Failure record.**
-  - A phase reports a failure on a framed line:
-    `AWK-FAILURE <run-id> <json>`.
-  - The executor accepts only lines framed with its own run ID, which tool
-    output cannot know. It writes the record itself, and makes one when a
-    phase dies without reporting.
+  - A phase reports a failure as JSON on a private descriptor the executor
+    gives it (`AWK_FAILURE_FD`), never on its output.
+  - Tools the phase starts do not inherit the descriptor (section 3), so tool
+    output cannot forge a record.
+  - The executor writes the record itself, and makes one when a phase dies
+    without reporting.
   - The record's fields: `phase`, `step`, `error_class`, `message`
     (redacted), `suggested`, `log` and `backup`.
   - `error_class` is one of `precondition`, `network`, `package-manager`,
@@ -402,8 +427,9 @@ preflight -> describe -> backup -> intent=applying -> apply (logged) -> verify -
   change: `machine`, `account`, `step`, `command`, `why`, `verify`, `undo`,
   `probe`. The text form extends `AGENTS.md` section 6 with `Why` and `Undo`.
 - **macOS accounts.**
-  - S3 creates them with a random password nobody keeps, with
-    `sysadminctl` reading it from a pipe.
+  - S3 creates them with a disabled password (`dscl` `Password` set to `*`,
+    or a `sysadminctl` route that T3 proves with a stub test). No password is
+    passed on a command line or a prompt.
   - At G1, the human sets each password with the native tool, and grants
     secure tokens so the accounts can unlock FileVault.
   - The kit never sees either value.
@@ -413,17 +439,23 @@ preflight -> describe -> backup -> intent=applying -> apply (logged) -> verify -
     service that restores the step from its manifest with the staged root and
     the system interpreter, and a timer with `OnActiveSec=10min` and
     `OnBootSec=2min`. A power loss before disarm therefore restores at the
-    next boot.
+    next boot. The restore names the exact `releases/<rev>`, not `current`,
+    so a release swap while the timer is armed cannot change the restore
+    code.
   - **macOS.** A root LaunchDaemon with `RunAtLoad` and a deadline file does
     the same.
-  - **Lock.** The scope ends right after arming and releases the host lock.
-    While a timer is armed, the executor refuses new applies with exit 4, so
-    the timer's restore takes the host lock without racing anything.
+  - **Order.** Arm, then apply, then verify. The scope then ends with the
+    timer still armed, and releases the host lock.
+  - **Lock.** While a timer is armed, the executor refuses new applies with
+    exit 4. The timer's restore takes the host lock and the root journal
+    lock, so it races nothing.
   - **The restore** writes `restored-by-timer` to the journal.
   - **Disarm.** `disarm --run RUN-ID` removes the units. It is accepted only
-    from a session that has `sshd` as a process ancestor (the existing
-    `remote_login_ancestor_present` check), never `tailscaled`, with a login
-    session ID different from the one that armed it.
+    from a session that has `sshd` as a process ancestor, never `tailscaled`,
+    with a login session ID different from the one that armed it.
+    - T3 moves the ancestor check from bash (`remote_login_ancestor_present`)
+      into shared Python for both OSes.
+    - Disarm needs the second tailnet device from G1.
   - **Accounts.** A revert removes an account only after access is proven
     with an account that stays.
 
@@ -443,7 +475,7 @@ preflight -> describe -> backup -> intent=applying -> apply (logged) -> verify -
   `systemctl mask`.
 - **Extra ports.** Profile-declared `remote.extra_ports` pass the firewall
   checks in the verifier and in `validate-host.sh`; nothing else does. The
-  NoMachine port comes from its S2 phase.
+  NoMachine port is opened by S5, which also releases its install guard.
 - **`/etc/hosts`** gets a marked block owned by the identity phase.
 - **Account homes** are archived, root-only, before revert removes an account
   the kit created. Deleting an archive is a separate step the human approves.
@@ -488,13 +520,8 @@ preflight -> describe -> backup -> intent=applying -> apply (logged) -> verify -
   - **The rule:**
     - Ubuntu LTS releases in Canonical's standard support;
     - the current and previous major macOS, on Apple silicon.
-  - **The proposed list** is decision D1 for the operator:
-    - **Ubuntu 24.04 and 26.04.** 22.04 is still in Canonical's standard
-      support until about April 2027 (not checked live), so the rule includes
-      it but the amendment's list does not.
-    - **macOS 27 and 26.** The amendment said 26 and 15, but this
-      repository's development Mac runs macOS 27.2.1 on 2026-11-20, so 27 is
-      current.
+  - **The list is decision D1 for the operator** (section 13). The ADR
+    proposes Ubuntu 24.04 and 26.04, and macOS 27 and 26.
   - **What it records** for each version: the architectures, the vendor's
     end-of-support date, and the evidence each release needs (a CI job, or a
     recorded real-machine run).
@@ -558,8 +585,10 @@ preflight -> describe -> backup -> intent=applying -> apply (logged) -> verify -
   - **Linux:** Tailscale's apt repository joins the approved sources in
     `config/packages.toml`, pinned by its signing-key fingerprint. It moves
     into the registry in T6.
-  - **macOS:** the Homebrew cask. Approving its system extension is a G1
-    hand-over.
+  - **macOS:** a root S2 sub-phase installs the vendor `.pkg` with an exact
+    pin and checksum (`installer -pkg`). The Homebrew cask is not used,
+    because it runs the same `.pkg` with `sudo` and prompts. Approving the
+    system extension is a G1 hand-over.
 - **Staging (T6).**
   - **Each release:** `stage-release.sh` copies a reviewed revision to
     `/opt/agent-workstation-kit/releases/<rev>/`, verifies the tree digest,
@@ -569,7 +598,7 @@ preflight -> describe -> backup -> intent=applying -> apply (logged) -> verify -
   - **The first staging** has no staged copy to run from.
     1. The human downloads the release archive.
     2. They verify it against the digest and the signing-key fingerprint that
-       the one-liner prints.
+       the one-liner prints (`ssh-keygen -Y verify`).
     3. They extract it as root into a root-owned temporary folder with
        `tar --no-same-owner`.
     4. They run `stage-release.sh` from there.
@@ -582,7 +611,8 @@ preflight -> describe -> backup -> intent=applying -> apply (logged) -> verify -
   - It installs, for the setup user and without root, the kit at a release
     tag and one agent CLI from its vendor's verified source.
   - Its trust anchor is the release signing-key fingerprint printed in the
-    one-liner text and in the docs. The kit archive is verified against it.
+    one-liner text and in the docs. The kit archive is verified against it
+    with `ssh-keygen -Y verify`, which ships with both OSes.
   - It prints the sign-in step, then hands over to the conductor.
 - **Filesystem snapshots (T6).** Btrfs, ZFS or LVM-thin snapshots are taken at
   baseline and at each stable point where available.
@@ -652,23 +682,24 @@ needs in `templates/private-fleet/`.
 | No fleet apply path | Fleet scripts call the kit's executor. | T1 (template and docs) |
 | Conductor recipe | The fleet `AGENTS.md` template gets the conductor loop, pointing at the kit's. | T1 |
 | Human-only steps | `policy/human-steps.toml` in the template lists the steps no agent takes, matching the gates and root steps. | T3 |
-| One host file | Until T5, a check that `company.toml` and each machine TOML agree. From T5, the machine TOML with `[x-org]` is the only per-host file. | interim check in T1, then T5 |
+| One host file | From T5, the machine TOML with `[x-org]` is the only per-host file. Until then, a fleet that keeps company values in a separate file (some use a `company.toml`) checks the two agree with its own script. The kit defines no format for that file. | T5 |
 | Company values | A fleet schema fragment for `[x-org]`, in the kit's schema format, so company values get the same generated docs. | T5 |
 | Company tools | Registry entries in the fleet, in the kit's registry format, with the same resolve flow. | T6 |
-| Machine records | `records/HOST.md` in the fleet: OS support level, where the baseline and stable points are kept, and every hand change. `propose-change` with kind `machine` drafts these entries. The host keeps a root-only copy for the doctor. | T2 (format), T8 (drift check) |
+| Machine records | `records/HOST.toml` in the fleet: OS support level, where the baseline and stable points are kept, and every hand change. Structured, so the T8 drift check can read it. `propose-change` with kind `machine` drafts these entries. The host keeps a root-only copy for the doctor. | T2 (format), T8 (drift check) |
 
 ### 11. Where state lives
 
 | What | Linux | macOS | Mode |
 |---|---|---|---|
 | Kit releases | `/opt/agent-workstation-kit/releases/<rev>`, `current` | same | root, 0755, not writable by others |
-| Root run folder and host lock | `/run/agent-workstation-kit/` | `/Library/Application Support/agent-workstation-kit/run/` | root, 0700 (its parent is root 0755) |
-| Root journals, receipts, host machine record | `/var/lib/agent-workstation-kit/` | `/Library/Application Support/agent-workstation-kit/state/` | root 0700 |
-| Public export (summary, per-phase status, redacted failure records, gate records, doctor `--admin` result) | `/var/lib/agent-workstation-kit/public/` | `/Library/Application Support/agent-workstation-kit/public/` | root 0755, files 0644, written atomically, no secrets |
+| Kit state top folder | `/var/lib/agent-workstation-kit/` | `/Library/Application Support/agent-workstation-kit/` | root 0755, holding only the folders below |
+| Root run folder and host lock | `/run/agent-workstation-kit/` | `/Library/Application Support/agent-workstation-kit/run/` | root 0700 |
+| Root journals, receipts, host machine record | `/var/lib/agent-workstation-kit/state/` | `/Library/Application Support/agent-workstation-kit/state/` | root 0700 |
+| Public export (summary, per-phase status, redacted failure records, root gate records, the `stable` tag, doctor `--admin` result) | `/var/lib/agent-workstation-kit/public/` | `/Library/Application Support/agent-workstation-kit/public/` | root 0755, files 0644, written atomically, no secrets |
 | Root backups, baseline, archives | `/var/backups/agent-workstation-kit/` | `/Library/Application Support/agent-workstation-kit/backups/` | root 0700 |
 | Root logs | `/var/log/agent-workstation-kit/<run-id>/` | `/Library/Logs/agent-workstation-kit/<run-id>/` | root 0700, files 0600 |
 | Account state, journal, backups, logs | `${XDG_STATE_HOME:-~/.local/state}/agent-workstation-kit/` | same | 0700, files 0600 |
-| Account run folder | `$XDG_RUNTIME_DIR/agent-workstation-kit/` | `~/.local/state/agent-workstation-kit/run/` | 0700 |
+| Account run folder | `$XDG_RUNTIME_DIR/agent-workstation-kit/`, or the account state folder's `run/` when that variable is unset | `~/.local/state/agent-workstation-kit/run/` | 0700 |
 
 - Each root folder's parent chain passes the existing `secure_root_path` rule.
   The kit's own folders are created by the first root scope (T2), not only by
@@ -719,12 +750,35 @@ The round 1 review settled the open questions:
 
 Decisions for the operator:
 
-- **D1, the platform list (section 9):**
-  - macOS 27 and 26, instead of 26 and 15;
-  - whether Ubuntu 22.04, still in standard support, is in or out.
-- **D2, OS-managed packages (principle 7):** they get a minimum version and a
-  recorded observed version instead of an exact pin, because the apt archive
-  and Homebrew core do not keep old versions.
+- **D1, the platform list (section 9).** Three choices:
+  - **macOS policy.** "Current and previous major" is 27 and 26 today; this
+    repository's development Mac runs 27.2.1 (checked 2026-11-20). "Every
+    version Apple still patches" would also include 15. The amendment's list
+    (26 and 15) matches neither today.
+  - **Ubuntu 22.04.** It is still in Canonical's standard support until about
+    April 2027 (not checked live). It is inside the vendor rule, but the
+    amendment also excludes "practically outdated" versions. Is 22.04
+    practically outdated?
+  - **Clients and cost.**
+    - Client rows (for the browser tunnel) follow the same rule, so a client
+      laptop on macOS 15 would be refused unless clients get a wider rule.
+    - Every listed version needs a CI job or a recorded real-machine run each
+      release, and hosted runners may not offer macOS 27 yet.
+- **D2, what "pinned" means for each kind of source (principle 7).** The ADR
+  proposes four policies:
+  - **`exact`:** downloads, vendor `.pkg` files, mise tools, and packages from
+    third-party apt repositories that keep old versions (such as Tailscale's).
+  - **`os-managed`:** the Ubuntu archive and Homebrew formulae. A minimum
+    version, with the observed version recorded, because these do not keep
+    old versions.
+  - **`self-updating`:** apps that update themselves outside the kit, such as
+    casks marked `auto_updates` and vendor `.deb` files that add their own
+    apt repository. A minimum version, the observed version recorded, and not
+    reported as drift.
+  - **Security updates:** `unattended-upgrades` covers only Ubuntu's
+    security origins by default. Should the kit add the origins of the
+    third-party repositories it installs, so their packages also get
+    automatic security updates?
 
 ## Consequences
 
@@ -757,12 +811,14 @@ Decisions for the operator:
 
 ```text
 D0 (this ADR, reviewed alone)
- -> T1 one apply path, run token, macOS host-lock fix, agent interface, platforms, CI jobs
+ -> T1 one apply path, run token, vendor-package and driver phases with the remote-desktop
+       install guard, macOS host-lock fix, agent interface, platforms, CI jobs
  -> T2 transaction layer, baseline, ledger, revert (no accounts, SSH or firewall yet), logs,
        failure records, client mode
  -> browser sign-in tunnel and host entries, on T2
- -> T3 gates, hand-overs, scope order, dead-man timer, mesh VPN in S2, human-steps policy
- -> T4 lockout and convergence fixes, account archive (revert of accounts and SSH enabled)
+ -> T3 gates (G0 replaces the recovery flags), hand-overs, scope order, dead-man timer
+       (revert of SSH and firewall enabled), mesh VPN in S2, human-steps policy
+ -> T4 lockout and convergence fixes, account archive (revert of accounts enabled)
  -> T5 schema, interview, schema 4, capabilities, fleet schema fragment
  -> T6 tool registry and resolve flow, staging, day-zero one-liner, snapshots
  -> update watch (follows T6)
