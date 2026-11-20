@@ -59,8 +59,8 @@ On a branch such as `chore/release-0.3.0-rc.1`:
 
 ## Tag and publish (owner)
 
-Before a final (non-rc) release, run the strict `make public-check` and complete
-the [release checklist](../13-public-release-checklist.md).
+Run the strict `make public-check` before every release. Before a final (non-rc)
+release, also complete the [release checklist](../13-public-release-checklist.md).
 
 Tag the release pull request's own merge commit, not whatever `main` holds
 later. Verify everything before anything is pushed:
