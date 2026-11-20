@@ -32,7 +32,8 @@ it before acting. `CLAUDE.md` includes it.
 ## 3. Rules an agent never breaks
 
 - **Preview first.** Run every script without `--apply`, show the preview, and
-  apply only after a person approves that exact preview.
+  apply only after a person approves that exact preview. Where a vendor tool has
+  its own dry-run mode and the guide calls for it, use that too.
 - **No root unless handed over.** Never run `sudo` or act as root unless the
   operator hands that step to you. Root runs only the absolute staged path with
   a system interpreter: `sudo /bin/bash /opt/agent-workstation-kit/scripts/...`.
@@ -41,10 +42,15 @@ it before acting. `CLAUDE.md` includes it.
   licence files or pairing links. Never read credential files you do not need.
 - **No private details here:** no organisation, person, host, account or
   customer names in this repository. Use the neutral examples (`acme`, `lab`).
-- **Stop at human steps.** Hand over sign-ins, MFA, licences, purchases, console
-  and reboot steps, disk encryption, tailnet policy and approvals (section 6).
+- **Stop for a person** before `sudo`, disk-encryption changes, account
+  creation, firewall or remote-access changes, vendor sign-in, or destructive
+  cleanup. Hand over sign-ins, MFA, licences, purchases, console and reboot
+  steps, tailnet policy and approvals (section 6).
+- **Attest only what you observed.** Pass `--execution-context host` only when
+  you run in an ordinary terminal on the target itself, outside any agent
+  sandbox. Otherwise leave the default and hand the readiness run to the person.
 - **Never weaken security** (sandbox, branch protection, endpoint protection,
-  disk encryption, audit logging) to make a tool work. Report instead.
+  disk encryption, audit logging, OS security) to make a tool work. Report instead.
 - **Preserve user configuration** unless a guide allows a managed replacement
   and a backup exists.
 - **No remote or publication actions** without explicit approval: creating a
@@ -58,18 +64,27 @@ stop. Run commands from the kit checkout unless a step says otherwise.
 
 ### Set up a new Ubuntu machine
 
+`FLEET` is the private fleet checkout. `PRIVATE` is the absolute path of a
+private folder outside every kit checkout; the kit refuses plans and journals
+inside a checkout.
+
 1. Follow [day-zero Linux](docs/runbooks/day-zero-linux.md) up to the readiness
    check. The firmware, installer and disk-encryption steps are human steps.
-2. Readiness: `python3 scripts/fleetctl.py --fleet-root FLEET setup machines/HOST.toml --execution-context host`
-   - Success: the summary ends `READY`. Exit 0.
-   - Stop: on any `FAIL` line, report it and ask.
-3. Export the plan: `scripts/setup-workstation.sh plan --fleet-root FLEET --profile machines/HOST.toml --export-plan PLAN.json`
-4. For each scope (`packages`, `machine`, `agent`, then `audit`), preview with
-   `scripts/setup-workstation.sh run --plan-file PLAN.json --scope SCOPE`, then
-   stop for approval. Root scopes are run by the person from the staged copy;
-   see [resumable setup](docs/runbooks/resumable-setup.md).
+2. Readiness, run by the person in an ordinary terminal on the target (see the
+   attestation rule above): `python3 scripts/fleetctl.py --fleet-root FLEET setup machines/HOST.toml --execution-context host`
+   - Success: no `FAIL` line, then `READY: ...` and a hand-off prompt. Exit 0.
+   - Stop: on any `FAIL`, report it and ask. Report `NEXT` lines; they are not failures.
+3. Export the plan: `scripts/setup-workstation.sh plan --fleet-root FLEET --profile machines/HOST.toml --export-plan PRIVATE/execution-plan.json`
+4. Work through the scopes in order: `packages`, `machine`, `agent`, then
+   `resources` (only after the node is measured under load) and `audit`.
+   - Preview: `scripts/setup-workstation.sh run --plan-file PRIVATE/execution-plan.json --scope SCOPE`
+     prints the phases and an execution plan ID. Show it to the person and stop.
+   - Apply, after approval: the same command plus `--apply --approve-plan ID --confirm-target HOST --execution-context host --journal PRIVATE/setup.json`.
+     Root scopes are run by the person from the staged copy: on Ubuntu every
+     scope except `agent`, on macOS every scope except `packages` and `agent`; see [resumable setup](docs/runbooks/resumable-setup.md).
    - Success: each phase prints `PASS NAME live postconditions`. Exit 0.
-   - Verify: `scripts/setup-workstation.sh status --plan-file PLAN.json --scope SCOPE`.
+   - Verify: `scripts/setup-workstation.sh status --plan-file PRIVATE/execution-plan.json --scope SCOPE --journal PRIVATE/setup.json`
+     lists each phase as recorded and names the next candidate.
    - Stop: exit 3 (a person must act), 2 (wrong account or refused input) or 1 (a phase failed).
 
 These commands change in PR 2 to `setup-workstation.sh admin`, `user` and `doctor`.
@@ -147,7 +162,7 @@ There is no `--json` output yet; PR 2 adds it. Today, parse these lines:
 | Phase verification | `PASS NAME live postconditions`, `FAIL NAME live postconditions`, `REASON NAME: TEXT` |
 | Readiness (`fleetctl setup`, `start-*-pilot.py`) | `STATUS NAME: DETAIL` with STATUS `PASS`, `WARN`, `FAIL` or `NEXT`, then `READY` or `NOT READY` |
 | `validate-host.sh` | `PASS TEXT`, `WARN TEXT`, `FAIL TEXT` |
-| `fleetctl validate` | `ERROR FIELD.PATH: MESSAGE` |
+| `fleetctl validate` | `ERROR FIELD.PATH: MESSAGE` on stderr |
 | Executor | `EXEC COMMAND`, `SKIP NAME: ...`, `DRIFT NAME: ...`, `HUMAN GATE NAME: NOTE`, `STOP NAME: ...` |
 
 Exit codes of `setup-workstation.sh`:
@@ -181,7 +196,8 @@ verify command passes.
 
 - Work on a `{type}/{kebab-name}` branch; never commit to `main`.
 - Use Conventional Commit subjects (`.codeflow/policy.json`), at most three
-  short body bullets, and no AI attribution or emoji.
+  short body bullets, and no AI attribution or emoji. Keep each commit focused,
+  and mark a breaking interface or schema change explicitly.
 - Keep the hooks on: `git config core.hooksPath .codeflow/git-hooks`.
 - Every change to `scripts/`, `config/` or `templates/` adds a bullet under
   `## [Unreleased]` in `CHANGELOG.md`; `make repo-check` enforces it.
@@ -190,6 +206,9 @@ verify command passes.
   paths and `setup-workstation.sh` actions named here exist.
 - Run `make check` while working and `make ci-check` plus `make public-check`
   before review. List live-machine gaps in the pull request.
-- Treat `config/profiles/*.example.toml` as templates; approved profiles belong
-  in the private fleet repository.
+- Treat `config/profiles/*.example.toml` as templates. Use ignored
+  `config/profiles/*.local.toml` files only for experiments; approved profiles
+  belong in the private fleet repository.
+- Before asking for publication approval, run the strict `make public-check` and
+  complete [the release checklist](docs/13-public-release-checklist.md).
 - A person reviews and merges every pull request.
