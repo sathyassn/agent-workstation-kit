@@ -82,7 +82,8 @@ inside a checkout.
    - Apply, after approval: the same command plus `--apply --approve-plan ID --confirm-target HOST --execution-context host --journal JOURNAL`.
      `JOURNAL` is one private journal per executing account, in a folder that
      account owns with mode `0700`.
-   - Root scopes are run by the person from the staged copy, with a journal in
+   - Root scopes are run by the person from the staged copy, reading the plan
+     staged under `/opt/agent-workstation-fleet/plans/`, with a journal in
      a root-owned folder and `--confirm-recovery-tested` once console recovery
      has actually been tested: on Ubuntu every scope except `agent`, on macOS
      every scope except `packages` and `agent`. See [resumable setup](docs/runbooks/resumable-setup.md).
