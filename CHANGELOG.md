@@ -15,21 +15,25 @@ Planned as release 0.2.0-rc.7.
 
 ### Added
 
-- One setup entry point, `scripts/setup-workstation.sh`, with a guided walkthrough (Rich or plain text), validated input, typed approvals, progress, status, and retry and role hand-over guidance; UI packages are optional. ([#6])
+- One setup entry point, `scripts/setup-workstation.sh`, with a guided walkthrough in Rich or plain text; UI packages are optional. ([#6])
+- The walkthrough validates input, asks for typed approvals, and shows progress, status, and retry and role hand-over guidance. ([#6])
 - Owner-scope execution from a portable reviewed plan, with host and scope approval, live postcondition checks, private receipts and resume after failure. ([#6])
 - Profile-selected APT and Homebrew packages and apps, installed only when missing. ([#6])
 - A pinned, signature-reviewed mise bootstrap for new Linux accounts. ([#6])
 - macOS local-account creation with hidden vendor password prompts, and verification of managed accounts. ([#6])
 - Project-locked Playwright browser checks and a digest-pinned OrbStack container probe on macOS. ([#6])
 - Executable TCP, SSH, SFTP and reconnect checks (`check-access`). ([#6])
-- `fleetctl setup PROFILE` for fleet-managed targets: `--handoff-draft` prints a reviewable host handoff and writes nothing. Readiness checks the committed profile and handoff, clean source checkouts and optional exact revisions, then runs the platform readiness launcher. It never applies changes; execution and resume stay with `setup-workstation.sh`. ([#8])
+- `fleetctl setup PROFILE --handoff-draft` prints a reviewable host handoff for a fleet-managed target and writes nothing. ([#8])
+- `fleetctl setup PROFILE` readiness checks the committed profile and handoff, clean source checkouts and optional exact revisions, then runs the platform readiness launcher. ([#8])
+- `fleetctl setup` never applies changes; execution and resume stay with `setup-workstation.sh`. ([#8])
 - `fleetctl setup --execution-context` is forwarded to the readiness launcher, which reports NOT READY unless it is `host`. ([#8])
 - An expanded private-fleet template: source-toolkit context, placeholders, repository boundaries, validation, deployment flow and governance. ([#8])
 - A Bash 4 validation gate (`make bash-check`) that also fails for a shell that is not Bash, with macOS contributor instructions. ([#8])
 - Regression and subprocess-fixture tests for preview, approval, failed-phase resume, repeat runs, drift, tampered source and configuration preservation. ([#6])
 - An agent operating manual in `AGENTS.md` (boundaries, map, rules, task recipes, output formats, hand-over format), and `CLAUDE.md` that includes it. ([#10])
 - A release procedure in `docs/maintenance/releasing.md`: version choice, changelog section, annotated tag and GitHub release, decided by the owner. ([#10])
-- `make repo-check` fails when a change to `scripts/`, `config/` or `templates/` adds no `[Unreleased]` changelog bullet, and when `AGENTS.md` names a path, setup action or flag that does not exist. ([#10])
+- `make repo-check` fails when a change to `scripts/`, `config/` or `templates/` adds no `[Unreleased]` changelog bullet. ([#10])
+- `make repo-check` fails when `AGENTS.md` names a path, setup action, `fleetctl` subcommand or flag that does not exist. ([#10])
 
 ### Changed
 
@@ -42,31 +46,41 @@ Planned as release 0.2.0-rc.7.
 
 ### Fixed
 
-- Fleet entry points report a failed `git worktree list` as an error with exit 2 instead of a traceback; planning refuses a symlinked fleet root, as `fleetctl setup` does; macOS handoff drafts use the day-zero `"$PYTHON_BIN"`. ([#8])
+- Fleet entry points report a failed `git worktree list` as an error with exit 2 instead of a traceback. ([#8])
+- Planning refuses a symlinked fleet root, as `fleetctl setup` does. ([#8])
+- macOS handoff drafts use the day-zero `"$PYTHON_BIN"` instead of a bare `python3`. ([#8])
 - Remote-hardening verification works with more than one SSH user (`sshd -T` prints one `AllowUsers` line per user). ([#6])
 - Human and admin accounts keep their own shell; only the agent account must use zsh. Failed account and SSH checks print their reason. ([#6])
 - The Ubuntu package check requires each unit to be enabled, not just one of them. ([#6])
-- Tailnet firewall verification accepts plain `ufw status` output, which omits `IN` for incoming rules, so a correct hardening never verified; verbose output is also accepted, and outgoing and routed rules never count. This applies in the setup verifier and in `validate-host.sh`. ([#6])
+- Tailnet firewall verification accepts plain `ufw status` output, which omits `IN` for incoming rules, so a correct hardening never verified. ([#6])
+- Verbose `ufw status` output is also accepted, and outgoing and routed rules never count, in the setup verifier and in `validate-host.sh`. ([#6])
 - The shared installer works with Apple's system Bash, and new Mac agent shells find the selected Homebrew. ([#6])
 - If the SSH guard record cannot be written, its masks are removed, or named for manual removal when that also fails. ([#6])
-- A running phase keeps the journal lock until it exits, so killing only the executor cannot let a rerun run the same phase alongside it. When a leftover background process holds the lock, the refusal says so and names the lock file to inspect with `lsof`. ([#6])
-- Preview, status, doctor and readiness write nothing to the checkouts: no bytecode caches (readiness sends `make check` bytecode to a temporary prefix), the guided plan export creates no folders, and `git` runs without optional locks. ([#6], [#8])
+- A running phase keeps the journal lock until it exits, so killing only the executor cannot let a rerun run the same phase alongside it. ([#6])
+- When a leftover background process holds the lock, the refusal says so and names the lock file to inspect with `lsof`. ([#6])
+- Preview, status, doctor and readiness write no bytecode caches; readiness sends `make check` bytecode to a temporary prefix. ([#6], [#8])
+- The guided plan export creates no folders, and readiness runs `git` without optional locks. ([#6], [#8])
 
 ### Security
 
-- Root runs only from a fully root-owned `/opt/agent-workstation-kit`, for preview and status as well as apply. It uses system PATH tools and the system bash before any check, because sudo on macOS keeps the caller's PATH. Root APT installs and SSH-guard release run the same check. ([#6])
+- Root runs only from a fully root-owned `/opt/agent-workstation-kit`, for preview and status as well as apply. ([#6])
+- As root, the entry point uses system PATH tools and the system bash before any check, because sudo on macOS keeps the caller's PATH. ([#6])
+- Root APT installs and SSH-guard release run the same staged-copy check. ([#6])
 - As root, staged helpers re-run themselves with an empty environment and run Python isolated without bytecode (`python3 -I -B`); the macOS package step refuses root. ([#6])
 - A fresh OpenSSH install stays guarded until hardening validates the firewall and SSH policy. ([#6])
-- Remote-hardening verification evaluates `sshd -T -C` for every SSH user and the agent, from loopback and a tailnet address. Because test mode cannot evaluate every `Match` criterion, it also refuses any `Match` block that sets password, keyboard-interactive or root-login options. ([#6])
+- Remote-hardening verification evaluates `sshd -T -C` for every SSH user and the agent, from loopback and a tailnet address. ([#6])
+- Because test mode cannot evaluate every `Match` criterion, it also refuses any `Match` block that sets password, keyboard-interactive or root-login options. ([#6])
 - Account verification proves that the agent and service accounts hold no sudoers command grant. ([#6])
 - Planning, `fleetctl setup`, `fleetctl init --fleet-root` and both readiness launchers refuse a private fleet root inside the public kit. ([#6], [#8])
 
 ### Upgrade notes
 
 - Schema 3 profiles remain valid; the new package and account choices are optional.
-- Use `scripts/setup-workstation.sh` to export a new execution plan, and preview each owner scope before approving it. Existing configuration and conflicting installed versions are preserved; a reviewed merge or upgrade may be needed.
+- Use `scripts/setup-workstation.sh` to export a new execution plan, and preview each owner scope before approving it.
+- Existing configuration and conflicting installed versions are preserved; a reviewed merge or upgrade may be needed.
 - Keep root applies in matching root-owned `/opt` snapshots, never `sudo` on a user checkout, and use one private journal per executing account.
-- Software fixtures do not qualify a fresh physical Ubuntu or Mac install, account and Secure Token behaviour, SSH package scripts and recovery, or GUI and reboot acceptance. Keep fleet pins unchanged until independent review and live qualification.
+- Software fixtures do not qualify a fresh physical Ubuntu or Mac install, account and Secure Token behaviour, SSH package scripts and recovery, or GUI and reboot acceptance.
+- Keep fleet pins unchanged until independent review and live qualification.
 
 [#6]: https://github.com/sathyassn/agent-workstation-kit/pull/6
 [#8]: https://github.com/sathyassn/agent-workstation-kit/pull/8

@@ -4,9 +4,10 @@ Set up dedicated Ubuntu and macOS machines where AI coding agents (Codex,
 Claude Code, Grok Build) run long-lived work, with every change previewed
 before it is applied.
 
-Current version: **0.2.0-rc.7**, a release candidate until the Linux and macOS
-hardware exercises in the [public-release checklist](docs/13-public-release-checklist.md)
-are complete. Changes are listed in the [changelog](CHANGELOG.md).
+Upcoming version: **0.2.0-rc.7**, not yet tagged. It stays a release candidate
+until the Linux and macOS hardware exercises in the
+[public-release checklist](docs/13-public-release-checklist.md) are complete.
+Changes are listed in the [changelog](CHANGELOG.md).
 
 ## What it is
 
@@ -24,13 +25,14 @@ are complete. Changes are listed in the [changelog](CHANGELOG.md).
 ## How it fits together
 
 ```text
-  agent-workstation-kit (public)          your private fleet repository
-  scripts, defaults, guides               machines/<host>.toml, policy, assignments
-              |                                         |
-              +------------- kit.lock pins a kit version +
-              |                                         |
-              v                                         v
-      reviewed copy staged to /opt  <-----  reviewed profile for one machine
+  agent-workstation-kit (public)   your private fleet repository
+  scripts, defaults, guides        machines/<host>.toml, policy, assignments
+              |                           |
+              +---------------------------+  kit.lock pins a kit version
+              |                           |
+              v                           v
+   reviewed kit copy (staged   <---  reviewed profile
+   to /opt for root scopes)          for one machine
               |
               v
       setup-workstation.sh: plan -> preview -> person approves -> apply -> verify
@@ -90,6 +92,13 @@ The entry point in short:
 ./scripts/setup-workstation.sh            # guided walkthrough in a terminal
 ./scripts/setup-workstation.sh --help     # actions: init, plan, run, resume, status,
                                           # check-access, workloads, doctor
+
+# Export the plan for one machine to a private folder outside the kit:
+./scripts/setup-workstation.sh plan --fleet-root FLEET \
+  --profile machines/HOST.toml --export-plan PRIVATE/execution-plan.json
+
+# Preview one scope; nothing changes until a person approves and you add --apply:
+./scripts/setup-workstation.sh run --plan-file PRIVATE/execution-plan.json --scope agent
 ```
 
 ## Learn more
