@@ -205,6 +205,32 @@ class StartMacosPilotTests(unittest.TestCase):
         self.assertEqual("FAIL", checks[-1].status)
         self.assertIn("machine.platform must be macos", checks[-1].detail)
 
+    def suite_command(self, executable: set[str]) -> list[str]:
+        """Return the make command readiness runs when EXECUTABLE paths exist."""
+        commands = []
+
+        def run(command, **kwargs):
+            commands.append(command)
+            return subprocess.CompletedProcess(command, 0)
+
+        with mock.patch.object(start_macos_pilot.shutil, "which", return_value="/usr/bin/make"), \
+                mock.patch.object(start_macos_pilot.os, "access", side_effect=lambda path, mode: path in executable), \
+                mock.patch.object(start_macos_pilot.subprocess, "run", side_effect=run):
+            check = start_macos_pilot.repository_suite_check()
+        self.assertEqual("PASS", check.status)
+        return commands[0]
+
+    def test_readiness_runs_shell_checks_with_homebrew_bash(self) -> None:
+        # Apple Silicon Homebrew first, then Intel Homebrew.
+        self.assertEqual(["make", "check", "BASH_BIN=/opt/homebrew/bin/bash"],
+                         self.suite_command({"/opt/homebrew/bin/bash", "/usr/local/bin/bash"}))
+        self.assertEqual(["make", "check", "BASH_BIN=/usr/local/bin/bash"],
+                         self.suite_command({"/usr/local/bin/bash"}))
+
+    def test_readiness_without_homebrew_bash_leaves_the_gate_to_fail_clearly(self) -> None:
+        # No override: make's own Bash 4 gate then reports the missing Bash.
+        self.assertEqual(["make", "check"], self.suite_command(set()))
+
 
 if __name__ == "__main__":
     unittest.main()
