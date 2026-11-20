@@ -88,6 +88,52 @@ class ExecutionAutomationTests(unittest.TestCase):
             self.assertEqual(0, execution.execute(plan, plan["phases"], saved, runner=repeat, verifier=verifier, binding="host-a"))
             repeat.assert_not_called()
 
+    def test_phases_inherit_the_held_journal_lock(self):
+        plan = self.plan()
+        runner = mock.Mock(return_value=subprocess.CompletedProcess([], 0))
+        with tempfile.TemporaryDirectory() as directory, mock.patch("sys.stdout", new=io.StringIO()):
+            with execution.journal_lock(Path(directory) / "run.json"):
+                held = tuple(execution.HELD_LOCKS)
+                execution.execute(plan, plan["phases"][:1], {}, runner=runner, verifier=lambda *_: True, binding="host-a")
+        self.assertEqual(1, len(held))
+        self.assertEqual(2, runner.call_count)  # preview and apply
+        self.assertTrue(all(call.kwargs["pass_fds"] == held for call in runner.call_args_list))
+        self.assertEqual([], execution.HELD_LOCKS)
+
+    def test_lock_outlives_a_killed_executor_until_its_phase_exits(self):
+        # The executor takes the lock, starts a long phase with the inherited
+        # descriptor, then dies without cleanup (as with kill -9).
+        script = (
+            "import importlib.util, os, subprocess, sys\n"
+            "from pathlib import Path\n"
+            "spec = importlib.util.spec_from_file_location('ex', sys.argv[1])\n"
+            "ex = importlib.util.module_from_spec(spec); spec.loader.exec_module(ex)\n"
+            "with ex.journal_lock(Path(sys.argv[2])):\n"
+            "    phase = subprocess.Popen(['sleep', '30'], pass_fds=tuple(ex.HELD_LOCKS),\n"
+            "                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+            "    print(phase.pid, flush=True)\n"
+            "    os._exit(0)\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            journal = Path(directory) / "run.json"
+            executor = subprocess.run([sys.executable, "-c", script, str(ROOT / "scripts/execute-setup.py"), str(journal)],
+                                      capture_output=True, text=True, check=True, timeout=30)
+            phase = int(executor.stdout.split()[0])
+            try:
+                with self.assertRaisesRegex(ValueError, "another setup process holds"):
+                    with execution.journal_lock(journal):
+                        pass
+            finally:
+                os.kill(phase, 9)
+            for _ in range(50):
+                try:
+                    os.kill(phase, 0)
+                except ProcessLookupError:
+                    break
+                __import__("time").sleep(0.1)
+            with execution.journal_lock(journal):
+                pass  # free again once the orphaned phase has exited
+
     def test_live_drift_invalidates_receipt_even_when_input_matches(self):
         plan = self.plan()
         phase = plan["phases"][0]
