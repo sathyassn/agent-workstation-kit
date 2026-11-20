@@ -82,6 +82,24 @@ gh release create v0.3.0-rc.1 --verify-tag --prerelease \
   not commit it.
 - Use `--prerelease` for every `-rc.N` version and omit it for a final version.
 
+## Criteria for 0.2.0
+
+`0.2.0-rc.7` is the first tagged release. The final `0.2.0` is cut only when
+all of these hold:
+
+- [ ] Configuration is consolidated into the profile, with its `[components]`
+      table (plan PR 2 and PR 2a on issue #5).
+- [ ] The `agent-settings` component is merged: one declarative profile section
+      for Claude, Codex and Orca agent settings, named presets, and a checked
+      applier.
+- [ ] One clean setup run on a real machine, from a fresh account to `doctor`
+      reporting no failures, with its evidence recorded in the release pull
+      request.
+- [ ] The [release checklist](../13-public-release-checklist.md) is complete.
+
+Until then, each further release is the next candidate (`0.2.0-rc.8`, and so
+on).
+
 ## After the release
 
 - Private fleets change `kit.lock` to the new version in a reviewed pull
