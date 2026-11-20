@@ -120,7 +120,7 @@ class ExecutionAutomationTests(unittest.TestCase):
                                       capture_output=True, text=True, check=True, timeout=30)
             phase = int(executor.stdout.split()[0])
             try:
-                with self.assertRaisesRegex(ValueError, "another setup process holds"):
+                with self.assertRaisesRegex(ValueError, "left running, holds this account's journal; .*lsof .*run.json.lock"):
                     with execution.journal_lock(journal):
                         pass
             finally:

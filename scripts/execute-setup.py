@@ -155,7 +155,8 @@ def journal_lock(path, label="this account's journal"):
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
-            raise ValueError("another setup process holds " + label + "; wait for it before starting another apply") from error
+            raise ValueError("another setup process, or a background process a setup phase left running, holds " + label
+                             + "; wait for it to exit before starting another apply (find it with: lsof " + str(lock) + ")") from error
         HELD_LOCKS.append(descriptor)
         try:
             yield
