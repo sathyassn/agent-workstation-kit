@@ -246,6 +246,7 @@ Follow [releasing](docs/maintenance/releasing.md). Prepare the release pull
 request; the owner decides, tags and publishes.
 
 - Success: the release pull request passes both gates.
+- Verify: `make ci-check` and `make public-check` exit 0 on the release branch.
 - Stop: before any tag or release; those are the owner's.
 
 ### Adopt the kit in a private fleet
