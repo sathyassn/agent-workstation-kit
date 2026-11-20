@@ -34,15 +34,15 @@ class PackageAutomationTests(unittest.TestCase):
         with mock.patch.object(package_setup.sys, "platform", "linux"), mock.patch.object(package_setup, "inventory", return_value={"apt": {"git": "1.0"}}), mock.patch.object(package_setup, "run") as run, mock.patch("sys.stdout", new=io.StringIO()):
             self.assertEqual(0, package_setup.provision("linux", packages))
             run.assert_not_called()
-        with mock.patch.object(package_setup.sys, "platform", "linux"), mock.patch.object(package_setup.os, "geteuid", return_value=0), mock.patch.object(package_setup, "inventory", side_effect=[{"apt": {"git": "1.0"}}, {"apt": {"git": "1.0", "jq": "2.0"}}]), mock.patch.object(package_setup, "run", return_value=subprocess.CompletedProcess([], 0)) as run, mock.patch("sys.stdout", new=io.StringIO()):
+        with mock.patch.object(package_setup.sys, "platform", "linux"), mock.patch.object(package_setup.os, "geteuid", return_value=0), mock.patch.object(package_setup, "require_staged_root"), mock.patch.object(package_setup, "inventory", side_effect=[{"apt": {"git": "1.0"}}, {"apt": {"git": "1.0", "jq": "2.0"}}]), mock.patch.object(package_setup, "run", return_value=subprocess.CompletedProcess([], 0)) as run, mock.patch("sys.stdout", new=io.StringIO()):
             self.assertEqual(0, package_setup.provision("linux", packages, apply=True))
             self.assertEqual(["apt-get", "install", "-y", "jq"], run.call_args_list[1].args[0])
-        with mock.patch.object(package_setup.sys, "platform", "linux"), mock.patch.object(package_setup.os, "geteuid", return_value=0), mock.patch.object(package_setup, "inventory", return_value={"apt": {"git": "1.0", "jq": "2.0"}}), mock.patch.object(package_setup, "run") as run, mock.patch("sys.stdout", new=io.StringIO()):
+        with mock.patch.object(package_setup.sys, "platform", "linux"), mock.patch.object(package_setup.os, "geteuid", return_value=0), mock.patch.object(package_setup, "require_staged_root"), mock.patch.object(package_setup, "inventory", return_value={"apt": {"git": "1.0", "jq": "2.0"}}), mock.patch.object(package_setup, "run") as run, mock.patch("sys.stdout", new=io.StringIO()):
             self.assertEqual(0, package_setup.provision("linux", packages, apply=True))
             run.assert_not_called()
 
     def test_success_exit_without_installed_package_is_a_failure(self):
-        with mock.patch.object(package_setup.sys, "platform", "linux"), mock.patch.object(package_setup.os, "geteuid", return_value=0), mock.patch.object(package_setup, "inventory", return_value={"apt": {}}), mock.patch.object(package_setup, "run", return_value=subprocess.CompletedProcess([], 0)), mock.patch("sys.stdout", new=io.StringIO()):
+        with mock.patch.object(package_setup.sys, "platform", "linux"), mock.patch.object(package_setup.os, "geteuid", return_value=0), mock.patch.object(package_setup, "require_staged_root"), mock.patch.object(package_setup, "inventory", return_value={"apt": {}}), mock.patch.object(package_setup, "run", return_value=subprocess.CompletedProcess([], 0)), mock.patch("sys.stdout", new=io.StringIO()):
             self.assertEqual(1, package_setup.provision("linux", {"apt": ["jq"]}, apply=True))
 
     def test_pinned_existing_version_conflict_never_upgrades(self):
@@ -326,7 +326,7 @@ class SSHInstallGuardTests(unittest.TestCase):
             return subprocess.CompletedProcess(command, 0)
         def guard(**kwargs):
             events.append(["guard", kwargs["apply"]])
-        with mock.patch.object(package_setup.sys, "platform", "linux"), mock.patch.object(package_setup.os, "geteuid", return_value=0), mock.patch.object(package_setup, "inventory", side_effect=[{"apt": {}}, {"apt": {"openssh-server": "1.0"}}]), mock.patch.object(package_setup, "guard_new_ssh_install", side_effect=guard), mock.patch.object(package_setup, "run", side_effect=run), mock.patch("sys.stdout", new=io.StringIO()):
+        with mock.patch.object(package_setup.sys, "platform", "linux"), mock.patch.object(package_setup.os, "geteuid", return_value=0), mock.patch.object(package_setup, "require_staged_root"), mock.patch.object(package_setup, "inventory", side_effect=[{"apt": {}}, {"apt": {"openssh-server": "1.0"}}]), mock.patch.object(package_setup, "guard_new_ssh_install", side_effect=guard), mock.patch.object(package_setup, "run", side_effect=run), mock.patch("sys.stdout", new=io.StringIO()):
             self.assertEqual(0, package_setup.provision("linux", {"apt": ["openssh-server"]}, apply=True))
         self.assertEqual(["guard", True], events[0])
         self.assertEqual("apt-get", events[1][0])
@@ -345,7 +345,7 @@ class SSHInstallGuardTests(unittest.TestCase):
         guard.exists.return_value = True
         defaults = mock.Mock()
         defaults.read_text.return_value = 'DEFAULT_INPUT_POLICY="ACCEPT"\nDEFAULT_FORWARD_POLICY="DROP"\n'
-        with mock.patch.object(package_setup, "SSH_GUARD", guard), mock.patch.object(package_setup, "_guard_record"), mock.patch.object(package_setup.os, "geteuid", return_value=0), mock.patch.object(package_setup, "Path", return_value=defaults), mock.patch.object(package_setup, "run", return_value=subprocess.CompletedProcess([], 0, "Status: active\n", "")) as run:
+        with mock.patch.object(package_setup, "SSH_GUARD", guard), mock.patch.object(package_setup, "_guard_record"), mock.patch.object(package_setup.os, "geteuid", return_value=0), mock.patch.object(package_setup, "require_staged_root"), mock.patch.object(package_setup, "Path", return_value=defaults), mock.patch.object(package_setup, "run", return_value=subprocess.CompletedProcess([], 0, "Status: active\n", "")) as run:
             with self.assertRaisesRegex(ValueError, "deny-by-default"):
                 package_setup.release_ssh_guard(apply=True)
             self.assertEqual(1, run.call_count)

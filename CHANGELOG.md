@@ -26,9 +26,11 @@ between minor releases while live-machine evidence is incorporated.
   account and SSH postconditions now print their reason.
 - Fixed the Ubuntu package check so each required unit must be enabled.
 - Root now refuses to run any copy of the entry point other than a fully
-  root-owned `/opt/agent-workstation-kit`, for preview and status too.
+  root-owned `/opt/agent-workstation-kit`, for preview and status too. Root
+  APT installs and SSH-guard release run the same check.
 - Cancelling the walkthrough exits 130; a failed SSH-guard record removes its
-  masks; plan preview warns when the working tree differs from its commit.
+  masks, or names them when that fails; plan preview warns when the working
+  tree differs from its commit.
 
 Upgrade: schema-3 profiles remain valid; new package/account choices are optional.
 Use `scripts/setup-workstation.sh` to export a new execution bundle and preview

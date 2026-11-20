@@ -127,7 +127,7 @@ def main() -> int:
         pending = remaining(identity, journal)
         print(f"PREVIEW ONLY | version={fleetctl.VERSION} | target={profile['machine']['hostname']} uuid={profile['machine']['uuid']}")
         print(f"Source revision: {revision} (current content bound below; remote freshness unverified)")
-        dirty = subprocess.run(["git", "status", "--porcelain"], cwd=ROOT, check=True, capture_output=True, text=True).stdout.strip()
+        dirty = subprocess.run(["git", "--no-optional-locks", "status", "--porcelain"], cwd=ROOT, check=True, capture_output=True, text=True).stdout.strip()
         if dirty:
             print("WARNING: the working tree differs from that revision; the plan binds the current files, not the commit. Commit or discard the changes before review.")
         if args.details or args.journal:
