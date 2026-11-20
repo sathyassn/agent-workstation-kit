@@ -243,7 +243,8 @@ The update-watch register and `doctor --updates` are planned: issue #5, step 3.
 ### Cut a release
 
 Follow [releasing](docs/maintenance/releasing.md). Prepare the release pull
-request; the owner decides, tags and publishes.
+request; the owner decides, tags and publishes. A final version is cut only
+when its criteria in that file hold.
 
 - Success: the release pull request passes both gates.
 - Verify: `make ci-check` and `make public-check` exit 0 on the release branch.
