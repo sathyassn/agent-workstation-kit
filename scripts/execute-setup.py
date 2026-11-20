@@ -139,6 +139,11 @@ def prepare_journal(path):
             raise ValueError("existing journal must be an owned regular file with mode 0600")
 
 
+# Descriptors of the locks this process holds. Each phase inherits them, so an
+# flock outlives a killed executor until its running phase has exited too.
+HELD_LOCKS = []
+
+
 @contextmanager
 def journal_lock(path, label="this account's journal"):
     lock = path.with_name(path.name + ".lock")
@@ -151,7 +156,11 @@ def journal_lock(path, label="this account's journal"):
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
             raise ValueError("another setup process holds " + label + "; wait for it before starting another apply") from error
-        yield
+        HELD_LOCKS.append(descriptor)
+        try:
+            yield
+        finally:
+            HELD_LOCKS.remove(descriptor)
     finally:
         os.close(descriptor)
 
@@ -216,13 +225,14 @@ def execute(plan, phases, journal, *, runner=None, verifier=None, binding=None):
         if os.geteuid() == 0:
             env = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": pwd.getpwuid(0).pw_dir, "LC_ALL": "C", "AWK_PYTHON": "/usr/bin/python3"}
         preview = [arg for arg in command if arg != "--apply"]
-        preview_result = subprocess.CompletedProcess(preview, 0) if name == "audit" else runner(preview, env=env, check=False)
+        locks = {"pass_fds": tuple(HELD_LOCKS)} if HELD_LOCKS else {}
+        preview_result = subprocess.CompletedProcess(preview, 0) if name == "audit" else runner(preview, env=env, check=False, **locks)
         if preview_result.returncode:
             result = preview_result
         else:
             # The scope approval covers the reviewed scripts and parameters;
             # dynamic/unknown prerequisites still fail before their apply.
-            result = runner(command, env=env, check=False)
+            result = runner(command, env=env, check=False, **locks)
         success = result.returncode == 0 and verifier(plan, name, ROOT)
         records[name] = {"input_id": key, "status": "verified" if success else "failed", "exit_code": result.returncode, "time": datetime.datetime.now(datetime.timezone.utc).isoformat(), "host": host, "owner": owner}
         yield_record = journal.get("_journal_path")

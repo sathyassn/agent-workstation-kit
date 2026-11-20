@@ -38,6 +38,8 @@ between minor releases while live-machine evidence is incorporated.
   user and the agent, from loopback and a tailnet address, so a `Match` block
   that re-enables passwords fails. Account verification now also proves that
   the agent and service accounts hold no sudoers command grant.
+- A running phase keeps the journal lock until it exits, so killing only the
+  executor can no longer let a rerun start the same phase alongside it.
 - As root, staged helpers use a system PATH, clear interpreter variables and run
   Python isolated. The runbook states the root rule: run only absolute staged
   paths through a system interpreter, never `sudo` on a user checkout.
