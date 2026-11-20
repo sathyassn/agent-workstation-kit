@@ -43,6 +43,66 @@ class SshdTests(unittest.TestCase):
         self.assertIn("sshd passwordauthentication is not no", pv.sshd_problems(text, ["alice", "bob", "admin-01"], "agent-01"))
 
 
+class ConditionalSshdTests(unittest.TestCase):
+    def fake_sshd(self, unsafe_user=None, failing_user=None):
+        calls = []
+
+        def run(command, env=None):
+            calls.append(command)
+            spec = command[-1]
+            user = spec.split(",")[0].removeprefix("user=")
+            if user == failing_user:
+                return subprocess.CompletedProcess(command, 255, "", "bad match spec")
+            text = HARDENED
+            if user == unsafe_user:
+                # What `sshd -T -C` prints when `Match User x` re-enables passwords.
+                text = text.replace("passwordauthentication no", "passwordauthentication yes")
+            return subprocess.CompletedProcess(command, 0, text, "")
+        return run, calls
+
+    def test_every_user_and_address_is_evaluated_with_match_rules(self):
+        run, calls = self.fake_sshd()
+        self.assertEqual(pv.sshd_conditional_problems(["alice", "agent-01"], run), [])
+        self.assertEqual(len(calls), 4)
+        self.assertTrue(all(call[:3] == ["sshd", "-T", "-C"] for call in calls))
+        self.assertIn("user=alice,host=localhost,addr=100.64.0.1", [call[3] for call in calls])
+
+    def test_match_block_reenabling_passwords_fails(self):
+        run, _ = self.fake_sshd(unsafe_user="alice")
+        problems = pv.sshd_conditional_problems(["alice", "bob"], run)
+        self.assertIn("sshd passwordauthentication is not no for alice from 127.0.0.1", problems)
+        self.assertFalse(any("bob" in problem for problem in problems))
+
+    def test_unreadable_conditional_policy_fails_closed(self):
+        run, _ = self.fake_sshd(failing_user="bob")
+        self.assertIn("cannot read effective sshd policy for bob from 127.0.0.1",
+                      pv.sshd_conditional_problems(["bob"], run))
+
+
+class SudoGrantTests(unittest.TestCase):
+    def fake_sudo(self, outputs):
+        def run(command, env=None):
+            self.assertEqual(command[:4], ["sudo", "-n", "-l", "-U"])
+            self.assertEqual(env["LC_ALL"], "C")
+            code, text = outputs[command[-1]]
+            return subprocess.CompletedProcess(command, code, text, "")
+        return run
+
+    def test_no_grant_passes(self):
+        run = self.fake_sudo({"agent-01": (1, "User agent-01 is not allowed to run sudo on host.\n")})
+        self.assertEqual(pv.sudo_grant_problems(["agent-01"], run), [])
+
+    def test_direct_sudoers_grant_fails(self):
+        grant = "User agent-01 may run the following commands on host:\n    (ALL) NOPASSWD: ALL\n"
+        run = self.fake_sudo({"agent-01": (0, grant)})
+        self.assertEqual(pv.sudo_grant_problems(["agent-01"], run), ["agent-01 has a sudoers command grant"])
+
+    def test_unknown_or_denied_query_fails_closed(self):
+        run = self.fake_sudo({"svc": (1, "sudo: a password is required\n")})
+        self.assertEqual(pv.sudo_grant_problems(["svc"], run),
+                         ["cannot prove that svc has no sudoers command grant"])
+
+
 UFW = ROOT / "tests/fixtures/ufw"
 
 
