@@ -5,7 +5,8 @@
 - Status: proposed (design PR D0; no code yet)
 - Date: 2026-11-20
 - Source: the consolidated design on issue #5 (comment 7048343188) and its
-  amendment on resolving "latest" (comment 7048398540), refined against the
+  amendments on resolving "latest" (comment 7048398540) and on OS support
+  (comment 7048442102), refined against the
   code at the time of writing
 - Audience: maintainers and reviewers. The conductor agent and operators get
   their own pages as each part lands.
@@ -332,15 +333,30 @@ preflight -> describe -> backup -> intent=applying -> apply (logged) -> verify -
 
 ### 9. Platforms, tool registry and staging (T1, T6)
 
-- **Platforms (T1).** `registry/platforms.toml` lists each OS version and
-  architecture as supported, best-effort or unsupported, with the evidence a
-  release needs.
-  - Preflight checks the host against it:
-    - supported runs;
-    - best-effort needs `--allow-best-effort`, which is recorded;
-    - unsupported stops.
-  - A row is marked supported only once a CI job or a recorded real-machine
-    run proves it for that release.
+- **Platforms (T1).** Only versions the vendor still supports are allowed,
+  with no best-effort tier.
+
+  | Linux | macOS |
+  |---|---|
+  | Ubuntu LTS in Canonical's standard support: 24.04 and 26.04 | The current and previous major macOS: 26 and 15, on Apple silicon |
+
+  - `registry/platforms.toml` records, for each version:
+    - the architectures;
+    - the vendor's end-of-support date;
+    - the evidence each release needs: a CI job, or a recorded real-machine
+      run.
+  - **Preflight**, in readiness and in the executor, refuses everything else.
+    That includes Ubuntu interim releases, other distributions, older macOS
+    and Intel Macs. The refusal gives the reason and the nearest supported
+    version. This replaces the hard-coded check in
+    `execute-setup.py` `require_supported_linux`, and adds the macOS check
+    that is missing today.
+  - **The window follows the vendor lifecycle:**
+    - a new release is added once it is validated, with real-machine evidence
+      in the changelog;
+    - a version is dropped at or before its end-of-support date.
+  - The update watch flags upcoming end-of-support dates. The doctor warns a
+    machine 90 days ahead.
 - **Tool registry (T6).** `registry/tools.toml` records, per tool:
   - the pinned version per OS and its source;
   - a checksum or signature for anything outside an OS package manager;
@@ -431,6 +447,7 @@ What revert cannot undo, listed in every revert preview:
   - drift against the ledger and machine record, including changes that have
     no record and tool versions the registry does not record;
   - `agent-settings check`;
+  - the OS end-of-support date, with a warning from 90 days ahead;
   - the earlier doctor items.
 
   `--admin` runs the root-only checks from the staged root and writes a
