@@ -21,8 +21,11 @@
 Run the automated evidence check from a privileged named-admin session after the user-space install:
 
 ```text
-sudo ./scripts/validate-host.sh agent-01
+sudo /bin/bash /opt/agent-workstation-kit/scripts/validate-host.sh agent-01
 ```
+
+Run it from the root-owned staged copy, as for every root command (see the
+root rule in [automated and resumable setup](runbooks/resumable-setup.md)).
 
 If NoMachine uses a reviewed non-default port, pass it as the second argument.
 

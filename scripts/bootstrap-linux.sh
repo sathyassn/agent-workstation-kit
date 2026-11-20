@@ -35,7 +35,7 @@ require_root_for_apply
 
 log "Mode: $([[ "$APPLY_CHANGES" == true ]] && printf APPLY || printf PREVIEW)"
 if [[ "$check_only" == true ]]; then
-  python3 "$script_dir/install-package-set.py" --platform linux "${package_args[@]}" --check
+  "${KIT_PYTHON[@]}" "$script_dir/install-package-set.py" --platform linux "${package_args[@]}" --check
   # One unit per call: with several units, is-enabled succeeds if any is enabled.
   for unit in fail2ban apt-daily.timer apt-daily-upgrade.timer; do
     systemctl is-enabled --quiet "$unit" || die "$unit is not enabled"
@@ -43,7 +43,7 @@ if [[ "$check_only" == true ]]; then
   exit
 fi
 if [[ "$APPLY_CHANGES" == true ]]; then package_args+=(--apply); fi
-python3 "$script_dir/install-package-set.py" --platform linux "${package_args[@]}"
+"${KIT_PYTHON[@]}" "$script_dir/install-package-set.py" --platform linux "${package_args[@]}"
 run systemctl enable --now fail2ban
 run systemctl enable --now apt-daily.timer apt-daily-upgrade.timer
 run git lfs install --system
