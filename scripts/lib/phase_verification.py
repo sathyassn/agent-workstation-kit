@@ -185,7 +185,8 @@ def sshd_conditional_problems(users, run=None):
 
 
 SSHD_CONFIG = Path("/etc/ssh/sshd_config")
-SSHD_SENSITIVE = {key for key, _ in SSHD_REQUIRED}
+# ChallengeResponseAuthentication is the deprecated alias of KbdInteractive.
+SSHD_SENSITIVE = {key for key, _ in SSHD_REQUIRED} | {"challengeresponseauthentication"}
 
 
 def sshd_match_problems(config=SSHD_CONFIG):
@@ -223,6 +224,7 @@ def _sshd_match_scan(config, depth, inside):
             inside = True
         elif keyword == "include":
             for pattern in fields[1:]:
+                pattern = pattern.strip('"')
                 pattern = pattern if pattern.startswith("/") else "/etc/ssh/" + pattern
                 for included in sorted(glob.glob(pattern)):
                     found, opened = _sshd_match_scan(Path(included), depth + 1, inside)
