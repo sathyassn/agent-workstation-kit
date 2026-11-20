@@ -7,7 +7,7 @@
 - Source: the consolidated design on issue #5 (comment 7048343188) and its
   amendments on resolving "latest" (7048398540), OS support (7048442102) and
   the tunnel's order (7048586326). It is refined against the code, and revised
-  after rounds 1 and 2 of the D0 adversarial review.
+  after rounds 1 to 3 of the D0 adversarial review.
 - Audience: maintainers and reviewers. The conductor agent and operators get
   their own pages as each part lands.
 - Numbering: this is decision 0005. It lives in `docs/design/` because the
@@ -119,12 +119,9 @@ What the code does today, and the problem each fact causes:
 6. **Both OSes get equal care.** Every capability maps to the right tool on
    each OS, and the supported versions are explicit.
 7. **Pinned and vetted.** Every tool has a recorded version, a verified source
-   and a recorded security review. Downloads, vendor packages and mise tools
-   are pinned exactly. OS-managed packages (apt archive, Homebrew core) get a
-   minimum version and a recorded observed version, because those archives do
-   not keep old versions (section 9; decision D2 for the operator). A newer
-   version becomes a pin only through `registry resolve`. Nothing floats at
-   apply time.
+   and a recorded security review, under one of the version policies in
+   decision D2 (section 13). A newer version becomes a pin only through
+   `registry resolve`. Nothing floats at apply time.
 8. **Documented from one source.** Each setting states what it does, why, its
    options, the safe default, the recommendation, the risk and the undo.
 9. **Nothing ad hoc.** No hard-coded users, hosts or paths. Generic logic
@@ -188,8 +185,9 @@ What the code does today, and the problem each fact causes:
     `install-ms-s1-r8127-dkms.sh` (a hardware driver) into S2 phases,
     selected by the profile. T5 makes them components.
   - **Remote desktop.** The SSH install guard is extended to the remote
-    desktop: NoMachine's server is disabled when it is installed, and stays
-    disabled until S5 has the firewall in place and releases it. This is the
+    desktop. NoMachine's service is masked before the package is installed,
+    with its record written first. It stays masked until S5 has the firewall
+    in place and releases it. This is the
     exposure the SSH guard already prevents (`package_setup.py`
     `guard_new_ssh_install`).
 - **Run token.** With `--apply`, a phase starts only if both of these hold:
@@ -202,10 +200,14 @@ What the code does today, and the problem each fact causes:
   `common.sh` adds only `AWK_RUN_ID` to its clean re-run, validated. This
   rejects tokens left by a crashed run. It guards against bypass by mistake,
   not against root.
-- **The run ID does not reach tools.** After its check, the phase removes
-  `AWK_RUN_ID` from its environment. The `run` helper in `common.sh`, and
-  Python's default `close_fds`, keep the executor's descriptors from every
-  tool the phase starts.
+- **The run ID and descriptors do not reach tools.** Right after its check,
+  the phase removes `AWK_RUN_ID` and `AWK_FAILURE_FD` from its environment.
+  - **Python phases** rely on `close_fds`, the default, for every tool they
+    start.
+  - **Bash phases** close every inherited descriptor except the failure
+    descriptor, and close that one for each command they run (`cmd {fd}>&-`).
+    This covers every command, not only those run through the `run` helper,
+    so a daemon a package starts can never hold the host lock.
 - **Staged-root check.** `path_safety.require_staged_root()` is extended to
   every Python phase that runs as root. The root block of `common.sh` gets the
   same check.
@@ -533,9 +535,8 @@ preflight -> describe -> backup -> intent=applying -> apply (logged) -> verify -
     and dropped at or before its end-of-support date. The update watch flags
     dates that are coming up, and the doctor warns a machine 90 days ahead.
 - **Tool registry (T6).** `registry/tools.toml` records, per tool:
-  - its policy: `exact` (downloads, vendor packages, mise tools) or
-    `os-managed` (the apt archive, Homebrew core: a minimum version, with the
-    observed version recorded at each run);
+  - its version policy, one of those in decision D2 (section 13): `exact`,
+    `os-managed` or `self-updating`;
   - its source;
   - a checksum or signature for anything outside an OS package manager;
   - licence, maintainer and release cadence;
@@ -585,8 +586,9 @@ preflight -> describe -> backup -> intent=applying -> apply (logged) -> verify -
   - **Linux:** Tailscale's apt repository joins the approved sources in
     `config/packages.toml`, pinned by its signing-key fingerprint. It moves
     into the registry in T6.
-  - **macOS:** a root S2 sub-phase installs the vendor `.pkg` with an exact
-    pin and checksum (`installer -pkg`). The Homebrew cask is not used,
+  - **macOS:** a root S2 sub-phase installs the vendor `.pkg`, verified by
+    checksum (`installer -pkg`). The app updates itself, so its policy is
+    `self-updating`. The Homebrew cask is not used,
     because it runs the same `.pkg` with `sudo` and prompts. Approving the
     system extension is a G1 hand-over.
 - **Staging (T6).**
@@ -597,8 +599,8 @@ preflight -> describe -> backup -> intent=applying -> apply (logged) -> verify -
   - **The fleet checkout** is staged the same way.
   - **The first staging** has no staged copy to run from.
     1. The human downloads the release archive.
-    2. They verify it against the digest and the signing-key fingerprint that
-       the one-liner prints (`ssh-keygen -Y verify`).
+    2. They verify it against the digest and the release public key that the
+       one-liner embeds (`ssh-keygen -Y verify`).
     3. They extract it as root into a root-owned temporary folder with
        `tar --no-same-owner`.
     4. They run `stage-release.sh` from there.
@@ -610,9 +612,10 @@ preflight -> describe -> backup -> intent=applying -> apply (logged) -> verify -
 - **Day-zero one-liner (T6).**
   - It installs, for the setup user and without root, the kit at a release
     tag and one agent CLI from its vendor's verified source.
-  - Its trust anchor is the release signing-key fingerprint printed in the
-    one-liner text and in the docs. The kit archive is verified against it
-    with `ssh-keygen -Y verify`, which ships with both OSes.
+  - Its trust anchor is the full release public key, embedded in the
+    one-liner text and in the docs. The kit archive is verified with
+    `ssh-keygen -Y verify` against an allowed-signers file made from that key.
+    `ssh-keygen` ships with both OSes.
   - It prints the sign-in step, then hands over to the conductor.
 - **Filesystem snapshots (T6).** Btrfs, ZFS or LVM-thin snapshots are taken at
   baseline and at each stable point where available.
@@ -699,7 +702,7 @@ needs in `templates/private-fleet/`.
 | Root backups, baseline, archives | `/var/backups/agent-workstation-kit/` | `/Library/Application Support/agent-workstation-kit/backups/` | root 0700 |
 | Root logs | `/var/log/agent-workstation-kit/<run-id>/` | `/Library/Logs/agent-workstation-kit/<run-id>/` | root 0700, files 0600 |
 | Account state, journal, backups, logs | `${XDG_STATE_HOME:-~/.local/state}/agent-workstation-kit/` | same | 0700, files 0600 |
-| Account run folder | `$XDG_RUNTIME_DIR/agent-workstation-kit/`, or the account state folder's `run/` when that variable is unset | `~/.local/state/agent-workstation-kit/run/` | 0700 |
+| Account run folder | `$XDG_RUNTIME_DIR/agent-workstation-kit/`, or the account state folder's `run/` when that variable is unset | `${XDG_STATE_HOME:-~/.local/state}/agent-workstation-kit/run/` | 0700 |
 
 - Each root folder's parent chain passes the existing `secure_root_path` rule.
   The kit's own folders are created by the first root scope (T2), not only by
@@ -765,7 +768,7 @@ Decisions for the operator:
     - Every listed version needs a CI job or a recorded real-machine run each
       release, and hosted runners may not offer macOS 27 yet.
 - **D2, what "pinned" means for each kind of source (principle 7).** The ADR
-  proposes four policies:
+  proposes three policies and asks one question:
   - **`exact`:** downloads, vendor `.pkg` files, mise tools, and packages from
     third-party apt repositories that keep old versions (such as Tailscale's).
   - **`os-managed`:** the Ubuntu archive and Homebrew formulae. A minimum
