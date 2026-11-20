@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import tempfile
 import shutil
 import subprocess
 import sys
@@ -88,7 +89,7 @@ def clean_git_checkout_check(path: Path, name: str) -> Check:
     if shutil.which("git") is None:
         return Check("FAIL", name, "git is unavailable")
     status = run(
-        ["git", "-C", str(path), "status", "--porcelain", "--untracked-files=all"]
+        ["git", "--no-optional-locks", "-C", str(path), "status", "--porcelain", "--untracked-files=all"]
     )
     if status.returncode != 0:
         return Check("FAIL", name, status.stderr.strip() or "not a Git checkout")
@@ -221,7 +222,10 @@ def repository_suite_check() -> Check:
         if os.access(candidate, os.X_OK):
             command.append("BASH_BIN=" + candidate)
             break
-    result = subprocess.run(command, cwd=ROOT, check=False, env=environment)
+    # Readiness is read-only: keep make check's bytecode out of the checkout.
+    with tempfile.TemporaryDirectory(prefix="awk-readiness-") as cache:
+        environment.update(PYTHONDONTWRITEBYTECODE="1", PYTHONPYCACHEPREFIX=cache)
+        result = subprocess.run(command, cwd=ROOT, check=False, env=environment)
     return Check(
         "PASS" if result.returncode == 0 else "FAIL",
         "repository checks",

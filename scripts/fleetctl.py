@@ -887,10 +887,16 @@ def allocate_profile(args: argparse.Namespace, output: Path, scan_directory: Pat
     return None
 
 
+def private_root_outside_kit(path: Path) -> bool:
+    sys.path.insert(0, str(ROOT / "scripts/lib"))
+    from path_safety import outside_kit
+    return outside_kit(path, ROOT)
+
+
 def setup_revision(root: Path, label: str, expected: str | None) -> str:
     def git(*arguments: str) -> str:
         result = subprocess.run(
-            ["git", "-C", str(root), *arguments],
+            ["git", "--no-optional-locks", "-C", str(root), *arguments],
             capture_output=True, text=True, check=False, timeout=15,
         )
         if result.returncode:
@@ -1059,6 +1065,8 @@ def main() -> int:
         if args.fleet_root is None:
             parser.error("setup requires --fleet-root")
         args.fleet_root = args.fleet_root.expanduser().absolute()
+        if not private_root_outside_kit(args.fleet_root):
+            parser.error("the private fleet root must be outside every public toolkit worktree")
         if args.handoff_draft and (args.kit_revision or args.fleet_revision):
             parser.error("revision options apply to readiness only")
         if args.expected_ubuntu and not re.fullmatch(r"[0-9]{2}\.[0-9]{2}", args.expected_ubuntu):
