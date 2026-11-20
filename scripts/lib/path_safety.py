@@ -36,7 +36,10 @@ def require_staged_root(kit_root):
     for entry in (root, *root.parents):
         if not _root_controlled(entry):
             raise ValueError("staged toolkit path is not root-controlled: " + str(entry))
-    for directory, names, files in os.walk(root, followlinks=False):
+    def unreadable(error):
+        raise ValueError("cannot inspect the staged toolkit: " + str(error))
+
+    for directory, names, files in os.walk(root, onerror=unreadable, followlinks=False):
         for name in (*names, *files):
             entry = Path(directory) / name
             if not _root_controlled(entry):
