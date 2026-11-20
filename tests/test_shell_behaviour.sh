@@ -274,7 +274,9 @@ grep -Fq 'PATH=/usr/bin:/bin:/usr/sbin:/sbin' <<<"$first_code"
 guard_fn=$(sed -n '/^path_is_root_controlled() {/,/^}/p' "$repo_dir/scripts/setup-workstation.sh")
 [[ -n "$guard_fn" ]] || { printf 'Root path guard not found in the wrapper.\n' >&2; exit 1; }
 eval "$guard_fn"
-path_is_root_controlled /usr/bin/true || { printf 'Expected a root-owned system path to pass.\n' >&2; exit 1; }
+# /usr is root-owned and a real directory on macOS and Ubuntu. Do not use
+# /usr/bin/true: on Ubuntu 26.04 it is a symlink (coreutils), correctly refused.
+path_is_root_controlled /usr || { printf 'Expected a root-owned system path to pass.\n' >&2; exit 1; }
 user_file="$fixture_dir/user-owned"
 : >"$user_file"
 if [[ ${EUID:-$(id -u)} -ne 0 ]] && path_is_root_controlled "$user_file"; then

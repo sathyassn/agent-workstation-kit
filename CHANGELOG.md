@@ -16,6 +16,9 @@ between minor releases while live-machine evidence is incorporated.
   runs without optional locks. `fleetctl setup`, `fleetctl init --fleet-root`,
   both readiness launchers and planning refuse a private fleet root inside the
   public kit.
+- Fleet entry points report a failed `git worktree list` as an ERROR with exit
+  2 instead of a traceback; planning refuses a symlinked fleet root, as
+  `fleetctl setup` does; macOS handoff drafts use the day-zero `"$PYTHON_BIN"`.
 - Expanded the private-fleet template with source-toolkit context, placeholder
   guidance, repository boundaries, validation, deployment flow and governance.
 - Added an explicit Bash 4+ validation gate that also fails when the selected

@@ -192,8 +192,9 @@ The command does not change host configuration. It checks:
 - Codex installation/authentication.
 - Host preflight.
 
-It may create ignored test caches inside the toolkit checkout. It never invokes
-`sudo`, changes an account, installs a package or reads a secret.
+It writes nothing to the toolkit or fleet checkouts: test bytecode goes to a
+temporary folder. It never invokes `sudo`, changes an account, installs a
+package or reads a secret.
 
 It does not print serial-bearing hardware data unless explicitly requested:
 

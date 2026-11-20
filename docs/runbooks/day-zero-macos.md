@@ -211,9 +211,9 @@ This read-only command checks:
   location, commit state and validation.
 - Codex installation/authentication and host preflight.
 
-It invokes no `sudo`, changes no System Settings and reads no secret value. The
-repository test suite may create ignored Python or test caches inside the
-toolkit checkout; it does not change host configuration.
+It invokes no `sudo`, changes no System Settings and reads no secret value. It
+writes nothing to the toolkit or fleet checkouts: test bytecode goes to a
+temporary folder, and it does not change host configuration.
 
 ## 9. Perform the setup-agent handoff
 
