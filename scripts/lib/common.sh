@@ -88,6 +88,15 @@ first_unsafe_ufw_rule() {
   return 1
 }
 
+# Read `ufw status` (plain or verbose) on stdin; succeed when RULE is allowed
+# inbound on INTERFACE. Plain output omits the IN direction for incoming rules.
+ufw_status_allows_in() {
+  local rule=$1 interface=$2
+  awk -v rule="$rule" -v iface="$interface" '
+    $1 == rule && $2 == "on" && $3 == iface && $4 == "ALLOW" && $5 != "OUT" && $5 != "FWD" { found = 1 }
+    END { exit !found }'
+}
+
 ufw_default_policies_are_safe() {
   local defaults=$1
   grep -Eq '^[[:space:]]*DEFAULT_INPUT_POLICY="?DROP"?[[:space:]]*$' <<<"$defaults" &&

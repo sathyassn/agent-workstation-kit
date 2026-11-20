@@ -150,6 +150,20 @@ def sshd_problems(output, ssh_users, agent):
     return problems
 
 
+def ufw_allows_in(status, rule, interface):
+    """True when `ufw status` output allows RULE inbound on INTERFACE.
+
+    Plain `ufw status` prints incoming rules as `ALLOW` with no direction;
+    `ufw status verbose` prints `ALLOW IN`. Outgoing (`ALLOW OUT`) and routed
+    (`ALLOW FWD`) rules never count.
+    """
+    for line in status.splitlines():
+        fields = line.split()
+        if fields[:4] == [rule, "on", interface, "ALLOW"] and (len(fields) < 5 or fields[4] not in ("OUT", "FWD")):
+            return True
+    return False
+
+
 def resource_values(profile, total):
     gib = 1024 * 1024
     reserve = profile["resources"]["os_memory_reserve_gib"]
@@ -222,7 +236,7 @@ def verify_phase(plan, name, root):
             ufw = probe(["ufw", "status"])
             ok = ok and ufw.returncode == 0 and "Status: active" in ufw.stdout
             port = str(profile["remote"]["nomachine_port"])
-            ok = ok and all(re.search(r"^" + re.escape(rule) + r" on tailscale0\s+ALLOW IN", ufw.stdout, re.M) for rule in ("22/tcp", port + "/tcp", port + "/udp"))
+            ok = ok and all(ufw_allows_in(ufw.stdout, rule, "tailscale0") for rule in ("22/tcp", port + "/tcp", port + "/udp"))
             # Use the same restrictive persisted-rule/default parser as the installer.
             check = 'source "$1"; ufw_default_policies_are_safe "$(cat /etc/default/ufw)" || exit 1; rules=$(LC_ALL=C ufw show added) || exit 1; if sed -n "/^ufw /p" <<<"$rules" | first_unsafe_ufw_rule "$2"; then exit 1; fi'
             ok = ok and probe(["bash", "-c", check, "verify", str(root / "scripts/lib/common.sh"), port]).returncode == 0
