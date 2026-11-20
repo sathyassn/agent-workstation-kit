@@ -27,14 +27,14 @@ Planned as release 0.2.0-rc.7.
 - An expanded private-fleet template: source-toolkit context, placeholders, repository boundaries, validation, deployment flow and governance. ([#8])
 - A Bash 4 validation gate (`make bash-check`) that also fails for a shell that is not Bash, with macOS contributor instructions. ([#8])
 - Regression and subprocess-fixture tests for preview, approval, failed-phase resume, repeat runs, drift, tampered source and configuration preservation. ([#6])
-- An agent operating manual in `AGENTS.md` (boundaries, map, rules, task recipes, output formats, hand-over format), and `CLAUDE.md` that includes it. ([#9])
-- A release procedure in `docs/maintenance/releasing.md`: version choice, changelog section, annotated tag and GitHub release, decided by the owner. ([#9])
-- `make repo-check` fails when a change to `scripts/`, `config/` or `templates/` adds no `[Unreleased]` changelog bullet, and when `AGENTS.md` names a path, setup action or flag that does not exist. ([#9])
+- An agent operating manual in `AGENTS.md` (boundaries, map, rules, task recipes, output formats, hand-over format), and `CLAUDE.md` that includes it. ([#10])
+- A release procedure in `docs/maintenance/releasing.md`: version choice, changelog section, annotated tag and GitHub release, decided by the owner. ([#10])
+- `make repo-check` fails when a change to `scripts/`, `config/` or `templates/` adds no `[Unreleased]` changelog bullet, and when `AGENTS.md` names a path, setup action or flag that does not exist. ([#10])
 
 ### Changed
 
-- `CHANGELOG.md` follows Keep a Changelog, with an `[Unreleased]` section grouped by kind and one linked bullet per change. ([#9])
-- The README reads in order: what the kit is, how it fits together, quick start, then details; the docs index lists every runbook. ([#9])
+- `CHANGELOG.md` follows Keep a Changelog, with an `[Unreleased]` section grouped by kind and one linked bullet per change. ([#10])
+- The README reads in order: what the kit is, how it fits together, quick start, then details; the docs index lists every runbook. ([#10])
 - macOS readiness uses the Homebrew Bash that the macOS day-zero guide now installs. ([#8])
 - Cancelling the walkthrough, including with end of input, exits 130 instead of 0. ([#6])
 - Plan preview warns when the working tree differs from its commit. ([#6])
@@ -70,7 +70,7 @@ Planned as release 0.2.0-rc.7.
 
 [#6]: https://github.com/sathyassn/agent-workstation-kit/pull/6
 [#8]: https://github.com/sathyassn/agent-workstation-kit/pull/8
-[#9]: https://github.com/sathyassn/agent-workstation-kit/pull/9
+[#10]: https://github.com/sathyassn/agent-workstation-kit/pull/10
 
 ## Earlier untagged release candidates
 
