@@ -35,13 +35,28 @@ def _git(root: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
                           capture_output=True, text=True, check=False)
 
 
+def _normal(line: str) -> str:
+    return " ".join(line.split())
+
+
 def unreleased_bullets(text: str) -> set[str]:
-    """Return the bullet lines of the [Unreleased] section."""
+    """Return the bullet lines of the [Unreleased] section, whitespace-normalised."""
     section = text.split("\n## [Unreleased]", 1)
     if len(section) < 2:
         return set()
     body = section[1].split("\n## ", 1)[0]
-    return {line.strip() for line in body.splitlines() if line.lstrip().startswith("- ")}
+    return {_normal(line) for line in body.splitlines() if line.lstrip().startswith("- ")}
+
+
+def first_release_heading(text: str) -> str | None:
+    """The first version heading after [Unreleased], if it is a dated release."""
+    section = text.split("\n## [Unreleased]", 1)
+    if len(section) < 2:
+        return None
+    following = re.search(r"^## .*$", section[1], re.MULTILINE)
+    if following and RELEASE_HEADING.fullmatch(following.group(0)):
+        return following.group(0)
+    return None
 
 
 def changelog_base(root: Path) -> str | None:
@@ -57,7 +72,8 @@ def changelog_entry_issue(root: Path, base: str | None) -> str | None:
     """Fail a change to scripts/, config/ or templates/ that adds no [Unreleased] bullet."""
     if base is None:
         return None
-    changed = _git(root, "diff", "--name-only", base)
+    # --no-renames: a file moved out of scripts/ still counts as a change there.
+    changed = _git(root, "diff", "--name-only", "--no-renames", base)
     untracked = _git(root, "ls-files", "--others", "--exclude-standard")
     if changed.returncode or untracked.returncode:
         return "cannot compare the branch with its base " + base + " to check CHANGELOG.md"
@@ -67,10 +83,14 @@ def changelog_entry_issue(root: Path, base: str | None) -> str | None:
     current = (root / "CHANGELOG.md").read_text(encoding="utf-8")
     previous = _git(root, "show", base + ":CHANGELOG.md")
     before = previous.stdout if previous.returncode == 0 else ""
-    if unreleased_bullets(current) - unreleased_bullets(before):
+    # A new entry is a bullet whose text appears nowhere in the base changelog,
+    # so moving an old bullet or re-spacing one does not count.
+    known = {_normal(line) for line in before.splitlines()}
+    if any(bullet not in known for bullet in unreleased_bullets(current)):
         return None
-    # A release moves [Unreleased] under a new dated heading instead.
-    if set(RELEASE_HEADING.findall(current)) - set(RELEASE_HEADING.findall(before)):
+    # A release moves [Unreleased] under a new dated heading directly below it.
+    release = first_release_heading(current)
+    if release and release not in before.splitlines():
         return None
     return ("this change touches scripts/, config/ or templates/ but adds no bullet under "
             "## [Unreleased] in CHANGELOG.md; add one short entry linked to the pull request")
@@ -87,7 +107,7 @@ FLAG_SOURCES = {
     "validate-host.sh": ("scripts/validate-host.sh",),
 }
 # Commands the manual names for work still to come; their flags are not checked yet.
-PLANNED = ("PR 2", "PR 2a", "PR 3")
+PLANNED = re.compile(r"\bPR (?:2a?|3)\b")
 
 
 def agents_manual_issues(root: Path) -> list[str]:
@@ -104,7 +124,7 @@ def agents_manual_issues(root: Path) -> list[str]:
     commands = re.search(r"^COMMANDS = \(([^)]*)\)", cli, re.M)
     actions = set(re.findall(r'"([a-z-]+)"', commands.group(1))) if commands else set()
     for line in text.splitlines():
-        if any(marker in line for marker in PLANNED):
+        if PLANNED.search(line):
             continue
         for action in AGENTS_ACTION.findall(line):
             if action not in actions and action != "help":
@@ -114,7 +134,7 @@ def agents_manual_issues(root: Path) -> list[str]:
                 continue
             defined = "".join((root / source).read_text(encoding="utf-8") for source in sources)
             for flag in AGENTS_FLAG.findall(line.split(command, 1)[1]):
-                if flag not in defined:
+                if not re.search(re.escape(flag) + r"(?![\w-])", defined):
                     issues.append("AGENTS.md uses " + flag + " with " + command + ", which does not define it")
     return issues
 

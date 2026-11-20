@@ -68,6 +68,29 @@ class ChangelogEntryTests(unittest.TestCase):
         (self.root / "CHANGELOG.md").write_text(released)
         self.assertIsNone(self.issue())
 
+    def test_moved_or_respaced_bullets_do_not_count(self):
+        (self.root / "scripts/tool.sh").write_text("echo two\n")
+        base = BASE_LOG + "\n### Fixed\n\n- Released fix. ([#0])\n"
+        (self.root / "CHANGELOG.md").write_text(base)
+        self.git("add", "-A")
+        self.git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "released section")
+        self.base = self.git("rev-parse", "HEAD").stdout.strip()
+        (self.root / "scripts/tool.sh").write_text("echo three\n")
+        moved = base.replace("- Earlier entry. ([#1])", "- Earlier entry. ([#1])\n- Released fix. ([#0])")
+        (self.root / "CHANGELOG.md").write_text(moved)
+        self.assertIsNotNone(self.issue())
+        (self.root / "CHANGELOG.md").write_text(base.replace("- Earlier entry. ([#1])", "- Earlier  entry.  ([#1])"))
+        self.assertIsNotNone(self.issue())
+
+    def test_moving_a_script_out_of_scripts_still_needs_an_entry(self):
+        self.git("mv", "scripts/tool.sh", "docs/tool.sh")
+        self.assertIsNotNone(self.issue())
+
+    def test_dated_heading_must_sit_directly_under_unreleased(self):
+        (self.root / "scripts/tool.sh").write_text("echo two\n")
+        (self.root / "CHANGELOG.md").write_text(BASE_LOG + "\n## [0.0.9] - 2000-01-01\n")
+        self.assertIsNotNone(self.issue())
+
     def test_no_base_skips_and_explicit_base_wins(self):
         self.assertIsNone(check.changelog_entry_issue(self.root, None))
         with mock.patch.dict(os.environ, {"CHANGELOG_BASE": "abc123"}):
@@ -105,6 +128,12 @@ class AgentsManualTests(unittest.TestCase):
 
     def test_planned_commands_are_not_checked_yet(self):
         self.assertEqual([], self.manual("PR 2 adds `scripts/setup-workstation.sh user --dry-run`.\n"))
+
+    def test_planned_marker_is_exact_and_flags_match_whole_words(self):
+        issues = self.manual("See PR 20: `scripts/setup-workstation.sh run --aply`.\n"
+                             "`scripts/setup-workstation.sh plan --export`.\n")
+        self.assertIn("AGENTS.md uses --aply with setup-workstation.sh, which does not define it", issues)
+        self.assertIn("AGENTS.md uses --export with setup-workstation.sh, which does not define it", issues)
 
 
 if __name__ == "__main__":

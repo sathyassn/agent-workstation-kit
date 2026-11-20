@@ -89,7 +89,8 @@ def deterministic_failures(
         if not headings or headings[0] != "## [Unreleased]":
             failures.append("CHANGELOG.md must start with a ## [Unreleased] section (Keep a Changelog)")
         released = re.search(r"^## \[" + re.escape(version) + r"\] - \d{4}-\d{2}-\d{2}$", text, re.M)
-        planned = f"Planned as release {version}." in text.split("\n## ", 2)[1] if headings and headings[0] == "## [Unreleased]" else False
+        unreleased = re.search(r"^## \[Unreleased\]\n(.*?)(?=^## |\Z)", text, re.M | re.S)
+        planned = bool(unreleased) and f"Planned as release {version}." in unreleased.group(1)
         if not (released or planned):
             failures.append("CHANGELOG.md has neither a dated ## [VERSION] heading nor an [Unreleased] section planned as VERSION")
     readme = root / "README.md"
