@@ -208,6 +208,22 @@ hostile_driver_preview=$(APPLY_CHANGES=true PATH="$fixture_dir:$PATH" \
   "$repo_dir/scripts/install-ms-s1-r8127-dkms.sh")
 grep -Fq 'Preview only' <<<"$hostile_driver_preview"
 
+# As root, common.sh re-runs its caller under `env -i`. That is safe only for a
+# real script file that sourced it: from `bash -c`, $0 is a label (the setup
+# verifier passes `verify`) and re-running it could execute an unrelated file.
+reexec_script="$fixture_dir/sources-common.sh"
+printf '%s\n' '#!/usr/bin/env bash' "source '$repo_dir/scripts/lib/common.sh'" 'kit_can_reexec_clean' >"$reexec_script"
+chmod 0755 "$reexec_script"
+"$reexec_script" || { printf 'Expected a sourcing script file to be re-runnable.\n' >&2; exit 1; }
+if bash -c 'source "$1"; kit_can_reexec_clean' verify "$repo_dir/scripts/lib/common.sh"; then
+  printf 'Expected bash -c with a label in $0 not to be re-run.\n' >&2
+  exit 1
+fi
+if bash -c 'source "$1"; kit_can_reexec_clean' "$reexec_script" "$repo_dir/scripts/lib/common.sh"; then
+  printf 'Expected bash -c whose $0 names a file not to be re-run.\n' >&2
+  exit 1
+fi
+
 # Plain `ufw status` omits the IN direction; verbose output shows it. Both must
 # verify, while outgoing, routed and unscoped rules must not.
 (

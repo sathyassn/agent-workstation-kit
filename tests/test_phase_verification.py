@@ -138,6 +138,12 @@ class SshdMatchOverrideTests(unittest.TestCase):
                                  "Match Group staff\n    X11Forwarding no\n")
             self.assertIn("sets permitrootlogin", pv.sshd_match_problems(config)[0])
 
+    def test_deprecated_alias_and_quoted_include_are_scanned(self):
+        with tempfile.TemporaryDirectory() as folder:
+            main = 'Include "DROPINS"\n'
+            config = self.config(folder, main, "Match LocalPort 22\n    ChallengeResponseAuthentication yes\n")
+            self.assertIn("sets challengeresponseauthentication", pv.sshd_match_problems(config)[0])
+
     def test_include_inside_match_and_unreadable_config_fail_closed(self):
         with tempfile.TemporaryDirectory() as folder:
             config = self.config(folder, "Match Address 100.101.0.0/16\n    Include DROPINS\n",
