@@ -90,6 +90,8 @@ def main() -> int:
             raise ValueError("Git root does not match toolkit root")
         revision = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT,
                                   check=True, capture_output=True, text=True).stdout.strip()
+        if args.fleet_root.expanduser().absolute().is_symlink():
+            raise ValueError("the fleet root must not be a symlink; pass its real path")
         fleet_root = args.fleet_root.expanduser().resolve()
         if not outside_kit(fleet_root, ROOT):
             raise ValueError("the private fleet root must be outside every public toolkit worktree")

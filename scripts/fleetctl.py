@@ -890,10 +890,15 @@ def allocate_profile(args: argparse.Namespace, output: Path, scan_directory: Pat
     return None
 
 
-def private_root_outside_kit(path: Path) -> bool:
+def private_root_issue(path: Path) -> str | None:
+    """Why PATH cannot be a private fleet root, or None when it can."""
     sys.path.insert(0, str(ROOT / "scripts/lib"))
     from path_safety import outside_kit
-    return outside_kit(path, ROOT)
+    try:
+        inside = not outside_kit(path, ROOT)
+    except ValueError as error:
+        return str(error)
+    return "the private fleet root must be outside every public toolkit worktree" if inside else None
 
 
 def setup_revision(root: Path, label: str, expected: str | None) -> str:
@@ -935,13 +940,14 @@ def guided_setup(args: argparse.Namespace, path: Path, profile: dict[str, Any]) 
 
     if args.handoff_draft:
         accounts = profile["accounts"]
-        command = [
-            "python3", "scripts/fleetctl.py", "--fleet-root", "FLEET_CHECKOUT",
-            "setup", str(relative),
-        ]
+        # macOS /usr/bin/python3 can be 3.9 without tomllib; the day-zero guide
+        # sets PYTHON_BIN to the Homebrew Python 3.11+.
+        interpreter = "python3" if platform == "linux" else '"$PYTHON_BIN"'
+        arguments = ["setup", str(relative)]
         if platform == "linux":
-            command.extend(["--expected-ubuntu", ubuntu])
-        command.extend(["--execution-context", "host"])
+            arguments.extend(["--expected-ubuntu", ubuntu])
+        arguments.extend(["--execution-context", "host"])
+        command_line = interpreter + ' scripts/fleetctl.py --fleet-root "$FLEET_ROOT" ' + shlex.join(arguments)
         boot = (
             "Review the Ubuntu release and disk plan. Prove console access and LUKS recovery."
             if platform == "linux" else
@@ -967,7 +973,7 @@ recovery owner, package decisions and remaining work before committing.
 
 1. Follow the kit's `docs/runbooks/{guide}` from the local console. {boot}
 2. Complete day-zero prerequisites. Use the reviewed kit and fleet source
-   checkouts and substitute the fleet path in the command below.
+   checkouts, and set `FLEET_ROOT` to the fleet checkout{' and `PYTHON_BIN` as in day zero' if platform == 'macos' else ''}.
 3. Run readiness from an ordinary terminal on the target (not an agent
    sandbox); `--execution-context host` states that. Resolve failures and
    rerun the same command from source.
@@ -977,7 +983,7 @@ recovery owner, package decisions and remaining work before committing.
 5. Record pairing, desktop access, reconnect, transfer, and recovery separately.
 
 ```sh
-{shlex.join(command)}
+{command_line}
 ```
 
 ## Setup-agent prompt
@@ -1068,8 +1074,9 @@ def main() -> int:
         if args.fleet_root is None:
             parser.error("setup requires --fleet-root")
         args.fleet_root = args.fleet_root.expanduser().absolute()
-        if not private_root_outside_kit(args.fleet_root):
-            parser.error("the private fleet root must be outside every public toolkit worktree")
+        if issue := private_root_issue(args.fleet_root):
+            print(f"ERROR fleet root: {issue}", file=sys.stderr)
+            return 2
         if args.handoff_draft and (args.kit_revision or args.fleet_revision):
             parser.error("revision options apply to readiness only")
         if args.expected_ubuntu and not re.fullmatch(r"[0-9]{2}\.[0-9]{2}", args.expected_ubuntu):
@@ -1080,8 +1087,8 @@ def main() -> int:
 
     if args.command == "init":
         # Without --fleet-root, init may write an ignored local experiment.
-        if args.fleet_root is not None and not private_root_outside_kit(args.fleet_root.expanduser().absolute()):
-            print("ERROR fleet root: the private fleet root must be outside every public toolkit worktree", file=sys.stderr)
+        if args.fleet_root is not None and (issue := private_root_issue(args.fleet_root.expanduser().absolute())):
+            print(f"ERROR fleet root: {issue}", file=sys.stderr)
             return 2
         if lock_error := fleet_lock_issue(args.fleet_root):
             print(f"ERROR kit.lock: {lock_error}", file=sys.stderr)
