@@ -27,6 +27,22 @@ class StagedRootTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "not root-controlled"):
                     path_safety.require_staged_root(staged)
 
+    def test_unreadable_directory_in_the_staged_tree_fails_closed(self):
+        with tempfile.TemporaryDirectory() as folder:
+            staged = Path(folder) / "kit"
+            hidden = staged / "scripts"
+            hidden.mkdir(parents=True)
+            (hidden / "payload.py").write_text("")
+            hidden.chmod(0)
+            try:
+                # Ownership passes here, so only the unreadable directory can fail.
+                with mock.patch.object(path_safety, "STAGED_ROOT", staged), \
+                        mock.patch.object(path_safety, "_root_controlled", return_value=True):
+                    with self.assertRaisesRegex(ValueError, "cannot inspect"):
+                        path_safety.require_staged_root(staged)
+            finally:
+                hidden.chmod(0o755)
+
     def test_root_apt_apply_from_a_checkout_is_refused_before_any_command(self):
         calls = []
         with mock.patch.object(package_setup.sys, "platform", "linux"), \
