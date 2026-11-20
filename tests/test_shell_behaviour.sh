@@ -208,4 +208,26 @@ hostile_driver_preview=$(APPLY_CHANGES=true PATH="$fixture_dir:$PATH" \
   "$repo_dir/scripts/install-ms-s1-r8127-dkms.sh")
 grep -Fq 'Preview only' <<<"$hostile_driver_preview"
 
+# Root may run only a root-owned, non-writable staged copy. The guard is
+# defined in the wrapper itself so root sources nothing from the checkout first.
+guard_fn=$(sed -n '/^path_is_root_controlled() {/,/^}/p' "$repo_dir/scripts/setup-workstation.sh")
+[[ -n "$guard_fn" ]] || { printf 'Root path guard not found in the wrapper.\n' >&2; exit 1; }
+eval "$guard_fn"
+path_is_root_controlled /usr/bin/true || { printf 'Expected a root-owned system path to pass.\n' >&2; exit 1; }
+user_file="$fixture_dir/user-owned"
+: >"$user_file"
+if [[ ${EUID:-$(id -u)} -ne 0 ]] && path_is_root_controlled "$user_file"; then
+  printf 'Expected a user-owned path to be rejected.\n' >&2
+  exit 1
+fi
+ln -s /usr/bin/true "$fixture_dir/linked"
+if path_is_root_controlled "$fixture_dir/linked"; then
+  printf 'Expected a symlinked path to be rejected.\n' >&2
+  exit 1
+fi
+if path_is_root_controlled relative/path; then
+  printf 'Expected a relative path to be rejected.\n' >&2
+  exit 1
+fi
+
 printf 'Shell behavior tests passed.\n'

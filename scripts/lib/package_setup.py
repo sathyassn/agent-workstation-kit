@@ -125,9 +125,19 @@ def guard_new_ssh_install(*, apply):
         raise ValueError("unsafe SSH guard directory")
     if run(["systemctl", "mask", *SSH_UNITS], mutate=True).returncode:
         raise ValueError("could not guard fresh SSH installation; no package installation attempted")
-    descriptor = os.open(SSH_GUARD, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(descriptor, "w") as stream:
-        json.dump({"masked_units": list(SSH_UNITS)}, stream)
+    try:
+        descriptor = os.open(SSH_GUARD, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(descriptor, "w") as stream:
+            json.dump({"masked_units": list(SSH_UNITS)}, stream)
+    except OSError:
+        # Without its record the mask cannot be released by the kit later, so
+        # undo it now; the units were verified inactive and unmasked above.
+        try:
+            SSH_GUARD.unlink()
+        except FileNotFoundError:
+            pass
+        run(["systemctl", "unmask", *SSH_UNITS], mutate=True)
+        raise ValueError("could not record the SSH install guard; the masks were removed and no package was installed")
 
 
 def release_ssh_guard(*, apply):

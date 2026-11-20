@@ -223,7 +223,11 @@ sudo -K
 
 Preview from the same staged location without `--apply` first. Root apply
 requires the root-owned `/opt` toolkit and profile, with no writable/symlinked
-code inputs. It runs native interpreters in a clean environment. Keep elevation
+code inputs. Root preview and status are held to the same rule: run as root,
+the entry point refuses any copy other than `/opt/agent-workstation-kit`, and
+anything in that tree that is not root-owned, is group or world writable, or is
+a symlink, before it runs any toolkit code. It runs native interpreters in a
+clean environment. Keep elevation
 temporary and recovery open. Run the agent scope directly as the intended agent
 account, inside its real graphical session where required. Stop for MDM,
 FileVault, privacy, provider MFA/consent or an unknown security condition.

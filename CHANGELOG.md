@@ -21,6 +21,14 @@ between minor releases while live-machine evidence is incorporated.
   shells discover the selected Homebrew installation.
 - Added regression and subprocess-fixture coverage for preview, approval, failed
   phase resume, repeat runs, drift, tampered source and configuration preservation.
+- Fixed remote-hardening verification for profiles with more than one SSH user,
+  and stopped requiring zsh for preserved human and admin accounts; failed
+  account and SSH postconditions now print their reason.
+- Fixed the Ubuntu package check so each required unit must be enabled.
+- Root now refuses to run any copy of the entry point other than a fully
+  root-owned `/opt/agent-workstation-kit`, for preview and status too.
+- Cancelling the walkthrough exits 130; a failed SSH-guard record removes its
+  masks; plan preview warns when the working tree differs from its commit.
 
 Upgrade: schema-3 profiles remain valid; new package/account choices are optional.
 Use `scripts/setup-workstation.sh` to export a new execution bundle and preview
