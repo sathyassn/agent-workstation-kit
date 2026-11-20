@@ -45,6 +45,15 @@ between minor releases while live-machine evidence is incorporated.
 - Root now refuses to run any copy of the entry point other than a fully
   root-owned `/opt/agent-workstation-kit`, for preview and status too. Root
   APT installs and SSH-guard release run the same check.
+- Remote-hardening verification evaluates `sshd -T -C` for every declared SSH
+  user and the agent, from loopback and a tailnet address, so a `Match` block
+  that re-enables passwords fails. Account verification now also proves that
+  the agent and service accounts hold no sudoers command grant.
+- As root, staged helpers use a system PATH, clear interpreter variables and run
+  Python isolated. The runbook states the root rule: run only absolute staged
+  paths through a system interpreter, never `sudo` on a user checkout.
+- Preview, status and doctor no longer write bytecode caches; the guided plan
+  export creates no folders; planning refuses a fleet root inside the kit.
 - Cancelling the walkthrough exits 130; a failed SSH-guard record removes its
   masks, or names them when that fails; plan preview warns when the working
   tree differs from its commit.

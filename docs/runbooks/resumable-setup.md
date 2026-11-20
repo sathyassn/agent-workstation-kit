@@ -216,7 +216,7 @@ Homebrew owner. A human uses a separately approved staged invocation for root:
 
 ```text
 cd /opt/agent-workstation-kit
-sudo /bin/bash scripts/setup-workstation.sh run \
+sudo /bin/bash /opt/agent-workstation-kit/scripts/setup-workstation.sh run \
   --plan-file /opt/agent-workstation-fleet/plans/execution-plan.json \
   --scope machine --apply --approve-plan REVIEWED_EXECUTION_PLAN_ID \
   --confirm-target REVIEWED_HOSTNAME --execution-context host \
@@ -224,13 +224,23 @@ sudo /bin/bash scripts/setup-workstation.sh run \
 sudo -K
 ```
 
-Preview from the same staged location without `--apply` first. Root apply
-requires the root-owned `/opt` toolkit and profile, with no writable/symlinked
-code inputs. Root preview and status follow the same rule. Before it runs any
-toolkit code as root, the entry point refuses any copy other than
+Preview from the same staged location without `--apply` first.
+
+**Root rule.** As root, run only the absolute path of a file in the staged copy,
+through a system interpreter: `sudo /bin/bash /opt/agent-workstation-kit/scripts/...`
+or `sudo /usr/bin/python3 -I /opt/agent-workstation-kit/scripts/...`. Never run
+`sudo` on a file in a user-writable checkout, and never let `sudo` choose the
+interpreter from PATH: whatever that file or interpreter does runs as root
+before any kit check can stop it.
+
+The kit's own checks catch mistakes within that rule. Root apply requires the
+root-owned `/opt` toolkit and profile, with no writable/symlinked code inputs.
+Root preview and status follow the same rule. As root, the entry point first
+switches to system tools and the system bash, then refuses any copy other than
 `/opt/agent-workstation-kit`, and refuses that copy if anything in it is not
 root-owned, is group or world writable, or is a symlink. Root package installs
-run the same check. It runs native interpreters in a clean environment. Keep elevation
+run the same check, and staged helpers run Python isolated (`python3 -I`) with
+a system PATH. It runs native interpreters in a clean environment. Keep elevation
 temporary and recovery open. Run the agent scope directly as the intended agent
 account, inside its real graphical session where required. Stop for MDM,
 FileVault, privacy, provider MFA/consent or an unknown security condition.

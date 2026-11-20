@@ -118,8 +118,30 @@ def account_problems(profile):
     return problems
 
 
+def sudo_grant_problems(names, run=None):
+    """Prove that each named account has no sudoers command grant.
+
+    Group checks miss a direct sudoers entry such as `agent ALL=(ALL) ALL`.
+    `sudo -l -U` (root only) reports the effective policy; anything other than
+    an explicit "is not allowed to run sudo" fails closed.
+    """
+    run = run or probe
+    problems = []
+    for name in names:
+        result = run(["sudo", "-n", "-l", "-U", name], env={**os.environ, "LC_ALL": "C"})
+        output = (result.stdout or "") + (result.stderr or "")
+        if "may run the following commands" in output:
+            problems.append(name + " has a sudoers command grant")
+        elif "is not allowed to run sudo" not in output:
+            problems.append("cannot prove that " + name + " has no sudoers command grant")
+    return problems
+
+
 def accounts_match(profile):
-    problems = account_problems(profile)
+    accounts = profile["accounts"]
+    # Human operators hold the scoped agentctl grant by design; the agent and
+    # service accounts must hold none.
+    problems = account_problems(profile) + sudo_grant_problems([accounts["agent"], *accounts.get("services", [])])
     for problem in problems:
         print("REASON accounts: " + problem)
     return not problems
@@ -133,6 +155,33 @@ def sshd_effective(output):
         if len(fields) == 2:
             values.setdefault(fields[0].lower(), []).append(fields[1])
     return values
+
+
+# Loopback plus an address in the Tailscale CGNAT range, so `Match Address`
+# blocks for either path are evaluated.
+SSHD_TEST_ADDRESSES = ("127.0.0.1", "100.64.0.1")
+SSHD_REQUIRED = (("permitrootlogin", "no"), ("passwordauthentication", "no"), ("kbdinteractiveauthentication", "no"))
+
+
+def sshd_conditional_problems(users, run=None):
+    """Evaluate `sshd -T -C` for each user and address so Match blocks apply.
+
+    Plain `sshd -T` shows only the global configuration, so a later
+    `Match User x` with `PasswordAuthentication yes` would pass unseen.
+    """
+    run = run or probe
+    problems = []
+    for user in users:
+        for address in SSHD_TEST_ADDRESSES:
+            result = run(["sshd", "-T", "-C", "user=" + user + ",host=localhost,addr=" + address])
+            if result.returncode:
+                problems.append("cannot read effective sshd policy for " + user + " from " + address)
+                continue
+            config = sshd_effective(result.stdout)
+            for key, expected in SSHD_REQUIRED:
+                if config.get(key) != [expected]:
+                    problems.append("sshd " + key + " is not " + expected + " for " + user + " from " + address)
+    return problems
 
 
 def sshd_problems(output, ssh_users, agent):
@@ -230,6 +279,7 @@ def verify_phase(plan, name, root):
         elif name == "remote-hardening":
             ssh = probe(["sshd", "-T"])
             problems = ["cannot read effective sshd policy"] if ssh.returncode else sshd_problems(ssh.stdout, profile["accounts"]["ssh_users"], agent)
+            problems += sshd_conditional_problems([*profile["accounts"]["ssh_users"], agent])
             for problem in problems:
                 print("REASON remote-hardening: " + problem)
             ok = not problems

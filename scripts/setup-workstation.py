@@ -91,6 +91,8 @@ def main() -> int:
         revision = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT,
                                   check=True, capture_output=True, text=True).stdout.strip()
         fleet_root = args.fleet_root.expanduser().resolve()
+        if not outside_kit(fleet_root, ROOT):
+            raise ValueError("the private fleet root must be outside every public toolkit worktree")
         if fleetctl.fleet_lock_issue(fleet_root):
             raise ValueError("fleet kit.lock must match toolkit VERSION")
         profile_path = fleetctl.resolve_profile(args.profile, fleet_root)

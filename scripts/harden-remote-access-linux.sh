@@ -265,9 +265,9 @@ ufw --force enable
 # Fresh package installation was guarded so maintainer scripts could not expose
 # SSH before this validated configuration and firewall were in place. Preserve
 # any masks that this kit did not create.
-python3 "$script_dir/install-package-set.py" --platform linux --release-ssh-guard
+"${KIT_PYTHON[@]}" "$script_dir/install-package-set.py" --platform linux --release-ssh-guard
 [[ ! -f "$ssh_guard" ]] || ssh_guard_released=true
-python3 "$script_dir/install-package-set.py" --platform linux --release-ssh-guard --apply
+"${KIT_PYTHON[@]}" "$script_dir/install-package-set.py" --platform linux --release-ssh-guard --apply
 systemctl enable --now ssh.socket 2>/dev/null || systemctl enable --now ssh
 if systemctl is-active --quiet ssh.service; then
   systemctl reload ssh.service

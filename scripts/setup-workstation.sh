@@ -45,11 +45,13 @@ if [[ $EUID -eq 0 ]]; then
   fi
   root_home=/root
   [[ $(uname -s) != Darwin ]] || root_home=/var/root
-  exec /usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME="$root_home" \
-    /usr/bin/python3 "$script_dir/lib/setup_cli.py" "$@"
+  exec /usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME="$root_home" PYTHONDONTWRITEBYTECODE=1 \
+    /usr/bin/python3 -I "$script_dir/lib/setup_cli.py" "$@"
 fi
 # shellcheck disable=SC1091
 source "$script_dir/lib/common.sh"
+# Previews, status and doctor must not leave bytecode caches in the checkout.
+export PYTHONDONTWRITEBYTECODE=1
 if [[ $(uname -s) == Darwin ]]; then
   if [[ -x /opt/homebrew/bin/brew ]]; then export PATH="/opt/homebrew/bin:$PATH";
   elif [[ -x /usr/local/bin/brew ]]; then export PATH="/usr/local/bin:$PATH"; fi

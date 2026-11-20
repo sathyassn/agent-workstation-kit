@@ -186,3 +186,35 @@ class PrivateStorageBoundaryTests(unittest.TestCase):
                 self.assertFalse(path_safety.outside_kit(main / "private-plan.json", current))
                 self.assertFalse(path_safety.outside_kit(current / "private-plan.json", current))
                 self.assertTrue(path_safety.outside_kit(parent / "private-data/plan.json", current))
+
+
+class NoWritesWithoutApplyTests(unittest.TestCase):
+    def test_plan_refuses_a_fleet_root_inside_the_public_kit(self):
+        result = subprocess.run(
+            [sys.executable, str(ROOT / "scripts/setup-workstation.py"),
+             "--fleet-root", str(ROOT / "templates/private-fleet"),
+             "--profile", "machines/acme-ws-001.toml"],
+            capture_output=True, text=True)
+        self.assertEqual(2, result.returncode)
+        self.assertIn("outside every public toolkit worktree", result.stderr)
+
+    @unittest.skipIf(os.geteuid() == 0, "the walkthrough refuses root before asking")
+    def test_guided_plan_export_creates_no_folders(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fleet = Path(directory) / "fleet"
+            (fleet / "machines").mkdir(parents=True)
+            profile = fleet / "machines/acme-ws-001.toml"
+            profile.write_text("")
+            output = Path(directory) / "missing/plan.json"
+            ui = UI(plain=True, stream=io.StringIO())
+            with mock.patch.object(setup_cli, "path_input", side_effect=[fleet, profile, output]), \
+                    mock.patch.object(ui, "choice", return_value="local-console"), \
+                    mock.patch.object(setup_cli, "call") as call:
+                self.assertEqual(2, setup_cli.plan_guide(ui))
+            call.assert_not_called()
+            self.assertFalse(output.parent.exists())
+
+    def test_wrapper_disables_bytecode_writes(self):
+        wrapper = (ROOT / "scripts/setup-workstation.sh").read_text()
+        self.assertIn("export PYTHONDONTWRITEBYTECODE=1", wrapper)
+        self.assertIn("PYTHONDONTWRITEBYTECODE=1 \\\n    /usr/bin/python3 -I", wrapper)

@@ -156,7 +156,9 @@ def plan_guide(ui):
             ui.say("Enter a valid verified peer IP; no plan was exported.", "yellow")
             return 2
         args += ["--ssh-source-ip", peer]
-    output.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if not output.parent.is_dir():
+        ui.say("Create the private folder for the execution plan first; this walkthrough creates no folders.", "yellow")
+        return 2
     code = call("setup-workstation.py", args)
     if code == 0:
         ui.plan_path = str(output)
