@@ -13,7 +13,8 @@ sequence.
 |---|---|
 | Set up the first Linux pilot | [First Linux pilot](runbooks/first-linux-pilot.md), then [day-zero Linux](runbooks/day-zero-linux.md) |
 | Set up another Linux host | [Day-zero Linux](runbooks/day-zero-linux.md) |
-| Draft a machine handoff or resume setup | [Guided fleet setup](runbooks/guided-fleet-setup.md) |
+| Draft a fleet machine's handoff and check readiness | [Guided fleet setup](runbooks/guided-fleet-setup.md) |
+| Plan, run and resume the setup of a host | [Automated and resumable setup](runbooks/resumable-setup.md) |
 | Set up a Mac | [Day-zero macOS](runbooks/day-zero-macos.md) |
 | Configure an already prepared host | [Linux setup](02-linux-setup.md) or [macOS setup](03-macos-setup.md) |
 | Create or change a machine profile | [Profile onboarding](01a-onboarding-profile.md) |
@@ -90,11 +91,21 @@ restating changing product choices, field definitions, or operating rules.
 |---|---|
 | Start and hand off a Linux host | [Day-zero Linux](runbooks/day-zero-linux.md) |
 | Start and hand off a Mac | [Day-zero macOS](runbooks/day-zero-macos.md) |
+| Draft a handoff and check readiness for a fleet machine | [Guided fleet setup](runbooks/guided-fleet-setup.md) |
+| Plan, preview, apply and resume each setup scope | [Automated and resumable setup](runbooks/resumable-setup.md) |
+| Accept remote access to a Mac (listener, pairing, Screen Sharing) | [Remote Mac](runbooks/remote-mac.md) |
 | Stage reviewed macOS inputs | [Root-owned macOS snapshots](runbooks/stage-approved-macos-snapshots.md) |
 | Record first-node evidence | [First Linux pilot](runbooks/first-linux-pilot.md) |
 | Accept Minisforum MS-S1 Max hardware | [MS-S1 Max acceptance](hardware/minisforum-ms-s1-max.md) |
 | Create a draft PR or MR as the agent identity | [Draft change](runbooks/create-draft-change.md) |
 | Migrate legacy profiles | [Pre-v2 migration](runbooks/migrate-v1-to-v2.md) or [schema 2 to 3](runbooks/migrate-v2-to-v3.md) |
+
+## Maintaining the kit
+
+| Task | Page |
+|---|---|
+| Prepare and publish a release | [Releasing](maintenance/releasing.md) |
+| Work in this repository as an agent | [Agent operating manual](../AGENTS.md) |
 
 ## Design decisions and evidence
 
@@ -124,6 +135,3 @@ product truth.
   [primary-source register](11-primary-sources.md) and recheck it before use.
 
 [Repository home](../README.md) · [Start with architecture](00-architecture.md)
-
-- [Resumable setup and checkpoint evidence](runbooks/resumable-setup.md)
-- [Remote Mac listener, pairing and Screen Sharing acceptance](runbooks/remote-mac.md)

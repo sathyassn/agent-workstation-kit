@@ -47,8 +47,12 @@ fleet data, organization-only policy, personal paths, or credentials.
    sequencing, approvals, and explanations in the setup skill or documentation.
 7. Preserve preview behavior. A mutating path must require explicit `--apply`;
    privileged or recovery-sensitive changes need the documented human gate.
-8. Update examples, tests, documentation, and `CHANGELOG.md` when behavior or
-   profile fields change.
+8. Update examples, tests and documentation when behavior or profile fields
+   change. Add one short bullet per change under `## [Unreleased]` in
+   `CHANGELOG.md`, linked to the pull request; `make repo-check` fails when
+   `scripts/`, `config/` or `templates/` change without one. When a change
+   adds, renames or removes a command, flag or file location, update
+   `AGENTS.md` in the same pull request.
 9. Run `make ci-check` and `make public-check` before requesting review. On
    macOS, use Bash 4 or newer as described above. Include the result plus any
    untested live-machine assumptions in the pull request. Hosted CI validates
@@ -57,6 +61,12 @@ fleet data, organization-only policy, personal paths, or credentials.
 The checked-in hooks provide fast local feedback. Hosted CI repeats policy,
 secret, documentation, and repository checks. Required branch protection is the
 merge boundary; a local hook alone is not sufficient enforcement.
+
+## Releases
+
+Releases follow [docs/maintenance/releasing.md](docs/maintenance/releasing.md):
+Semantic Versioning, a dated changelog section, an annotated `vX.Y.Z[-rc.N]` tag
+and a GitHub release. The repository owner decides when to release.
 
 ## Review expectations
 
