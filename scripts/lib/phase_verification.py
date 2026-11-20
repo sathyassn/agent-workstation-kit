@@ -184,6 +184,55 @@ def sshd_conditional_problems(users, run=None):
     return problems
 
 
+SSHD_CONFIG = Path("/etc/ssh/sshd_config")
+SSHD_SENSITIVE = {key for key, _ in SSHD_REQUIRED}
+
+
+def sshd_match_problems(config=SSHD_CONFIG):
+    """Fail closed on any Match block that sets a hardened keyword.
+
+    `sshd -T -C` treats criteria it is not given (LocalAddress, LocalPort,
+    RDomain, a real client Host or Address) as not matching, so those blocks
+    are never evaluated. The kit's own drop-in uses no Match blocks, so any
+    Match that sets these keywords needs a person to review it.
+    """
+    return _sshd_match_scan(Path(config), 0, False)[0]
+
+
+def _sshd_match_scan(config, depth, inside):
+    """Return (problems, inside_match_after) for one configuration file.
+
+    Relative Include paths resolve against /etc/ssh, as sshd does. A Match
+    started in an included file is treated as still open afterwards, so the
+    scan can over-report but never miss a block.
+    """
+    import glob
+    if depth > 8:
+        return ["sshd Include nesting is too deep to verify"], inside
+    try:
+        lines = config.read_text().splitlines()
+    except OSError:
+        return ["cannot read sshd configuration " + str(config)], inside
+    problems = []
+    for line in lines:
+        fields = line.split("#", 1)[0].replace("=", " ", 1).split()
+        if not fields:
+            continue
+        keyword = fields[0].lower()
+        if keyword == "match":
+            inside = True
+        elif keyword == "include":
+            for pattern in fields[1:]:
+                pattern = pattern if pattern.startswith("/") else "/etc/ssh/" + pattern
+                for included in sorted(glob.glob(pattern)):
+                    found, opened = _sshd_match_scan(Path(included), depth + 1, inside)
+                    problems += found
+                    inside = inside or opened
+        elif inside and keyword in SSHD_SENSITIVE:
+            problems.append("sshd Match block in " + str(config) + " sets " + keyword + "; review or remove it")
+    return problems, inside
+
+
 def sshd_problems(output, ssh_users, agent):
     config = sshd_effective(output)
     problems = []
@@ -280,6 +329,7 @@ def verify_phase(plan, name, root):
             ssh = probe(["sshd", "-T"])
             problems = ["cannot read effective sshd policy"] if ssh.returncode else sshd_problems(ssh.stdout, profile["accounts"]["ssh_users"], agent)
             problems += sshd_conditional_problems([*profile["accounts"]["ssh_users"], agent])
+            problems += sshd_match_problems()
             for problem in problems:
                 print("REASON remote-hardening: " + problem)
             ok = not problems
