@@ -5,8 +5,8 @@
 - Status: proposed (design PR D0; no code yet)
 - Date: 2026-11-20
 - Source: the consolidated design on issue #5 (comment 7048343188) and its
-  amendments on resolving "latest" (comment 7048398540) and on OS support
-  (comment 7048442102), refined against the
+  amendments on resolving "latest" (comment 7048398540), OS support
+  (comment 7048442102) and the tunnel's order (comment 7048586326), refined against the
   code at the time of writing
 - Audience: maintainers and reviewers. The conductor agent and operators get
   their own pages as each part lands.
@@ -34,7 +34,8 @@ macOS:
 - one schema, one platform matrix, one capability matrix and one tool
   registry that drive validation, plans, docs and installs.
 
-Eight pull requests (T1 to T8) build it in order. Each one ships with tests,
+Eight pull requests (T1 to T8) build it in order, with the browser sign-in
+tunnel right after T2. Each one ships with tests,
 docs, an adversarial review and an interruption stress run.
 
 ```text
@@ -454,6 +455,25 @@ What revert cannot undo, listed in every revert preview:
   non-secret summary for the user-side doctor. A fleet passes `--inputs FILE`
   with expected values, which takes over the fleet's interim checks.
 
+### 10a. Browser sign-in tunnel (right after T2)
+
+- **What it is.** `awk-auth`, `awk-open` and managed SSH host entries finish
+  a remote CLI's localhost sign-in, or show a workstation page, in the
+  client's own browser, over a loopback-only SSH tunnel that closes itself.
+- **Why it comes early.** It is needed day to day, it runs only in user
+  space on the client, and it needs only what T2 provides.
+- **What it takes from T2:** for its writes to the SSH config, a backup and an
+  ownership record; redacted logs; and an undo through `revert`.
+- **What it drops.** It replaces its own backup and logging with T2's. The
+  security properties it already has stay the same: loopback only, a time
+  limit enforced by a watchdog, no secrets in logs, and refusing readiness
+  lines faked by the workstation.
+- **Later.** It uses the T3 hand-over format once T3 lands.
+- **Its gate** is the same as for every PR: tests, an adversarial review of
+  code and docs, a stress run and a docs-only walkthrough.
+- **Starting point.** An earlier standalone version passed its own review and
+  stress run but was never opened. It is the starting point.
+
 ### 11. Where state lives
 
 | What | Linux | macOS | Mode |
@@ -537,11 +557,12 @@ Every root path is created by S1, checked with the existing
 D0 (this ADR, reviewed alone)
  -> T1 one apply path, agent interface, platforms
  -> T2 transaction layer, baseline, ledger, revert, logs, failure records
+ -> browser sign-in tunnel and host entries, on T2
  -> T3 gates, hand-overs, scope order, dead-man timer
  -> T4 lockout and convergence fixes, account archive
  -> T5 schema, interview, schema 4, capabilities
  -> T6 tool registry and resolve flow, staging, day-zero one-liner, snapshots
  -> T7 agent settings
  -> T8 doctor
- -> components: browser sign-in tunnel, corporate IPsec VPN, explainer refresh, update watch
+ -> components: corporate IPsec VPN, explainer refresh, update watch
 ```
