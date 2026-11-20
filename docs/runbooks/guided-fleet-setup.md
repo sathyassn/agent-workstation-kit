@@ -2,8 +2,11 @@
 
 [Documentation home](../README.md) · [Linux day zero](day-zero-linux.md) · [macOS day zero](day-zero-macos.md)
 
-Use `fleetctl setup` for a machine that has a private fleet profile. It selects
-Linux or macOS from the profile and runs the existing readiness checks. Use
+Use `fleetctl setup` for a machine that has a private fleet profile. It drafts
+the host handoff and checks readiness: it selects Linux or macOS from the
+profile and runs the existing readiness checks. It never applies changes.
+Execution, receipts and resume after a failure use `scripts/setup-workstation.sh`
+([automated and resumable setup](resumable-setup.md)). Use
 Python 3.11 or newer, with the interpreter prepared in your platform's
 day-zero guide. The examples use `python3`.
 
@@ -31,12 +34,16 @@ day-zero guide. The examples use `python3`.
 
 After the day-zero prerequisites, open the reviewed **source** kit checkout in
 the approved operator's terminal. Set `FLEET_ROOT` to the private fleet source
-checkout. Use the same command for a fresh or interrupted setup.
+checkout. Run readiness before the first phase and again after an interruption.
 
 ```sh
 python3 scripts/fleetctl.py --fleet-root "$FLEET_ROOT" \
-  setup machines/acme-ws-001.toml
+  setup machines/acme-ws-001.toml --execution-context host
 ```
+
+`--execution-context host` states that this is an ordinary terminal on the
+target, not an agent sandbox. Without it, readiness reports NOT READY, because
+sandboxed output cannot prove host state.
 
 Use the same approved Ubuntu exception as in the handoff, if applicable. To
 enforce the reviewed revisions, pass their full commit IDs with
@@ -54,8 +61,9 @@ Check publication or remote freshness independently when required.
   readiness from live checks each time and never replays provisioning.
 - **Ready:** Start the setup agent in the kit source checkout and supply the
   committed host handoff. Have it verify the physical target and inspect what
-  was already applied. Preview and approve each remaining phase using the
-  platform runbook. Use the named operator for enrollment, credentials and
+  was already applied. Preview, approve and resume each remaining phase with
+  `scripts/setup-workstation.sh` ([automated and resumable setup](resumable-setup.md))
+  and the platform runbook. Use the named operator for enrollment, credentials and
   recovery. Keep each acceptance outcome in the private host record.
 
 The command reports setup-agent readiness. Apply readiness still requires the

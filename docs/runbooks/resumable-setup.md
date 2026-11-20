@@ -25,7 +25,10 @@ approved profile -> source plan + execution bundle
 
 ## Start here: one command
 
-After the OS day-zero prerequisites, run:
+After the OS day-zero prerequisites, run the command below. For a target with a
+private fleet profile, first draft its handoff and check readiness with
+`fleetctl setup` ([guided fleet setup](guided-fleet-setup.md)); this command
+then executes and resumes the setup.
 
 ```bash
 scripts/setup-workstation.sh
