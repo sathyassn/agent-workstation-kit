@@ -215,9 +215,13 @@ def repository_suite_check() -> Check:
         return Check("FAIL", "repository checks", "make is unavailable")
     environment = os.environ.copy()
     environment["PYTHON"] = sys.executable
-    result = subprocess.run(
-        ["make", "check"], cwd=ROOT, check=False, env=environment
-    )
+    command = ["make", "check"]
+    # macOS /bin/bash is 3.2; the shell checks need the Homebrew Bash from day zero.
+    for candidate in ("/opt/homebrew/bin/bash", "/usr/local/bin/bash"):
+        if os.access(candidate, os.X_OK):
+            command.append("BASH_BIN=" + candidate)
+            break
+    result = subprocess.run(command, cwd=ROOT, check=False, env=environment)
     return Check(
         "PASS" if result.returncode == 0 else "FAIL",
         "repository checks",
