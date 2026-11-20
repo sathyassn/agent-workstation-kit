@@ -16,7 +16,7 @@ release PR: pick version -> move [Unreleased] under it -> bump VERSION
 owner merges -> owner tags vX.Y.Z[-rc.N] -> owner publishes GitHub release
         |
         v
-private fleets pin the tag in kit.lock
+private fleets set kit.lock to the version (without the v)
 ```
 
 ## Every pull request
@@ -59,22 +59,28 @@ On a branch such as `chore/release-0.3.0-rc.1`:
 
 ## Tag and publish (owner)
 
-After the release pull request is merged, on an up-to-date `main`:
+Before a final (non-rc) release, run the strict `make public-check` and complete
+the [release checklist](../13-public-release-checklist.md).
+
+Tag the release pull request's own merge commit, not whatever `main` holds
+later. Verify everything before anything is pushed:
 
 ```bash
-git switch main
-git pull --ff-only
-git tag -a v0.3.0-rc.1 -m "agent-workstation-kit 0.3.0-rc.1"
+git fetch origin
+RELEASE_SHA=$(gh pr view RELEASE_PR_NUMBER --json mergeCommit --jq .mergeCommit.oid)
+git show "$RELEASE_SHA:VERSION"            # must print 0.3.0-rc.1
+git tag -a v0.3.0-rc.1 -m "agent-workstation-kit 0.3.0-rc.1" "$RELEASE_SHA"
+test "$(git rev-parse 'v0.3.0-rc.1^{commit}')" = "$RELEASE_SHA"
 git push origin v0.3.0-rc.1
 gh release create v0.3.0-rc.1 --verify-tag --prerelease \
   --title "0.3.0-rc.1" --notes-file RELEASE_NOTES.md
 ```
 
+- Stop if `VERSION` at that commit is not the release version, or if the `test`
+  line fails; a pushed tag and a published release are hard to withdraw.
 - `RELEASE_NOTES.md` is a temporary file holding the new changelog section; do
   not commit it.
 - Use `--prerelease` for every `-rc.N` version and omit it for a final version.
-- Check the tag points at the merge commit: `git rev-parse v0.3.0-rc.1^{commit}`
-  must equal `git rev-parse main`.
 
 ## After the release
 

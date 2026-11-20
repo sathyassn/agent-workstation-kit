@@ -15,7 +15,7 @@ Planned as release 0.2.0-rc.7.
 
 ### Added
 
-- One setup entry point, `scripts/setup-workstation.sh`, with a guided walkthrough (Rich or plain text), validated input, typed approvals, progress, status and retry guidance; UI packages are optional. ([#6])
+- One setup entry point, `scripts/setup-workstation.sh`, with a guided walkthrough (Rich or plain text), validated input, typed approvals, progress, status, and retry and role hand-over guidance; UI packages are optional. ([#6])
 - Owner-scope execution from a portable reviewed plan, with host and scope approval, live postcondition checks, private receipts and resume after failure. ([#6])
 - Profile-selected APT and Homebrew packages and apps, installed only when missing. ([#6])
 - A pinned, signature-reviewed mise bootstrap for new Linux accounts. ([#6])
@@ -45,18 +45,18 @@ Planned as release 0.2.0-rc.7.
 - Remote-hardening verification works with more than one SSH user (`sshd -T` prints one `AllowUsers` line per user). ([#6])
 - Human and admin accounts keep their own shell; only the agent account must use zsh. Failed account and SSH checks print their reason. ([#6])
 - The Ubuntu package check requires each unit to be enabled, not just one of them. ([#6])
-- Tailnet firewall verification accepts plain `ufw status` output, which omits `IN` for incoming rules; outgoing and routed rules never count. This applies in the setup verifier and in `validate-host.sh`. ([#6])
+- Tailnet firewall verification accepts plain `ufw status` output, which omits `IN` for incoming rules, so a correct hardening never verified; verbose output is also accepted, and outgoing and routed rules never count. This applies in the setup verifier and in `validate-host.sh`. ([#6])
 - The shared installer works with Apple's system Bash, and new Mac agent shells find the selected Homebrew. ([#6])
 - If the SSH guard record cannot be written, its masks are removed, or named for manual removal when that also fails. ([#6])
-- A running phase keeps the journal lock until it exits, so killing only the executor cannot let a rerun run the same phase alongside it. The refusal names the lock file to inspect when a leftover background process holds it. ([#6])
-- Preview, status, doctor and readiness write nothing to the checkouts: no bytecode caches, no folder creation, and `git` runs without optional locks. ([#6], [#8])
+- A running phase keeps the journal lock until it exits, so killing only the executor cannot let a rerun run the same phase alongside it. When a leftover background process holds the lock, the refusal says so and names the lock file to inspect with `lsof`. ([#6])
+- Preview, status, doctor and readiness write nothing to the checkouts: no bytecode caches (readiness sends `make check` bytecode to a temporary prefix), the guided plan export creates no folders, and `git` runs without optional locks. ([#6], [#8])
 
 ### Security
 
-- Root runs only from a fully root-owned `/opt/agent-workstation-kit`, for preview and status as well as apply. It uses system PATH tools and the system bash before any check. Root package installs and SSH-guard release run the same check. ([#6])
+- Root runs only from a fully root-owned `/opt/agent-workstation-kit`, for preview and status as well as apply. It uses system PATH tools and the system bash before any check, because sudo on macOS keeps the caller's PATH. Root APT installs and SSH-guard release run the same check. ([#6])
 - As root, staged helpers re-run themselves with an empty environment and run Python isolated without bytecode (`python3 -I -B`); the macOS package step refuses root. ([#6])
 - A fresh OpenSSH install stays guarded until hardening validates the firewall and SSH policy. ([#6])
-- Remote-hardening verification evaluates `sshd -T -C` for every SSH user and the agent, and refuses any `Match` block that sets password, keyboard-interactive or root-login options. ([#6])
+- Remote-hardening verification evaluates `sshd -T -C` for every SSH user and the agent, from loopback and a tailnet address. Because test mode cannot evaluate every `Match` criterion, it also refuses any `Match` block that sets password, keyboard-interactive or root-login options. ([#6])
 - Account verification proves that the agent and service accounts hold no sudoers command grant. ([#6])
 - Planning, `fleetctl setup`, `fleetctl init --fleet-root` and both readiness launchers refuse a private fleet root inside the public kit. ([#6], [#8])
 
@@ -64,8 +64,8 @@ Planned as release 0.2.0-rc.7.
 
 - Schema 3 profiles remain valid; the new package and account choices are optional.
 - Use `scripts/setup-workstation.sh` to export a new execution plan, and preview each owner scope before approving it. Existing configuration and conflicting installed versions are preserved; a reviewed merge or upgrade may be needed.
-- Keep root applies in matching root-owned `/opt` snapshots, and use one private journal per executing account.
-- Software fixtures do not qualify a fresh physical Ubuntu or Mac install, account and Secure Token behaviour, SSH package scripts and recovery, or GUI and reboot acceptance. Keep fleet pins unchanged until live qualification.
+- Keep root applies in matching root-owned `/opt` snapshots, never `sudo` on a user checkout, and use one private journal per executing account.
+- Software fixtures do not qualify a fresh physical Ubuntu or Mac install, account and Secure Token behaviour, SSH package scripts and recovery, or GUI and reboot acceptance. Keep fleet pins unchanged until independent review and live qualification.
 
 [#6]: https://github.com/sathyassn/agent-workstation-kit/pull/6
 [#8]: https://github.com/sathyassn/agent-workstation-kit/pull/8
@@ -180,7 +180,7 @@ independent review and approved release publication.
   labeled automated versus manual evidence, and added a fail-closed public
   conduct-contact gate.
 
-### 0.1.0-rc.1 — Unreleased baseline
+### 0.1.0-rc.1 (untagged baseline)
 
 - Added preview-first bootstrap, account, access, tooling, workload, resource,
   and host-audit automation.

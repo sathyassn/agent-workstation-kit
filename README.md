@@ -52,6 +52,9 @@ person on any device
 A remote KVM (keyboard, video, mouse) device is the out-of-band console for when
 the operating system or remote desktop is unavailable.
 
+Keep the fleet repository private even though this kit is public. Pin and review
+kit releases rather than forking; fork only when local automation must diverge.
+
 ## Quick start
 
 You need a freshly installed machine, a person at its console, and a private
@@ -62,7 +65,10 @@ fleet repository made from [`templates/private-fleet`](templates/private-fleet).
 1. Before power-on, open the [first Linux pilot checklist](docs/runbooks/first-linux-pilot.md)
    for a new hardware model.
 2. Follow [day-zero Linux](docs/runbooks/day-zero-linux.md) to the readiness check.
+   Hand control to the setup agent only at that readiness gate.
 3. Plan, preview and apply each scope with [automated and resumable setup](docs/runbooks/resumable-setup.md).
+4. For a new hardware model, finish the pilot evidence before treating the node
+   or model as approved.
 
 **macOS:**
 
@@ -72,6 +78,11 @@ fleet repository made from [`templates/private-fleet`](templates/private-fleet).
 
 **For a machine in a private fleet,** draft its handoff and check readiness with
 [guided fleet setup](docs/runbooks/guided-fleet-setup.md) first.
+
+**Machine profiles:** create a draft with `setup-workstation.sh init` (preview,
+then `--write`). The initializer allocates the UUID and checks uniqueness, so
+never invent one or replace an existing profile. Resolve every `ask`, get the
+profile reviewed, and commit it with the fleet's `kit.lock` before staging.
 
 The entry point in short:
 
