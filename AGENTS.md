@@ -79,11 +79,15 @@ inside a checkout.
    `resources` (only after the node is measured under load) and `audit`.
    - Preview: `scripts/setup-workstation.sh run --plan-file PRIVATE/execution-plan.json --scope SCOPE`
      prints the phases and an execution plan ID. Show it to the person and stop.
-   - Apply, after approval: the same command plus `--apply --approve-plan ID --confirm-target HOST --execution-context host --journal PRIVATE/setup.json`.
-     Root scopes are run by the person from the staged copy: on Ubuntu every
-     scope except `agent`, on macOS every scope except `packages` and `agent`; see [resumable setup](docs/runbooks/resumable-setup.md).
+   - Apply, after approval: the same command plus `--apply --approve-plan ID --confirm-target HOST --execution-context host --journal JOURNAL`.
+     `JOURNAL` is one private journal per executing account, in a folder that
+     account owns with mode `0700`.
+   - Root scopes are run by the person from the staged copy, with a journal in
+     a root-owned folder and `--confirm-recovery-tested` once console recovery
+     has actually been tested: on Ubuntu every scope except `agent`, on macOS
+     every scope except `packages` and `agent`. See [resumable setup](docs/runbooks/resumable-setup.md).
    - Success: each phase prints `PASS NAME live postconditions`. Exit 0.
-   - Verify: `scripts/setup-workstation.sh status --plan-file PRIVATE/execution-plan.json --scope SCOPE --journal PRIVATE/setup.json`
+   - Verify: `scripts/setup-workstation.sh status --plan-file PRIVATE/execution-plan.json --scope SCOPE --journal JOURNAL`
      lists each phase as recorded and names the next candidate.
    - Stop: exit 3 (a person must act), 2 (wrong account or refused input) or 1 (a phase failed).
 
@@ -209,6 +213,7 @@ verify command passes.
 - Treat `config/profiles/*.example.toml` as templates. Use ignored
   `config/profiles/*.local.toml` files only for experiments; approved profiles
   belong in the private fleet repository.
-- Before asking for publication approval, run the strict `make public-check` and
-  complete [the release checklist](docs/13-public-release-checklist.md).
+- Run the strict `make public-check` before every release, and complete
+  [the release checklist](docs/13-public-release-checklist.md) before a final
+  (non-rc) release; see [releasing](docs/maintenance/releasing.md).
 - A person reviews and merges every pull request.
