@@ -77,6 +77,7 @@ class SetupCLIUXTests(unittest.TestCase):
         self.assertNotIn("\x00", text)
         self.assertIn("base | pending", text)
 
+    @unittest.skipIf(os.geteuid() == 0, "needs a real non-root account for pwd lookups")
     def test_blank_guided_approval_does_not_apply_or_create_a_journal(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "plan.json"
@@ -87,7 +88,7 @@ class SetupCLIUXTests(unittest.TestCase):
             engine.SCOPES = {"macos": {"packages": ["base"]}}
             engine.approval_id.return_value = "reviewed"
             ui = UI(plain=True, stream=io.StringIO())
-            with mock.patch.object(setup_cli, "path_input", side_effect=[path, journal]), mock.patch.object(ui, "choice", return_value="packages"), mock.patch.object(ui, "ask", return_value=""), mock.patch.object(setup_cli, "load", return_value=engine), mock.patch.object(setup_cli, "call", return_value=0) as call, mock.patch.object(setup_cli.os, "geteuid", return_value=501):
+            with mock.patch.object(setup_cli, "path_input", side_effect=[path, journal]), mock.patch.object(ui, "choice", return_value="packages"), mock.patch.object(ui, "ask", return_value=""), mock.patch.object(setup_cli, "load", return_value=engine), mock.patch.object(setup_cli, "call", return_value=0) as call, mock.patch.object(setup_cli.os, "geteuid", return_value=os.geteuid()):
                 self.assertEqual(0, setup_cli.run_guide(ui))
                 self.assertEqual(1, call.call_count)
                 self.assertNotIn("--apply", call.call_args.args[1])
