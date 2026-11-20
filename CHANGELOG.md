@@ -40,7 +40,9 @@ between minor releases while live-machine evidence is incorporated.
   since test mode cannot evaluate every `Match` criterion. Account verification now also proves that
   the agent and service accounts hold no sudoers command grant.
 - A running phase keeps the journal lock until it exits, so killing only the
-  executor can no longer let a rerun start the same phase alongside it.
+  executor can no longer let a rerun start the same phase alongside it. A
+  background process a phase leaves running also holds it; the refusal says so
+  and names the lock file to inspect with `lsof`.
 - As root, staged helpers re-run themselves with an empty environment and run
   Python isolated without bytecode (`python3 -I -B`); the macOS package step
   refuses root. The runbook states the root rule: run only absolute staged
