@@ -50,7 +50,9 @@ fleet data, organization-only policy, personal paths, or credentials.
 8. Update examples, tests and documentation when behavior or profile fields
    change. Add one short bullet per change under `## [Unreleased]` in
    `CHANGELOG.md`, linked to the pull request; `make repo-check` fails when
-   `scripts/`, `config/` or `templates/` change without one. When a change
+   `scripts/`, `config/` or `templates/` change without one. It compares with
+   `origin/main` (or `CHANGELOG_BASE`); without either it prints a note and
+   skips, and hosted CI always sets the base. When a change
    adds, renames or removes a command, flag or file location, update
    `AGENTS.md` in the same pull request.
 9. Run `make ci-check` and `make public-check` before requesting review. On
