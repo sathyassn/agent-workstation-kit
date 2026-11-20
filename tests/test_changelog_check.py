@@ -103,37 +103,53 @@ class ChangelogEntryTests(unittest.TestCase):
 
 
 class AgentsManualTests(unittest.TestCase):
-    def manual(self, text):
+    @classmethod
+    def setUpClass(cls):
         import shutil
-        folder = tempfile.TemporaryDirectory()
-        self.addCleanup(folder.cleanup)
-        root = Path(folder.name)
-        for source in {item for sources in check.FLAG_SOURCES.values() for item in sources}:
-            (root / source).parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy(ROOT / source, root / source)
-        (root / "AGENTS.md").write_text(text)
-        return check.agents_manual_issues(root)
+        cls.folder = tempfile.TemporaryDirectory()
+        cls.root = Path(cls.folder.name) / "kit"
+        shutil.copytree(ROOT, cls.root, ignore=shutil.ignore_patterns(".git", "__pycache__", ".worktrees"))
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.folder.cleanup()
+
+    def manual(self, text):
+        (self.root / "AGENTS.md").write_text(text)
+        return check.agents_manual_issues(self.root)
 
     def test_the_real_manual_is_consistent(self):
         self.assertEqual([], check.agents_manual_issues(ROOT))
 
-    def test_missing_path_unknown_action_and_flag_are_reported(self):
-        issues = self.manual(
-            "Run `scripts/no-such-tool.sh` first.\n"
-            "Then `scripts/setup-workstation.sh frobnicate`.\n"
-            "Then `scripts/setup-workstation.sh plan --no-such-flag`.\n")
+    def test_missing_path_and_unknown_action(self):
+        issues = self.manual("Run `scripts/no-such-tool.sh` first.\nThen `scripts/setup-workstation.sh frobnicate`.\n")
         self.assertIn("AGENTS.md names a path that does not exist: scripts/no-such-tool.sh", issues)
         self.assertIn("AGENTS.md names an unknown setup-workstation.sh action: frobnicate", issues)
-        self.assertIn("AGENTS.md uses --no-such-flag with setup-workstation.sh, which does not define it", issues)
 
-    def test_planned_commands_are_not_checked_yet(self):
-        self.assertEqual([], self.manual("PR 2 adds `scripts/setup-workstation.sh user --dry-run`.\n"))
+    def test_flags_are_checked_per_action(self):
+        # --scope belongs to run, not plan; --ready belongs to fleetctl validate, not run.
+        issues = self.manual("`scripts/setup-workstation.sh plan --scope agent`\n`scripts/setup-workstation.sh run --ready`\n"
+                             "`scripts/setup-workstation.sh run --plan-file P --scope agent`\n")
+        self.assertIn("AGENTS.md uses --scope with setup-workstation.sh plan, which does not define it", issues)
+        self.assertIn("AGENTS.md uses --ready with setup-workstation.sh run, which does not define it", issues)
+        self.assertEqual(2, len(issues), issues)
 
-    def test_planned_marker_is_exact_and_flags_match_whole_words(self):
-        issues = self.manual("See PR 20: `scripts/setup-workstation.sh run --aply`.\n"
-                             "`scripts/setup-workstation.sh plan --export`.\n")
-        self.assertIn("AGENTS.md uses --aply with setup-workstation.sh, which does not define it", issues)
-        self.assertIn("AGENTS.md uses --export with setup-workstation.sh, which does not define it", issues)
+    def test_continuation_lines_and_fleetctl_subcommands_are_checked(self):
+        issues = self.manual("```bash\nscripts/setup-workstation.sh run \\\n  --plan-file P --bogus-flag\n```\n"
+                             "`python3 scripts/fleetctl.py --fleet-root F frob`\n"
+                             "`python3 scripts/fleetctl.py --fleet-root F validate machines/H.toml --ready --nope`\n")
+        self.assertIn("AGENTS.md uses --bogus-flag with setup-workstation.sh run, which does not define it", issues)
+        self.assertIn("AGENTS.md names an unknown fleetctl.py subcommand: frob", issues)
+        self.assertIn("AGENTS.md uses --nope with fleetctl.py validate, which does not define it", issues)
+        self.assertNotIn("AGENTS.md uses --ready with fleetctl.py validate, which does not define it", issues)
+
+    def test_planned_lines_skip_commands_but_not_paths(self):
+        issues = self.manual("Planned: issue #5, step 2 adds `scripts/setup-workstation.sh user --dry-run`.\n"
+                             "Planned: issue #5, step 3 reads `scripts/not-yet.sh`.\n"
+                             "See PR 20: `scripts/setup-workstation.sh run --aply`.\n")
+        self.assertIn("AGENTS.md names a path that does not exist: scripts/not-yet.sh", issues)
+        self.assertIn("AGENTS.md uses --aply with setup-workstation.sh run, which does not define it", issues)
+        self.assertFalse([issue for issue in issues if "user" in issue], issues)
 
 
 if __name__ == "__main__":

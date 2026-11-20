@@ -97,21 +97,35 @@ def changelog_entry_issue(root: Path, base: str | None) -> str | None:
 
 
 AGENTS_PATH = re.compile(r"(?<![\w/.-])((?:scripts|config|templates|docs|skills|tests)/[\w./-]*[\w/])")
-AGENTS_ACTION = re.compile(r"setup-workstation\.sh (?!ACTION)([a-z][a-z-]*)")
 AGENTS_FLAG = re.compile(r"(?<![\w-])(--[a-z][a-z-]*)")
-# Commands named in AGENTS.md, and the files whose text defines their flags.
-FLAG_SOURCES = {
-    "setup-workstation.sh": ("scripts/setup-workstation.sh", "scripts/lib/setup_cli.py", "scripts/setup-workstation.py", "scripts/execute-setup.py", "scripts/fleetctl.py"),
-    "fleetctl.py": ("scripts/fleetctl.py",),
-    "validate-fleet.py": ("scripts/validate-fleet.py",),
-    "validate-host.sh": ("scripts/validate-host.sh",),
-}
-# Commands the manual names for work still to come; their flags are not checked yet.
-PLANNED = re.compile(r"\bPR (?:2a?|3)\b")
+# A line about work not built yet; its commands are checked once they exist.
+PLANNED = re.compile(r"[Pp]lanned: issue #5")
+
+
+def _help(root: Path, command: list[str], cache: dict) -> str:
+    key = tuple(command)
+    if key not in cache:
+        result = subprocess.run(command, cwd=root, capture_output=True, text=True, timeout=60, check=False)
+        cache[key] = result.stdout + result.stderr
+    return cache[key]
+
+
+def _manual_lines(text: str) -> list[str]:
+    """Lines of AGENTS.md with shell continuation lines joined."""
+    lines, pending = [], ""
+    for line in text.splitlines():
+        if line.rstrip().endswith("\\"):
+            pending += line.rstrip()[:-1] + " "
+            continue
+        lines.append(pending + line)
+        pending = ""
+    return lines
 
 
 def agents_manual_issues(root: Path) -> list[str]:
-    """Every path, setup action and flag AGENTS.md names must exist in the kit."""
+    """Paths, setup-workstation.sh actions, fleetctl.py subcommands and their flags named
+    in AGENTS.md must exist. Flags are checked against that exact subcommand's --help.
+    Lines marked `planned: issue #5` have their paths checked but not their commands."""
     manual = root / "AGENTS.md"
     if not manual.is_file():
         return ["AGENTS.md is missing"]
@@ -123,19 +137,40 @@ def agents_manual_issues(root: Path) -> list[str]:
     cli = (root / "scripts/lib/setup_cli.py").read_text(encoding="utf-8")
     commands = re.search(r"^COMMANDS = \(([^)]*)\)", cli, re.M)
     actions = set(re.findall(r'"([a-z-]+)"', commands.group(1))) if commands else set()
-    for line in text.splitlines():
+    cache: dict = {}
+    wrapper = ["bash", str(root / "scripts/setup-workstation.sh")]
+    fleetctl = [sys.executable, str(root / "scripts/fleetctl.py")]
+    fleet_global = _help(root, [*fleetctl, "--help"], cache)
+    subcommands = set(re.findall(r"\{([a-z,]+)\}", fleet_global)[0].split(",")) if "{" in fleet_global else set()
+    for line in _manual_lines(text):
         if PLANNED.search(line):
             continue
-        for action in AGENTS_ACTION.findall(line):
-            if action not in actions and action != "help":
-                issues.append("AGENTS.md names an unknown setup-workstation.sh action: " + action)
-        for command, sources in FLAG_SOURCES.items():
-            if command not in line:
+        for match in re.finditer(r"setup-workstation\.sh ([a-z][a-z-]*)((?:\s+[^`|]*)?)", line):
+            action, rest = match.group(1), match.group(2)
+            if action in {"ACTION", "help"}:
                 continue
-            defined = "".join((root / source).read_text(encoding="utf-8") for source in sources)
-            for flag in AGENTS_FLAG.findall(line.split(command, 1)[1]):
+            if action not in actions:
+                issues.append("AGENTS.md names an unknown setup-workstation.sh action: " + action)
+                continue
+            defined = _help(root, [*wrapper, action, "--help"], cache)
+            for flag in AGENTS_FLAG.findall(rest):
                 if not re.search(re.escape(flag) + r"(?![\w-])", defined):
-                    issues.append("AGENTS.md uses " + flag + " with " + command + ", which does not define it")
+                    issues.append("AGENTS.md uses " + flag + " with setup-workstation.sh " + action + ", which does not define it")
+        for match in re.finditer(r"fleetctl\.py((?:\s+[^`|]*)?)", line):
+            tokens = match.group(1).split()
+            index = 0
+            while index < len(tokens) and tokens[index].startswith("--"):
+                index += 2 if tokens[index] == "--fleet-root" else 1
+            if index >= len(tokens):
+                continue
+            subcommand = tokens[index]
+            if subcommand not in subcommands:
+                issues.append("AGENTS.md names an unknown fleetctl.py subcommand: " + subcommand)
+                continue
+            defined = _help(root, [*fleetctl, subcommand, "--help"], cache) + fleet_global
+            for flag in AGENTS_FLAG.findall(" ".join(tokens)):
+                if not re.search(re.escape(flag) + r"(?![\w-])", defined):
+                    issues.append("AGENTS.md uses " + flag + " with fleetctl.py " + subcommand + ", which does not define it")
     return issues
 
 
@@ -283,7 +318,10 @@ def main() -> int:
 
     failures.extend(agents_manual_issues(ROOT))
 
-    if issue := changelog_entry_issue(ROOT, changelog_base(ROOT)):
+    base = changelog_base(ROOT)
+    if base is None:
+        print("NOTE changelog check skipped: no origin/main ref and no CHANGELOG_BASE to compare with")
+    elif issue := changelog_entry_issue(ROOT, base):
         failures.append(issue)
 
     if failures:
