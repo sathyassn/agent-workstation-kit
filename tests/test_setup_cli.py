@@ -44,6 +44,10 @@ class SetupCLIUXTests(unittest.TestCase):
         with mock.patch.object(setup_cli, "guide", side_effect=KeyboardInterrupt), mock.patch("sys.stdout", new=io.StringIO()) as output:
             self.assertEqual(130, setup_cli.main(["guide"]))
             self.assertIn("receipts are retained", output.getvalue())
+        # End of input (Ctrl-D or a closed pipe) is a cancellation, not success.
+        with mock.patch.object(setup_cli, "guide", side_effect=EOFError), mock.patch("sys.stdout", new=io.StringIO()) as output:
+            self.assertEqual(130, setup_cli.main(["guide"]))
+            self.assertIn("Cancelled", output.getvalue())
 
     def test_choice_retries_invalid_input_and_blank_uses_safe_default(self):
         output = io.StringIO()

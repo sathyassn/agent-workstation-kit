@@ -11,6 +11,10 @@ import sys
 import tomllib
 
 ROOT = Path(__file__).resolve().parents[2]
+# Unresolved, so a symlinked staging path is refused rather than followed.
+KIT_ROOT = Path(os.path.abspath(__file__)).parents[2]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from path_safety import require_staged_root  # noqa: E402
 APT_SPEC = re.compile(r"^[a-z0-9][a-z0-9+.-]*(?::[a-z0-9]+)?(?:=[A-Za-z0-9.+:~_-]+)?$")
 BREW_SPEC = re.compile(r"^[a-z0-9][a-z0-9+._-]*(?:@[a-z0-9][a-z0-9._-]*)?$")
 
@@ -136,7 +140,8 @@ def guard_new_ssh_install(*, apply):
             SSH_GUARD.unlink()
         except FileNotFoundError:
             pass
-        run(["systemctl", "unmask", *SSH_UNITS], mutate=True)
+        if run(["systemctl", "unmask", *SSH_UNITS], mutate=True).returncode:
+            raise ValueError("could not record the SSH install guard, and removing its masks also failed; no package was installed. Remove the masks by hand: systemctl unmask " + " ".join(SSH_UNITS))
         raise ValueError("could not record the SSH install guard; the masks were removed and no package was installed")
 
 
@@ -149,7 +154,8 @@ def release_ssh_guard(*, apply):
     if not apply:
         return 0
     if os.geteuid() != 0:
-        raise ValueError("releasing the SSH install guard requires approved staged root execution")
+        raise ValueError("releasing the SSH install guard requires root, from the root-owned staged copy")
+    require_staged_root(KIT_ROOT)
     ufw = run(["ufw", "status"])
     defaults = Path("/etc/default/ufw").read_text()
     if ufw.returncode or "Status: active" not in ufw.stdout or not all(re.search(r'^\s*' + key + r'="?DROP"?\s*$', defaults, re.M) for key in ("DEFAULT_INPUT_POLICY", "DEFAULT_FORWARD_POLICY")):
@@ -167,8 +173,10 @@ def provision(platform: str, packages: dict[str, list[str]], *, apply: bool = Fa
         raise ValueError(f"package platform {platform} differs from host {actual}")
     if platform == "macos" and os.geteuid() == 0:
         raise ValueError("Homebrew runs as its named package owner, never root")
-    if apply and platform == "linux" and os.geteuid() != 0:
-        raise ValueError("APT apply requires an approved root-owned staged invocation")
+    if apply and platform == "linux":
+        if os.geteuid() != 0:
+            raise ValueError("APT apply requires root, from the root-owned staged copy")
+        require_staged_root(KIT_ROOT)
     installed = inventory(platform, packages)
     missing = missing_packages(packages, installed)
     for kind in packages:

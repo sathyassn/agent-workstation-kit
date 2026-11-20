@@ -29,7 +29,7 @@ if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
     ! path_is_root_controlled "$script_dir/lib/setup_cli.py" ||
     ! path_is_root_controlled "$script_dir/lib/common.sh" ||
     [[ -n $(find "$staged_root" \( ! -user 0 -o -perm -g+w -o -perm -o+w -o -type l \) -print -quit 2>&1) ]]; then
-    printf '[agent-workstation] ERROR: %s\n' "Root may run only the root-owned staged copy at $staged_root. Stage the reviewed source there (docs/runbooks/resumable-setup.md); a user-writable checkout is never run as root." >&2
+    printf '[agent-workstation] ERROR: %s\n' "Root may run only the root-owned staged copy at $staged_root. Stage the reviewed source there (docs/runbooks/resumable-setup.md); root refuses a user-writable checkout." >&2
     exit 5
   fi
   root_home=/root
