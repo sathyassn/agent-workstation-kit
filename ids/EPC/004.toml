@@ -1,0 +1,11 @@
+id = "EPC-004"
+uid = "c3be0d4b-e96b-488b-9855-efc933fe7a65"
+kind = "EPC"
+title = "Terminal UI and plain output"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-21T09:10:09Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
