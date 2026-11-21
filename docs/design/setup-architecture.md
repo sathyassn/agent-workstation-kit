@@ -283,7 +283,7 @@ This is a user decision (2026-11-21).
   (`CGO_ENABLED=0`), one binary per OS and CPU: Linux on amd64 and arm64,
   macOS on arm64. `darwin/amd64` is left out on purpose, because only Apple
   silicon Macs are supported. Each
-  release carries checksums, and signatures later, pinned in the registry.
+  release carries checksums and a signature, pinned in the registry.
   - Only two things are not Go: data (the TOML schema, the registries and
     dotfile templates), and the day-zero one-liner, a few lines of POSIX sh
     that download the pinned binary, verify its checksum and run it.
@@ -301,7 +301,7 @@ This is a user decision (2026-11-21).
   ```text
   wskit init | interview
   wskit plan [--unit a,b]
-  wskit setup [--all | --stage S4 | --unit vpn] [--apply]     preview by default
+  wskit setup [--all | --stage services | --unit vpn] [--apply]  preview by default
   wskit <unit> <verb> [flags]                                  each unit standalone
   wskit status | doctor | explain <unit|field>
   wskit next --json                                            conductor interface
@@ -388,7 +388,12 @@ This is a user decision (2026-11-21).
     reviewed commit and the digest of the resolved plan. Every fleet file
     the plan read is staged with the plan, so a root step reads exactly
     what was approved.
-- **Go structure** (signatures and layout details in the P1 core spec):
+- **Go structure** (signatures and layout details in the P1 core spec). The
+  Charm libraries are pure Go, so `CGO_ENABLED=0` builds hold for every
+  target; Huh runs inside the one Bubble Tea program so it never takes the
+  signals; darwin binaries are signed on macOS (a Linux cross-compile is
+  unsigned); `systemd`, `launchctl` and other OS tools are called through
+  `os/exec`.
   - one module, whose path is the repository's own path, so `go install`
     and vulnerability tooling resolve it;
   - `cmd/wskit` and `cmd/agentctl` hold `main` only; everything else is
@@ -529,7 +534,8 @@ previous stable point, or to the baseline taken before the first change.
   apply, revert, an interrupt and a refusal (an operation outside the
   declared paths).
 - **When:** the catalog, domains and the `Unit` interface in P1 (T1); the
-  declarative units with typed operations in P3.
+  declarative units with typed operations after 1.0.0 (EPC-029), so 1.0.0
+  ships with kit units only.
 
 ### 2e. Desired state, converged
 
@@ -932,11 +938,11 @@ previous stable point, or to the baseline taken before the first change.
 ### 5. The transaction layer (T2)
 
 ```text
-preflight -> describe -> backup -> intent=applying -> apply (logged) -> verify -> receipt=verified
-                                         |                                  |
-                    restart finds it ----+                failure ----------+--> intent=restoring -> restore
-                    restore, then reapply                                         -> receipt=failed + failure record
-                    (no verify shortcut)
+apply:  preflight -> describe -> backup -> record(apply) -> apply (logged) -> verify -> receipt
+                                                 |                                 |
+                              restart finds it --+               failure ----------+--> restore
+                              restore, then reapply                                     -> failed receipt
+revert and restore-only have their own records and recovery (below, and the P1 core spec)
 ```
 
 - **Describe.** Each phase answers `--describe` with JSON:
@@ -1076,9 +1082,10 @@ preflight -> describe -> backup -> intent=applying -> apply (logged) -> verify -
 - **Stable points.**
   - Each verified stage records a point: ID, run ID, receipts, manifests and
     state digest.
-  - A cross-account point is the pair of the root point (written by root) and
-    the agent point (written by the agent account), joined in the public
-    export.
+  - A cross-account point references every participating account's receipts
+    and manifests: root, the agent account and, on macOS, the package owner.
+    It is joined in the public export, and retention and cross-account
+    revert sequencing apply to that complete set.
   - The point after S8a and S8b is tagged `stable`.
   - `restore-points [--json]` lists them.
   - **Retention.** Nothing that an advertised point references (manifests,
@@ -1199,9 +1206,13 @@ preflight -> describe -> backup -> intent=applying -> apply (logged) -> verify -
   - At G1, the human sets each password with the native tool, and grants
     secure tokens so the accounts can unlock FileVault.
   - The kit never sees either value.
-- **The dead-man timer** guards every apply and revert step that touches SSH
-  or the firewall. If the person cannot prove they can still get in, the
-  step is restored automatically.
+- **The dead-man timer** guards every apply and revert step that changes
+  SSH, the firewall or VPN routes while remote access is selected. If the
+  person cannot show they can still get in, the step is restored
+  automatically. With remote access off, there is no timer.
+  - **One authority:** the dead-man state file (P1 core spec). Arm, re-arm,
+    proof, disarm and restore are recorded there, and every reader, the
+    restore included, reads only that file.
   - **Before arming,** the hand-over asks the person to open a second
     session now (SSH over the mesh VPN from the second device, the console,
     or Screen Sharing on macOS), so they never depend on the session that
@@ -1212,34 +1223,46 @@ preflight -> describe -> backup -> intent=applying -> apply (logged) -> verify -
     2. apply;
     3. re-arm, which resets the deadline so it counts from the end of
        apply (10 minutes by default);
-    4. verify, whose last check is the connectivity proof: a new SSH session
-       over the mesh VPN from the second device, through OpenSSH. A Tailscale
-       SSH session (with `tailscaled` as its server) does not count, because
-       it bypasses the OpenSSH config being changed.
+    4. verify, by change kind (below).
 
     The scope then ends with the timer still armed and releases the host
     lock. While a timer is armed, only `disarm` or the timer may change the
     guarded step; `resume`, `revert` and new root applies exit 4 with a
     pointer to `disarm`.
-  - **Disarm** is accepted only after the connectivity proof is recorded,
-    from any login session other than the one that armed it: SSH, the
-    console, or Screen Sharing. The recorded proof is the second factor.
-    - Disarm writes `disarmed` to the root journal and fsyncs it before it
-      removes the units. A torn disarm (journal written, units still
-      present) is safe: the restore reads the journal first and exits when
-      it says `disarmed`, and the next start removes the leftover units.
-    - T3 moves the ancestor check from bash (`remote_login_ancestor_present`)
-      into Go for both OSes.
+  - **Verify and disarm by change kind:**
+
+    | Change | Timer | Verify (the proof that allows disarm) |
+    |---|---|---|
+    | SSH or firewall, remote access selected | yes | a new SSH session over the mesh VPN from the second device, through OpenSSH; a Tailscale SSH session (`tailscaled` as its server) does not count, because it bypasses the OpenSSH config being changed |
+    | SSH or firewall, remote access off | no | a confirmation typed at the local console |
+    | VPN routes | yes, when remote access is selected | the route checks, a confirmation typed locally, and the mesh connectivity preserved if it existed; never an incoming-SSH proof |
+
+    Disarm is accepted only after that proof is recorded in the dead-man
+    file, from a login session other than the one that armed it: SSH, the
+    console, or Screen Sharing.
+  - **Conditional edges.** `firewall` and `ssh` depend on `mesh-vpn` only
+    when remote access is selected. `vpn` waits for the protected group's
+    disarm only when that group ran in the same setup, and never requires
+    `ssh` itself. A test covers a portable `developer` with the VPN
+    selected and incoming access left out.
+  - **Torn disarm.** Disarm writes `disarming` to the dead-man file and
+    fsyncs it before it removes the units, then `none`. A restore that finds
+    `disarming` or `disarmed` exits; the next start removes leftover units.
+  - **A restore closes the run.** Under the journal lock, the timer or boot
+    recovery writes a failed receipt for the run it restored. That apply is
+    never reapplied automatically; the person decides what happens next.
+  - T3 moves the ancestor check from bash (`remote_login_ancestor_present`)
+    into Go for both OSes.
   - **Deadline and boot recovery are separate.**
     - **Linux:** a timer unit with `OnActiveSec` set at each arm runs the
       restore service at the deadline. Boot recovery is a separate oneshot
       service, enabled at arm, that runs once at boot and restores only if
-      the journal shows the step armed and not disarmed. `OnBootSec` is not
+      the dead-man file shows the step armed and not disarmed. `OnBootSec` is not
       used, because combined with `OnActiveSec` on a running host it fires
       at once.
     - **macOS:** a root LaunchDaemon with `RunAtLoad=true` and
       `StartInterval=30` runs `deadman check --run RUN-ID` from the restore
-      copy. Each run reads the deadline file and the journal: it restores
+      copy. Each run reads the dead-man file: it restores
       at once when the armed step belongs to an earlier boot (its recorded
       boot ID differs from the current one), whatever its deadline, as boot
       recovery does on Linux; it restores when the deadline has passed and
@@ -1276,7 +1299,7 @@ preflight -> describe -> backup -> intent=applying -> apply (logged) -> verify -
     path that an earlier connectivity proof established: firewall rules for
     the mesh interface and the SSH listener on it are never removed by a
     restore.
-  - **The restore** writes `restored-by-timer` to the journal.
+  - **The restore** records `restored-by-timer` in the dead-man file and a failed receipt in the journal.
   - **What the restore runs from.** The restore code must not change while
     the timer is armed.
     - **T3 to T5,** before versioned releases exist: arming copies the
@@ -1337,9 +1360,20 @@ hours, while a guard that watched load and available memory stayed green.
 
 - **A reserve, set at setup.** A share of memory and CPU is kept for the OS,
   the desktop and other users, larger while a desktop session is active.
-- **One ceiling for all agent work.** On Linux, a user slice with
-  `MemoryHigh` and `MemoryMax`. On macOS, priority and process limits,
-  recorded in the capability matrix as a gap.
+- **One ceiling for all agent work, never on a person's desktop.** On Linux,
+  the ceiling (`MemoryHigh` and `MemoryMax` as shares of RAM) goes on a
+  dedicated agent-work slice, per the topology table in section 2g: under
+  the agent account's user manager with a separate account, or a separate
+  agent-work slice for the processes the agent manager starts with a single
+  account. It never goes on an interactive person's whole user slice
+  without an explicit opt-in, shown in `plan`; the resources unit's verify
+  checks that boundary. On macOS, priority and process limits, recorded in
+  the capability matrix as a gap.
+- **Preconditions, not early dependencies.** The machine-wide reserve needs
+  only the baseline. The agent-work slice needs the account it is for, and
+  enabling early OOM handling or zram needs their packages; when those are
+  missing, the unit refuses with a pointer to the unit that provides them,
+  so it can run early on a host that already has them.
 - **Early out-of-memory handling:** `systemd-oomd` or an equivalent.
 - **Admission by pressure.** Admission reads
   pressure-stall data on Linux (PSI) and the memory-pressure level on macOS.
@@ -1750,6 +1784,11 @@ What revert cannot undo, listed in every revert preview:
     refused;
   - a faked "forward ready" line from the workstation;
   - a redirect URI that is not loopback.
+- **Composition.** `plan` skips the unit from the topology (a separate agent
+  account), and on macOS applies the client side only. The supervisor job
+  is started with the session environment it needs (`XDG_RUNTIME_DIR` and
+  the session bus on Linux); if it does not acknowledge, the client fails
+  closed before `ssh` runs.
 - **Scope and coexistence.** User scope only, on both sides; no root and no
   system settings. It works alongside the mesh VPN, NoMachine and other
   remote desktops, and binds only client loopback ports.
@@ -2013,11 +2052,11 @@ SPC-001's identical):
 | `accounts` | identity | identity | root | identity | root | machine-identity; machine-identity | EPC-014 | alpha |
 | `agentctl` | system | services | root | none | none | accounts; none | EPC-019 | alpha |
 | `workloads` | system | services | root | agent | agent | agentctl; accounts | EPC-019 | alpha |
-| `firewall` | network | remote | root | remote | root | packages, mesh-vpn; packages, mesh-vpn | EPC-015 | alpha |
-| `ssh` | remote | remote | root | remote | root | accounts, firewall, mesh-vpn; accounts, firewall, mesh-vpn | EPC-015 | alpha |
+| `firewall` | network | remote | root | remote | root | packages, mesh-vpn (if remote-access); packages, mesh-vpn (if remote-access) | EPC-015 | alpha |
+| `ssh` | remote | remote | root | remote | root | accounts, firewall, mesh-vpn (if remote-access); accounts, firewall, mesh-vpn (if remote-access) | EPC-015 | alpha |
 | `mesh-vpn` | network | remote | root | remote | root | packages; packages | EPC-016 | alpha |
-| `remote-desktop` | remote | remote | root | none | none | packages, ssh; none | EPC-017 | alpha |
-| `vpn` | network | remote | root | remote | root | packages, ssh; packages, ssh | EPC-007 | alpha |
+| `remote-desktop` | remote | remote | root | none | none | packages, firewall; none; waits for s5-disarm | EPC-017 | alpha |
+| `vpn` | network | remote | root | remote | root | packages; packages; waits for s5-disarm | EPC-007 | alpha |
 | `shell` | agent | agent | agent | agent | agent | accounts; accounts | EPC-008 | alpha |
 | `git-identity` | identity | agent | agent | agent | agent | accounts; accounts | EPC-014 | alpha |
 | `runtimes` | agent | agent | agent | agent | agent | shell; shell | EPC-013 | alpha |
@@ -2109,10 +2148,10 @@ D0 (this ADR, reviewed alone)
           remote desktop; fleet commands
        C: workloads and agentctl, snapshots, workspace, doctor
  -> P3: T3 stages and gates, T4 lockout guarantees, T5 one config and interview,
-       T6 registry and staging, update watch, conductor recipe, organisation units
-       (declarative units with typed operations, after 1.0.0; plugins later)
+       T6 registry and staging, update watch, conductor recipe
  -> P4: 1.0.0 acceptance (1.0.0-rc.N)
  -> P5: cutover (frozen Python and shell deleted at parity), fleet adoption
+ -> after 1.0.0: organisation units (declarative units with typed operations); plugins later
 
 Plan and design PRs pass the gate in section 12 before merge.
 ```
