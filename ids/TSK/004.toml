@@ -1,0 +1,11 @@
+id = "TSK-004"
+uid = "6f9add6f-f243-46f3-a6bc-cec09ee2936b"
+kind = "TSK"
+title = "Signed release build for every target"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-21T09:33:19Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
