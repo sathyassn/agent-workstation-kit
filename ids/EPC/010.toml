@@ -1,0 +1,11 @@
+id = "EPC-010"
+uid = "640edb1e-14de-4b83-bc79-9559a7be1cff"
+kind = "EPC"
+title = "Resources unit"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-21T09:13:15Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
