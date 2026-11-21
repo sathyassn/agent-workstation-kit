@@ -1,0 +1,11 @@
+id = "TSK-015"
+uid = "3ee5e0ec-a8a5-4237-847d-2b8729011795"
+kind = "TSK"
+title = "Output modes and the plain and JSON front ends"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-21T09:40:15Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
