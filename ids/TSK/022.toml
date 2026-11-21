@@ -1,0 +1,11 @@
+id = "TSK-022"
+uid = "687b60cf-3a10-47bb-8f53-34f2492536c4"
+kind = "TSK"
+title = "Client mode and the fault-injection harness"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-21T09:43:21Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
