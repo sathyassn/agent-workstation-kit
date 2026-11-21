@@ -335,7 +335,7 @@ def main() -> int:
     workflow_text = workflow.read_text(encoding="utf-8") if workflow.is_file() else ""
     if "run: make ci-check" not in workflow_text:
         failures.append("hosted CI has no independent make ci-check gate")
-    if "sathyassn/codeflow" in workflow_text:
+    if "sathyassn" + "/codeflow" in workflow_text:
         failures.append("hosted CI depends on a private Codeflow release")
     if "./gitleaks git" not in workflow_text:
         failures.append("hosted secret scan does not use the supported Gitleaks git command")

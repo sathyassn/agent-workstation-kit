@@ -1,0 +1,57 @@
+# Presets: purpose times tier (ADR 0005 section 2g, SPC-001), and the
+# best-practice defaults (principle 13). A machine's units are the preset's
+# units, plus every unit they depend on (the dependency closure, shown in
+# plan), plus the person's additions, minus their removals. A removal that
+# breaks a dependant skips that dependant with the reason. Units the target
+# cannot run are skipped with the capability matrix's reason; `full` means
+# every unit feasible for the OS, version, form factor and purpose.
+# tests/catalog_tables.py checks that every unit ID here is in the catalog.
+
+schema_version = 1
+
+[tier.minimal]
+units = ["shell", "git-identity", "runtimes", "doctor", "audit-agent"]
+
+[tier.standard]
+extends = "minimal"
+units = ["tools", "agent-settings", "mcp", "resource-limits", "browser-tunnel", "indexing"]
+
+[tier.full]
+extends = "standard"
+all_feasible = true
+
+[purpose.developer]
+topology = "single"
+remote_access = false
+units = []
+
+[purpose.agent-host]
+topology = "separate"
+remote_access = true
+units = ["mesh-vpn", "firewall", "ssh", "remote-desktop", "agentctl", "workloads"]
+
+# Best-practice defaults. Shares are percentages, read at run time.
+[defaults.resources]
+memory_high_percent = 70
+memory_max_percent = 80
+swap_max_percent = 10
+memory_reserve_percent = 10
+oomd_pressure_percent = 60
+swappiness = "auto"
+zram_percent = 0
+tmp = "auto"
+disk_free_floor_percent = 10
+
+[defaults.form_factor.portable]
+remote_access = false
+zram_percent = 25
+disk_encryption = "required"
+always_on_services = false
+roaming_firewall = true
+
+[defaults.form_factor.fixed]
+disk_encryption = "warn"
+
+[defaults.indexing]
+macos_development_volumes = "off"
+keep_spotlight = false

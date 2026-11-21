@@ -7,8 +7,12 @@
 # Fields:
 #   stage      scope ID per OS ("-" when the unit does not run on that OS)
 #   privilege  root | package-owner | agent | user, per OS
-#   depends    unit IDs per OS; "packages" is satisfied on macOS by
-#              packages-user and packages together
+#   depends    unit IDs per OS, always required; "packages" is satisfied on
+#              macOS by packages-user and packages together
+#   depends_if unit IDs required only when a condition holds, per OS
+#              ("remote-access": remote access is selected)
+#   waits_for  barriers the unit waits for, only when that barrier's work ran
+#              in the same setup ("s5-disarm": the firewall and ssh group's disarm)
 #   epic       the epic that builds the unit; milestone: the release phase
 
 schema_version = 1
@@ -77,13 +81,12 @@ epic = "EPC-019"
 milestone = "alpha"
 
 [[unit]]
-# firewall and ssh depend on mesh-vpn only when remote access is selected;
-# the planner drops that edge when it is not.
 id = "firewall"
 domain = "network"
 stage = { linux = "remote", macos = "remote" }
 privilege = { linux = "root", macos = "root" }
-depends = { linux = ["packages", "mesh-vpn"], macos = ["packages", "mesh-vpn"] }
+depends = { linux = ["packages"], macos = ["packages"] }
+depends_if = { remote-access = { linux = ["mesh-vpn"], macos = ["mesh-vpn"] } }
 epic = "EPC-015"
 milestone = "alpha"
 
@@ -92,7 +95,8 @@ id = "ssh"
 domain = "remote"
 stage = { linux = "remote", macos = "remote" }
 privilege = { linux = "root", macos = "root" }
-depends = { linux = ["accounts", "firewall", "mesh-vpn"], macos = ["accounts", "firewall", "mesh-vpn"] }
+depends = { linux = ["accounts", "firewall"], macos = ["accounts", "firewall"] }
+depends_if = { remote-access = { linux = ["mesh-vpn"], macos = ["mesh-vpn"] } }
 epic = "EPC-015"
 milestone = "alpha"
 
@@ -110,7 +114,8 @@ id = "remote-desktop"
 domain = "remote"
 stage = { linux = "remote", macos = "-" }
 privilege = { linux = "root", macos = "-" }
-depends = { linux = ["packages", "ssh"], macos = [] }
+depends = { linux = ["packages", "firewall"], macos = [] }
+waits_for = ["s5-disarm"]
 epic = "EPC-017"
 milestone = "alpha"
 
@@ -119,7 +124,8 @@ id = "vpn"
 domain = "network"
 stage = { linux = "remote", macos = "remote" }
 privilege = { linux = "root", macos = "root" }
-depends = { linux = ["packages", "ssh"], macos = ["packages", "ssh"] }
+depends = { linux = ["packages"], macos = ["packages"] }
+waits_for = ["s5-disarm"]
 epic = "EPC-007"
 milestone = "alpha"
 
@@ -179,6 +185,7 @@ milestone = "alpha"
 
 [[unit]]
 id = "browser-tunnel"
+# macOS: the client side only; the workstation hook is Linux only.
 domain = "remote"
 stage = { linux = "agent", macos = "agent" }
 privilege = { linux = "user", macos = "user" }

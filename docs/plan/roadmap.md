@@ -15,6 +15,7 @@ Status: proposed (P0 plan PR). Each epic is a CodeFlow record in
 
 ```text
 P0 Foundation --> P1 Core --> P2 Units (waves A, B, C in parallel) --> P3 Composition
+                    |  (the tunnel, EPC-006, starts after T1c, before T2)
                                                                          |
                                        P5 Cutover <-- P4 Acceptance <----+
 ```
@@ -51,7 +52,7 @@ unit it owns, and an interrupted revert that resumes (ADR 0005 section 2c).
 | EPC-012 MCP catalog unit | P2 A | an MCP server is added to every agent config home with `wskit mcp add`, with sign-in as a hand-over | EPC-009 | mcp |
 | EPC-013 Packages and runtimes units | P2 B | OS packages and runtimes install at exact pins, with the SSH and remote-desktop install guards | EPC-005 | packages-user, packages, runtimes |
 | EPC-014 Identity and accounts units | P2 B | hostnames, accounts, groups and git identity are set and revertible for both account topologies, with homes archived before removal | EPC-005 | machine-identity, accounts, git-identity |
-| EPC-015 SSH and firewall units | P2 B | SSH and firewall changes apply and revert under the dead-man timer, which ships in this epic, on both OSes | EPC-005, EPC-014 | ssh, firewall |
+| EPC-015 SSH and firewall units | P2 B | SSH and firewall changes apply and revert under the dead-man timer, which ships in this epic, on both OSes | EPC-005, EPC-013, EPC-014, EPC-016 | ssh, firewall |
 | EPC-016 Mesh VPN unit | P2 B | the mesh VPN is configured and verified, with its sign-in as a hand-over | EPC-013 | mesh-vpn |
 | EPC-017 Remote desktop unit | P2 B | remote desktop is installed masked and released only behind the firewall | EPC-013, EPC-015 | remote-desktop |
 | EPC-018 Fleet commands | P2 B | a fleet maintainer manages a private fleet of config and records with `wskit fleet` | EPC-003, EPC-005 | none (command group) |
@@ -59,7 +60,7 @@ unit it owns, and an interrupted revert that resumes (ADR 0005 section 2c).
 | EPC-020 Snapshots unit | P2 C | filesystem snapshots are taken at baseline and stable points where supported | EPC-005 | snapshots |
 | EPC-021 Workspace unit | P2 C | the agent workspace and its repositories are set up from config | EPC-011, EPC-014 | workspace |
 | EPC-022 Doctor and audits (T8) | P2 C | a person or agent runs one read-only check of every unit, drift and end-of-support date; root and agent audits record the stable point | EPC-005 | doctor, audit-agent |
-| EPC-023 Stages and gates (T3) | P3 | the full setup runs as stages composing units, with gates, hand-overs and stable points | the P2 units it composes | all (composition) |
+| EPC-023 Stages and gates (T3) | P3 | the full setup runs as stages composing units, with gates, hand-overs and stable points | EPC-006 to EPC-022, EPC-033 | all (composition) |
 | EPC-024 Lockout and convergence guarantees (T4) | P3 | no interruption leaves a locked-out or half-converged machine, proven across units | EPC-023 | all (checks) |
 | EPC-025 One config and the interview (T5) | P3 | a person or agent writes a machine config through the interview, with layered values, `[tools]` and `[mcp]` choices, and generated docs | EPC-003, EPC-011, EPC-012 | none |
 | EPC-026 Registry and staging (T6) | P3 | tools move only through `registry bump`, releases are staged, and the one-liner verifies them | EPC-001, EPC-005 | none |
@@ -70,10 +71,11 @@ unit it owns, and an interrupted revert that resumes (ADR 0005 section 2c).
 | EPC-031 Cutover | P5 | the frozen Python and shell are gone | EPC-030 | all |
 | EPC-032 Fleet adoption | P5 | existing hosts are converged, fleets use `wskit fleet`, and fleet scripts are retired | EPC-029, EPC-030 | all |
 
-The dependency graph has no cycles. Within a phase, edges run EPC-011 to
+The dependency graph has no cycles. Integration dependencies are listed here; interface work can start once a contract exists (for example TSK-015 after TSK-023). Within a phase, edges run EPC-011 to
 EPC-009 to EPC-012 in wave A, and EPC-014 to EPC-015 to EPC-017 in wave B;
 EPC-007 in wave A depends on EPC-015 in wave B, so the VPN unit lands after
-the SSH and firewall group. Every other edge points to an earlier phase.
+the SSH and firewall group, and EPC-015 depends on EPC-013 and EPC-016 in its
+own wave. Every other edge points to an earlier phase.
 
 ## Versions and milestones
 
@@ -105,11 +107,11 @@ TOML file, never this table. The same table appears in SPC-001 and in ADR
 | `accounts` | identity | identity | root | identity | root | machine-identity; machine-identity | EPC-014 | alpha |
 | `agentctl` | system | services | root | none | none | accounts; none | EPC-019 | alpha |
 | `workloads` | system | services | root | agent | agent | agentctl; accounts | EPC-019 | alpha |
-| `firewall` | network | remote | root | remote | root | packages, mesh-vpn; packages, mesh-vpn | EPC-015 | alpha |
-| `ssh` | remote | remote | root | remote | root | accounts, firewall, mesh-vpn; accounts, firewall, mesh-vpn | EPC-015 | alpha |
+| `firewall` | network | remote | root | remote | root | packages, mesh-vpn (if remote-access); packages, mesh-vpn (if remote-access) | EPC-015 | alpha |
+| `ssh` | remote | remote | root | remote | root | accounts, firewall, mesh-vpn (if remote-access); accounts, firewall, mesh-vpn (if remote-access) | EPC-015 | alpha |
 | `mesh-vpn` | network | remote | root | remote | root | packages; packages | EPC-016 | alpha |
-| `remote-desktop` | remote | remote | root | none | none | packages, ssh; none | EPC-017 | alpha |
-| `vpn` | network | remote | root | remote | root | packages, ssh; packages, ssh | EPC-007 | alpha |
+| `remote-desktop` | remote | remote | root | none | none | packages, firewall; none; waits for s5-disarm | EPC-017 | alpha |
+| `vpn` | network | remote | root | remote | root | packages; packages; waits for s5-disarm | EPC-007 | alpha |
 | `shell` | agent | agent | agent | agent | agent | accounts; accounts | EPC-008 | alpha |
 | `git-identity` | identity | agent | agent | agent | agent | accounts; accounts | EPC-014 | alpha |
 | `runtimes` | agent | agent | agent | agent | agent | shell; shell | EPC-013 | alpha |
