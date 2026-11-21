@@ -18,7 +18,7 @@ step is in [docs/maintenance/releasing.md](docs/maintenance/releasing.md).
 - The unit catalog, `registry/units.toml`, with a check that keeps the shared tables in the roadmap, the core spec and ADR 0005 current, and that finds cycles and dangling edges per OS.
 - The engineering standard and review checklist (`docs/standards/`), checked from the pull request template.
 - The traceability table from design decisions to epics, tasks and tests.
-- Epic EPC-033 for a macOS indexing unit, and the `indexing` unit in the catalog; the resources epic moves to right after the tunnel.
+- Epic EPC-033 for a macOS indexing unit, and the `indexing` unit in the catalog; the resources and indexing epics come right after T2, and an `audit-agent` unit joins the catalog.
 
 ### Changed
 

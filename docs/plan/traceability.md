@@ -25,7 +25,7 @@ Tasks are listed once their epic is planned; the P1 spec PR adds P1's.
 | Gates and hand-overs (6) | EPC-023 | per epic | gate probe tests |
 | Dead-man timer (6) | EPC-015 | per epic | fault-injection tests per transition |
 | Lockout and convergence (7) | EPC-024 | per epic | end-to-end stress run |
-| Resources (7a), first after the tunnel | EPC-010 | per epic | ceiling, early-OOM and default tests |
+| Resources (7a), first right after T2 | EPC-010 | per epic | ceiling, early-OOM and default tests |
 | macOS indexing (7a) | EPC-033 | per epic | apply and exact revert with fake tools |
 | Best-practice defaults (principle 13) | EPC-010, EPC-033, EPC-025 | per epic | default-when-unset and opt-out tests |
 | Schema, interview, input defaults (8) | EPC-003, EPC-025 | P1 spec PR | parity and default tests |
