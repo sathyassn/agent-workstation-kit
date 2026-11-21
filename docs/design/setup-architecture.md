@@ -260,14 +260,17 @@ units and keep their names.
 
 This is a user decision (2026-11-21).
 
-- **Language.** All logic is written in Go and built in CI as one static
-  binary per OS and CPU: Linux on amd64 and arm64, macOS on arm64. Each
+- **Language.** All logic is written in Go and built in CI without cgo
+  (`CGO_ENABLED=0`), one binary per OS and CPU: Linux on amd64 and arm64,
+  macOS on arm64. `darwin/amd64` is left out on purpose, because only Apple
+  silicon Macs are supported. Each
   release carries checksums, and signatures later, pinned in the registry.
   - Only two things are not Go: data (the TOML schema, the registries and
     dotfile templates), and the day-zero one-liner, a few lines of POSIX sh
     that download the pinned binary, verify its checksum and run it.
-  - **Why not Python:** macOS ships no Python 3, and root tooling should not
-    depend on an interpreter path.
+  - **Why not Python:** macOS has Python 3 only once the Command Line Tools
+    are installed, and root tooling should not depend on an interpreter
+    path.
   - **Why not Rust:** both are safe, but Go builds fast on both OSes and is
     quicker to write and review for orchestration and system calls.
 - **The existing Python and shell are frozen:** fixes only. Each piece is
@@ -283,8 +286,11 @@ This is a user decision (2026-11-21).
   wskit <unit> <verb> [flags]                                  each unit standalone
   wskit status | doctor | explain <unit|field>
   wskit next --json                                            conductor interface
-  wskit restore-points | revert --to <point|baseline>
-  wskit registry check|bump | docs gen
+  wskit validate | approve | migrate-profile
+  wskit restore-points | revert --to <point|baseline> | resume [--restore-only]
+  wskit disarm --run RUN-ID | propose-change FILE
+  wskit stage | registry check|bump | docs gen
+  wskit tunnel auth|open|host|hook                             the browser-tunnel unit
   ```
 
   - **Common flags:** `--json`; preview by default, with `--apply` to make
@@ -320,6 +326,94 @@ This is a user decision (2026-11-21).
   | S8 | doctor and the stable point |
   | Any stage, optional | corporate VPN, workspace and repositories |
 
+- **Data is embedded.** The schema, the registries, dotfile templates and
+  docs templates are compiled into the binary with `go:embed`, so the
+  one-liner fetches only the binary. A fleet adds to them, never replaces
+  them: with `--fleet-root`, `wskit plan` reads the fleet's `[x-org]`
+  schema fragment, its registry entries and its templates. Fleet additions
+  may add fields, tools and values; they cannot loosen a kit rule (a pin
+  policy, a refusal or a platform). The plan records the digest of every
+  fleet file it read.
+- **Go details for T1:**
+  - **Module and layout.** One module,
+    `github.com/sathyassn/agent-workstation-kit`, with the Go toolchain
+    pinned in `go.mod`:
+
+    ```text
+    cmd/wskit/          main only
+    cmd/agentctl/       the narrow sudoers helper (section 3)
+    internal/cli  engine  planner  schema  registry  conductor  docsgen  redact  ui
+    internal/platform/{linux,darwin}
+    internal/units/<unit>/
+    schema/  registry/  dotfiles/  templates/      data, embedded
+    scripts/bootstrap.sh                           the only shell
+    testdata/  e2e/                                fixtures, container and VM runs
+    ```
+
+    `docs/architecture` documents the layout. There is no `pkg/`, because
+    nothing here is a public Go API.
+  - **The unit interface.** Each unit implements:
+
+    ```go
+    type Unit interface {
+        ID() UnitID
+        Describe(ctx context.Context) (Description, error)
+        Plan(ctx context.Context, in Inputs) (Plan, error)
+        Apply(ctx context.Context, tx engine.Tx, p Plan) error
+        Verify(ctx context.Context, p Plan) (Result, error)
+        Revert(ctx context.Context, tx engine.Tx, r Receipt) error
+        Status(ctx context.Context) (Status, error)
+    }
+    ```
+
+    `engine.Tx` is the only way a unit changes a file or runs a tool, so the
+    engine sees every write and backs it up first. `UnitID`, verbs, stages,
+    scopes, statuses and exit codes are typed constants, never loose
+    strings.
+  - **JSON shapes.** `Describe` returns `{schema_version, unit, scope,
+    depends_on[], capabilities[], paths[], state[], irreversible[]}`.
+    `Plan` returns `{schema_version, unit, plan_id, digest, changes[{path or
+    state, action, before_digest, after_digest, risk}], non_defaults[],
+    blocked_by}`. Each shape has a version, golden-file tests and a checked
+    example in the docs.
+  - **Generated versus checked at run time.** `go generate` turns
+    `schema/*.toml` into Go structs and constants for every field; CI fails
+    when the generated code is stale. Rules that depend on the host or on
+    other values (platform support, conflicts, ranges of allowed values)
+    are checked at run time by `schema` and `planner`.
+  - **TOML.** One TOML library, pinned to an exact version in `go.mod` and
+    recorded in the registry like every other dependency (principle 7).
+- **Terminal UI for people, plain output for agents** (user requirement,
+  2026-11-21; P1, next to the CLI skeleton).
+  - **One rendering layer,** `internal/ui`, with two front ends over the
+    same typed events and results: a terminal UI and plain or JSON output.
+    Units emit typed events through the engine and never print.
+  - **People, on an interactive terminal:** a guided UI built on the Charm
+    toolkit: Bubble Tea for screens, Huh for the interview forms and
+    confirmations, Bubbles for spinners, progress and lists, Lip Gloss for
+    styling, and Glamour for `explain` and the docs.
+    - The interview is grouped forms with defaults, inline validation from
+      the schema, and a "why, risk, undo" panel per field from the same
+      schema.
+    - A plan view shows units by stage, the changes, the risks, and values
+      set away from their defaults.
+    - Apply shows live progress per step, clear confirmations for root
+      steps (the approval phrase), each hand-over as a card (Machine,
+      Account, Command, Why, Verify, Undo), and a final report with the
+      stable point.
+    - Status and doctor are a compact dashboard, problems first; `--verbose`
+      adds detail.
+  - **Agents,** the preferred way to run setup: `--json`, no terminal, or
+    `WSKIT_PLAIN=1` gives stable, versioned JSON and plain text, with no
+    animation, no colour codes and no prompts. Every interactive question
+    has a flag or config equivalent, so nothing needs a terminal. `next
+    --json` drives the conductor.
+  - **Accessibility.** `NO_COLOR`, `TERM=dumb`, narrow terminals and screen
+    readers (`--plain`) are respected.
+  - **Secrets** never appear on screen; secret inputs are masked.
+  - **Tests:** snapshot tests for plain and JSON output, and golden-file
+    tests for the terminal views (`teatest`).
+  - Every Charm dependency is pinned in `go.mod` and listed in the registry.
 - **Fleet logic.** Logic that a fleet holds today moves into generic kit
   units driven by fleet values. The fleet keeps config, machine records and
   values only its organisation uses.
@@ -361,6 +455,25 @@ This is a user decision (2026-11-21).
   there with the system checksum tool (`sha256sum` on Linux, `shasum -a 256`
   on macOS) against the checksum published with the release, and only then
   installs it at the fixed staged path. The binary never checks itself.
+  CI tests this on Linux and macOS runners: it stages a built binary with
+  `sudo` into the fixed path and checks that the root check passes there
+  and refuses a user-writable copy, a symlinked parent and a group-writable
+  folder.
+- **Standalone rules per scope:**
+
+  | Scope | Plan when run standalone | Locks | Run folder |
+  |---|---|---|---|
+  | User (an account's own files) | With no profile, `wskit <unit> plan` builds a plan for that unit alone, from its flags, config and schema defaults. The person approves it by running `--apply` on that plan. | the account lock `account-setup.lock` in the account run folder, and the journal lock next to the account journal | the account run folder (section 11) |
+  | Root | Always from an approved, exported plan (section 8), even for one unit | the host lock `privileged-setup.lock` in the root run folder, and the journal lock next to the root journal | the root run folder (section 11) |
+
+  The host lock applies only to root scopes. The frozen executor uses the
+  same lock files (its macOS lock moves with the T1 fix).
+- **Receipts and backups in T1.** Before T2's full layer, T1's engine
+  already gives units a minimal file transaction through `engine.Tx`: each
+  file a unit writes is backed up first (owner, mode, digest, or recorded
+  as absent), written atomically, and listed in a receipt. `revert` restores
+  from that receipt. The tunnel unit uses only this, so it holds no engine
+  logic, and T2 extends the same `engine.Tx` without changing the unit.
 - **Two apply paths during the move.** Until a unit reaches parity, its
   phase is applied by the frozen executor only. The PR that brings a unit to
   parity makes the frozen executor refuse that phase, so each phase has one
@@ -572,6 +685,15 @@ preflight -> describe -> backup -> intent=applying -> apply (logged) -> verify -
   removed with the last `created` package that pulled it in, and only when
   the removal simulation shows that nothing outside the ledger depends on
   it; otherwise it stays, and the report lists it.
+- **Unit revert and engine restore.** The engine restores what it backed
+  up: it replays the manifest and the ledger. A unit's `Revert` covers only
+  state that needs its own undo, such as releasing a masked service or
+  removing a package through the package manager.
+  - `wskit <unit> revert` targets the unit's last verified receipt: it
+    undoes that unit's changes since its previous receipt, or since the
+    baseline when there is none.
+  - It refuses to revert a unit that other applied units depend on, and
+    names them; reverting the set is `revert --to POINT`.
 - **Packages:**
   - before removing any package, revert simulates the removal (`apt-get -s
     remove`, `brew uninstall --dry-run`), and any package beyond the ledger's
@@ -637,13 +759,16 @@ preflight -> describe -> backup -> intent=applying -> apply (logged) -> verify -
     - `machine`: a host fact, written to the host's copy of the machine
       record and drafted into the fleet's copy (section 10b).
 - **Fault injection.**
-  - **The stubs:** host binaries on PATH (`apt-get`, `dpkg`, `systemctl`,
-    `ufw`, `visudo`, `sshd`, `hostnamectl`, `dscl`, `sysadminctl`,
-    `launchctl`, `socketfilterfw`), a fake root tree and a fake clock.
+  - **The fakes:** the platform adapters sit behind interfaces, so tests
+    give the engine fake host tools (`apt-get`, `dpkg`, `systemctl`, `ufw`,
+    `visudo`, `sshd`, `hostnamectl`, `dscl`, `sysadminctl`, `launchctl`,
+    `socketfilterfw`), a test-root setting that moves every path under a
+    temporary folder, and a fake clock.
   - **The kills:** at the Nth call, or between any two executor steps,
     including during the backup, the intent write, restore, revert, and
     arming and disarming the timer.
-  - Production code has no fault hooks.
+  - Kills come from a test binary built with a build tag (`faultinject`);
+    the release binary has no fault hooks.
 - **Client mode** (for the browser sign-in tunnel, section 10a). This is an
   account-level transaction mode with no profile, plan or host binding.
   - It provides backup, ledger, logs and revert for the account's own files,
@@ -771,22 +896,25 @@ hours, while a guard that watched load and available memory stayed green.
 
 ### 8. One schema (T1), interview and capabilities (T5)
 
-- **Schema (T1).** `config/schema.toml` declares, for every field: `what`, `why`,
+- **Schema (T1).** `schema/*.toml` declares, for every field: `what`, `why`,
   `options` (each with its effect and risk), `default`, `recommended` (with
   its condition), `stage`, `undo` and `requires`. `requires` may name a
   capability.
-- **From the schema:**
-  - the profile validator, replacing the hand-written tables in `fleetctl.py`;
-  - `docs/reference/config.md`, with a CI staleness check;
-  - the interview questions;
-  - the plan's list of values set away from their default, each with its
-    risk.
+- **What the schema covers when:**
+  - **T1:** the schema format; every field that profiles use today (schema
+    3), with the full metadata above; the generated Go types and
+    constants; the validator, replacing the hand-written tables in
+    `fleetctl.py`; and the plan's list of values set away from their
+    default, each with its risk.
+  - **T5:** profile schema 4 (below), the interview, the generated
+    `docs/reference/config.md` with a CI staleness check, and the fleet
+    schema fragment.
 - **Profile schema 4:**
   - `tooling.components` names each optional component, with its options;
   - `[agent_settings]` is the agent-settings component's table;
   - `[x-org]` holds fleet keys. The kit checks their shape, and a fleet may
     supply a schema fragment for them (section 10b).
-  - `wskit migrate PROFILE` previews and writes a schema 4 file and never
+  - `wskit migrate-profile PROFILE` previews and writes a schema 4 file and never
     edits in place. The frozen `check-profile-migration.py` stays a checker
     until it is deleted.
 - **Shell prompt.** A schema field for the prompt, with what, why, options,
@@ -952,11 +1080,11 @@ What revert cannot undo, listed in every revert preview:
 - **Agent settings (T7)** is the component designed earlier on issue #5:
   - presets: `keyring-clis`, `git-network`, `orchestrator`, `cloud-clis` and
     `dotnet`;
-  - discovery of the user settings, every Orca profile and the Codex configs;
+  - discovery of the user settings, every agent-manager profile and the Codex configs;
   - merge, never remove;
   - workspace grants and `git-net`;
   - Codex managed keys;
-  - the Orca setting is read only and handed over.
+  - the agent manager's own setting is read only and handed over.
 
   It runs as the `agent-settings` unit, composed into S6. Its planners use
   the T2 layer. From the pilots, T7 also covers:
@@ -1046,6 +1174,11 @@ What revert cannot undo, listed in every revert preview:
   macOS workstation, many CLIs open URLs through Launch Services and ignore
   `BROWSER`, so the workstation side is Linux only, and macOS is recorded as
   a gap in the capability matrix.
+  - **Where `BROWSER` is set.** A marked block in `~/.zshenv`, which every
+    zsh reads, interactive or not, so agent tool shells get it too. The
+    block sets `BROWSER` only when `SSH_CONNECTION` is set, so a local
+    desktop session keeps opening its own browser. Revert removes only the
+    block.
 - **Client side (macOS or Linux).** The client opens the URL in the system
   browser. When the URL carries a loopback redirect URI (`localhost` or
   `127.0.0.1` with a port), it first opens an SSH `-L` forward for that one
@@ -1053,6 +1186,18 @@ What revert cannot undo, listed in every revert preview:
   completes or the time limit passes. `wskit tunnel open` shows a plain
   local page, such as a dev server on a workstation port, on request, under
   the same rules.
+  - **Host entries** live in a kit-owned file,
+    `~/.ssh/config.d/agent-workstations`, included by one marked `Include`
+    line at the top of `~/.ssh/config`. Entries use the tailnet name, never
+    a raw address.
+  - **Time limit:** 600 seconds by default, settable from 30 to 3600. A
+    watchdog closes the forward at the limit even if the client process is
+    stuck.
+  - **The "tunnel ready" handshake.** Readiness and callback progress are
+    read only from the local `ssh` client's own debug log (`ssh -v -E
+    FILE`), which the workstation cannot write. Text that arrives over the
+    session's output is never trusted, so a workstation that prints a
+    "forwarded" line changes nothing. A test proves this.
 - **Scope.** User scope only, on both sides. No root, no system settings.
 - **Coexistence.** It works alongside the mesh VPN (host entries use the
   tailnet name), NoMachine and other remote desktops. It binds only client
@@ -1076,8 +1221,10 @@ What revert cannot undo, listed in every revert preview:
   interruption at each write.
 - **Later.** It uses the T3 hand-over format once T3 lands.
 - **Gate.** The full gate.
-- **Starting point.** The earlier Python scripts and their tests, held on an
-  unmerged branch, as the behaviour to match.
+- **Starting point.** The earlier Python scripts and their tests, on the
+  maintainer's unpublished branch `feat/remote-browser-signin`
+  (`scripts/lib/remote_signin.py`, `tests/test_remote_signin.py`). The
+  unit's epic carries their behaviours and test cases as the parity list.
 
 ### 10b. Fleet side
 
@@ -1196,6 +1343,21 @@ client hid this, because it routes everything.
   - a stress run that kills at every boundary;
   - a docs-only walkthrough by a fresh agent;
   - a changelog entry.
+- **The gate for plan and design PRs** (this ADR, the P0 plan with the
+  roadmap and epics, and later plan changes; user requirement,
+  2026-11-21). Before merge, other model families review the PR
+  adversarially and stress-test the plan: Codex and Grok, with Fable as the
+  fallback when one has no quota. They work from a read-only clone, and
+  their findings are posted on the PR. The stress test has four parts:
+  1. **Walkthrough.** A fresh agent builds the task breakdown for T1 and
+     the tunnel unit from the docs alone, and lists every point where it
+     had to guess.
+  2. **Scenario probes:** an interrupt at each boundary, revert to
+     baseline, a macOS-only run, a user-scope-only run, a failed root
+     approval, a fleet override, and agent output against terminal output.
+  3. **Consistency:** units, stages, T-items and epics map one to one, and
+     the dependencies have no cycles.
+  4. **Feasibility** of the Go and Charm design.
 - **`AGENTS.md`** drops the old "planned: issue #5, step N" numbering in T1
   and names T-PRs instead. T1 also adds the review and merge rules learned
   in the pilots:
