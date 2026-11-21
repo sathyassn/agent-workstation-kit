@@ -1,0 +1,11 @@
+id = "TSK-019"
+uid = "73c7bbe6-26f3-43f8-acd4-cd361fab7eb4"
+kind = "TSK"
+title = "Baseline, ownership ledger and match digest"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-21T09:41:59Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
