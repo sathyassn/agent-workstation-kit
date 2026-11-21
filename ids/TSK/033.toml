@@ -1,0 +1,11 @@
+id = "TSK-033"
+uid = "fd2da7ca-1461-4489-b5b4-b1f878831bf8"
+kind = "TSK"
+title = "Development volume detection and indexing apply"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-21T10:34:54Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
