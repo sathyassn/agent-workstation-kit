@@ -1,0 +1,11 @@
+id = "TSK-011"
+uid = "6e6971f8-a1d3-4048-b4d6-7a4a7269d6c0"
+kind = "TSK"
+title = "Schema 3 parity, generated types and config layers"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-21T09:38:38Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
