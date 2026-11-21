@@ -1,0 +1,11 @@
+id = "EPC-019"
+uid = "4646718a-e81f-4b16-ba20-4d425056814c"
+kind = "EPC"
+title = "Workloads and agentctl units"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-21T09:19:30Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
