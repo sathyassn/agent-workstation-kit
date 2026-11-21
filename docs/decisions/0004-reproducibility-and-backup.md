@@ -1,6 +1,6 @@
 # ADR 0004: Use mise first; treat reproducibility and backup separately
 
-[Previous decision](0003-shared-agent-account.md) · [Documentation home](../README.md)
+[Previous decision](0003-shared-agent-account.md) · [Documentation home](../README.md) · [Next decision](../design/setup-architecture.md)
 
 - Status: accepted for the initial pilot
 - Date: 2026-08-20
