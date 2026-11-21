@@ -1,0 +1,11 @@
+id = "EPC-002"
+uid = "7a0bcb99-b62c-427f-a089-763216e654d3"
+kind = "EPC"
+title = "Public-safety scan hardening"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-21T09:09:08Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
