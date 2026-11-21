@@ -94,6 +94,8 @@ grep -Fq 'help|list|status|observe)' "$repo_dir/agentctl/agentctl-observe"
 grep -Fq 'action=${1:-help}' "$repo_dir/agentctl/agentctl"
 grep -Fq '"$observer" "$action" "$@"' "$repo_dir/agentctl/agentctl"
 grep -Fq 'tmux attach-session -t "=$session"' "$repo_dir/agentctl/agentctl-session"
+# With the resource policy installed, agent sessions start inside its slice.
+grep -Fq 'launcher=(systemd-run --user --scope --quiet --collect --slice=agent-work.slice --)' "$repo_dir/agentctl/agentctl-session"
 
 # A documented helper must also resolve its repository when invoked by a bare
 # filename from scripts/, not only through a path containing a slash.
@@ -151,12 +153,16 @@ fi
 [[ $(calculate_tasks_max $((16 * 1024 * 1024))) == 4096 ]]
 [[ $(calculate_tasks_max $((64 * 1024 * 1024))) == 8192 ]]
 [[ $(calculate_tasks_max $((256 * 1024 * 1024))) == 16384 ]]
-read -r memory_high memory_max < <(
-  calculate_memory_limits $((64 * 1024 * 1024)) 4
+read -r memory_high memory_max swap_max < <(
+  calculate_memory_shares $((64 * 1024 * 1024)) 70 80 10 8
 )
-((memory_high == 60 * 1024 * 1024))
-((memory_max == 62 * 1024 * 1024))
-((memory_max > memory_high))
+((memory_high == 64 * 1024 * 1024 * 70 / 100))
+((memory_max == 64 * 1024 * 1024 * 80 / 100))
+((swap_max == 64 * 1024 * 1024 * 10 / 100))
+if calculate_memory_shares $((16 * 1024 * 1024)) 70 80 10 8 >/dev/null; then
+  printf 'Expected an 80%% ceiling on 16 GiB to break the 8 GiB reserve.\n' >&2
+  exit 1
+fi
 
 cat >"$fixture_dir/authorized_keys" <<'EOF'
 # ignored ssh-ed25519 AAAA-comment

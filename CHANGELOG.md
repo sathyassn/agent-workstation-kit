@@ -11,6 +11,10 @@ step is in [docs/maintenance/releasing.md](docs/maintenance/releasing.md).
 
 ## [Unreleased]
 
+### Fixed
+
+- The Linux resource policy now caps agent work in a dedicated `agent-work.slice` under the agent's user manager, with memory shares of RAM, systemd-oomd, swap, zram and `/tmp` policy, a receipt and an exact `--revert`; `agentctl start` runs sessions inside it.
+
 ## [0.2.0-rc.7] - 2026-11-20
 
 ### Added

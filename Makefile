@@ -58,6 +58,7 @@ skill-check:
 unit-check: bash-check
 	@$(PYTHON) -m unittest discover -s tests -p 'test_*.py'
 	@"$(BASH_BIN)" tests/test_shell_behaviour.sh
+	@"$(BASH_BIN)" tests/test_resource_policy.sh
 
 repo-check:
 	@$(PYTHON) tests/check_repository.py
