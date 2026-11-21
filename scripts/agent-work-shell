@@ -6,9 +6,15 @@
 #
 # - Already inside agent-work.slice: exec the shell directly.
 # - Policy not installed: exec the shell directly.
-# - Otherwise: move into a new scope in the slice with systemd-run.
+# - Otherwise: move into a new scope in the slice with systemd-run. When the
+#   scope cannot be created (no user bus, or a scope error), warn on stderr
+#   and exec the plain shell, so a terminal never closes immediately.
 
-set -euo pipefail
+set -uo pipefail
+
+slice_file=${AGENT_WORK_SLICE_FILE:-/etc/systemd/user/agent-work.slice}
+cgroup_file=${AGENT_WORK_CGROUP_FILE:-/proc/self/cgroup}
+scope=(systemd-run --user --scope --quiet --collect --slice=agent-work.slice --)
 
 shell=${SHELL:-/bin/bash}
 # Never re-run this wrapper as the shell, which would loop.
@@ -16,7 +22,15 @@ if [[ "$shell" -ef "${BASH_SOURCE[0]}" || ! -x "$shell" ]]; then
   shell=/bin/bash
 fi
 
-if [[ -f /etc/systemd/user/agent-work.slice ]] && ! grep -Fq '/agent-work.slice/' /proc/self/cgroup 2>/dev/null; then
-  exec systemd-run --user --scope --quiet --collect --slice=agent-work.slice -- "$shell" -l "$@"
+if [[ -f "$slice_file" ]] && ! grep -Fq '/agent-work.slice/' "$cgroup_file" 2>/dev/null; then
+  # Probe first: once exec'd, a failed systemd-run would close the terminal.
+  probe=("${scope[@]}" true)
+  if command -v timeout >/dev/null 2>&1; then
+    probe=(timeout 10 "${probe[@]}")
+  fi
+  if "${probe[@]}" >/dev/null 2>&1; then
+    exec "${scope[@]}" "$shell" -l "$@"
+  fi
+  printf 'agent-work-shell: cannot start a scope in agent-work.slice; this shell runs outside the memory ceiling\n' >&2
 fi
 exec "$shell" -l "$@"
