@@ -49,6 +49,15 @@ practice, relayed by the supervisor and approved as a process change.
 - Coverage floors on `internal/engine`, `internal/planner` and
   `internal/schema`, set by EPC-001 and enforced in CI.
 
+## Defaults
+
+- Every setting applies its best-practice default when it is unset
+  (principle 13), shows it in `plan` with its reason, and links its source
+  in `registry/sources.toml`. Defaults may differ by purpose, tier and form
+  factor, from one table.
+- Tests show each default is applied when the setting is unset, and that
+  every opt-out works.
+
 ## Versioning and changes
 
 - Releases follow Semantic Versioning and are signed. The Go `wskit` starts
