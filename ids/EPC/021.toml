@@ -1,0 +1,11 @@
+id = "EPC-021"
+uid = "4f90d9cf-39b5-48d9-b12e-12d054317009"
+kind = "EPC"
+title = "Workspace unit"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-21T09:20:29Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
