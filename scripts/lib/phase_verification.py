@@ -264,14 +264,41 @@ def ufw_allows_in(status, rule, interface):
     return False
 
 
-def resource_values(profile, total):
+RESOURCE_DEFAULTS = {"--memory-high-percent": 70, "--memory-max-percent": 80, "--swap-max-percent": 10, "--oomd-pressure-percent": 60}
+AGENT_SLICE = Path("/etc/systemd/user/agent-work.slice")
+RESOURCE_RECEIPT = Path("/var/lib/agent-workstation-kit/resource-policy/receipt.tsv")
+OOMD_BINARIES = (Path("/usr/lib/systemd/systemd-oomd"), Path("/lib/systemd/systemd-oomd"))
+
+
+def resource_options(command=()):
+    """Return the share flags of a resources phase command, with the script defaults."""
+    options = dict(RESOURCE_DEFAULTS)
+    args = list(command or ())
+    for index, arg in enumerate(args[:-1]):
+        if arg in options:
+            options[arg] = int(args[index + 1])
+    return options
+
+
+def resource_values(profile, total, command=()):
+    """Mirror calculate_memory_shares in common.sh: shares of total RAM in KiB."""
     gib = 1024 * 1024
+    options = resource_options(command)
     reserve = profile["resources"]["os_memory_reserve_gib"]
-    hard = max(reserve * gib // 2, 4 * gib) if reserve > 4 else reserve * gib // 2
-    high, maximum = total - reserve * gib, total - hard
-    if high <= 0 or maximum <= high:
-        raise ValueError("insufficient memory for the reviewed resource reserve")
-    return {"CPUWeight": "90", "IOWeight": "90", "MemoryHigh": str(high) + "K", "MemoryMax": str(maximum) + "K", "TasksMax": str(max(4096, min(16384, total // gib * 128)))}
+    high_pct, max_pct = options["--memory-high-percent"], options["--memory-max-percent"]
+    high, maximum = total * high_pct // 100, total * max_pct // 100
+    if max_pct <= high_pct or high <= 0 or total - maximum < reserve * gib:
+        raise ValueError("the agent memory ceiling leaves less than the reviewed reserve")
+    return {"CPUWeight": "90", "TasksMax": str(max(4096, min(16384, total // gib * 128))), "MemoryHigh": str(high) + "K", "MemoryMax": str(maximum) + "K", "MemorySwapMax": str(total * options["--swap-max-percent"] // 100) + "K", "ManagedOOMMemoryPressureLimit": str(options["--oomd-pressure-percent"]) + "%"}
+
+
+def agent_slice_text(agent, values, oomd):
+    """Render agent-work.slice exactly as apply-resource-policy-linux.sh writes it."""
+    lines = ["# Managed by agent-workstation-kit apply-resource-policy-linux.sh; undo with --revert.", "[Unit]", "Description=Agent work ceiling for " + agent, "ConditionUser=" + agent, "", "[Slice]"]
+    lines += [key + "=" + values[key] for key in ("CPUWeight", "TasksMax", "MemoryHigh", "MemoryMax", "MemorySwapMax")]
+    if oomd:
+        lines += ["ManagedOOMMemoryPressure=kill", "ManagedOOMMemoryPressureLimit=" + values["ManagedOOMMemoryPressureLimit"]]
+    return "\n".join(lines) + "\n"
 
 
 def verify_phase(plan, name, root):
@@ -346,13 +373,17 @@ def verify_phase(plan, name, root):
             ok = ok and tailscale.returncode == 0 and json.loads(tailscale.stdout).get("BackendState") == "Running"
             ok = ok and (probe(["systemctl", "is-active", "--quiet", "ssh.service"]).returncode == 0 or probe(["systemctl", "is-active", "--quiet", "ssh.socket"]).returncode == 0)
         elif name == "resources":
-            uid = pwd.getpwnam(agent).pw_uid
-            path = Path("/etc/systemd/system/user-" + str(uid) + ".slice.d/50-agent-workstation.conf")
-            content = path.read_text()
+            path = AGENT_SLICE
             total = int(next(line.split()[1] for line in Path("/proc/meminfo").read_text().splitlines() if line.startswith("MemTotal:")))
-            expected = resource_values(profile, total)
-            fields = dict(line.split("=", 1) for line in content.splitlines() if "=" in line)
-            ok = not path.is_symlink() and path.stat().st_uid == 0 and stat.S_IMODE(path.stat().st_mode) == 0o644 and fields == expected
+            oomd = any(item.exists() for item in OOMD_BINARIES)
+            expected = agent_slice_text(agent, resource_values(profile, total, command), oomd)
+            ok = not path.is_symlink() and path.stat().st_uid == 0 and stat.S_IMODE(path.stat().st_mode) == 0o644 and path.read_text() == expected
+            ok = ok and RESOURCE_RECEIPT.is_file() and Path("/var/lib/systemd/linger/" + agent).exists()
+            # The agent's own user configuration outranks /etc/systemd/user.
+            config = Path(pwd.getpwnam(agent).pw_dir) / ".config/systemd"
+            ok = ok and not any(item.exists() for item in (config / "user/agent-work.slice", config / "user/agent-work.slice.d", config / "user.control/agent-work.slice.d"))
+            if oomd:
+                ok = ok and probe(["systemctl", "is-active", "--quiet", "systemd-oomd.service"]).returncode == 0
         elif name == "audit":
             # The executor always runs the read-only host audit once per audit
             # invocation, then verifies these extra declared-profile conditions.

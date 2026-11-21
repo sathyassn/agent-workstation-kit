@@ -157,19 +157,20 @@ calculate_tasks_max() {
   printf '%d\n' "$result"
 }
 
-calculate_memory_limits() {
-  local total_kib=$1 reserve_gib=$2 gib_kib=$((1024 * 1024))
-  local soft_reserve hard_reserve memory_high memory_max
-  [[ "$total_kib" =~ ^[0-9]+$ && "$reserve_gib" =~ ^[0-9]+$ ]] || return 2
-  soft_reserve=$((reserve_gib * gib_kib))
-  hard_reserve=$((reserve_gib * gib_kib / 2))
-  if ((soft_reserve > 4 * gib_kib && hard_reserve < 4 * gib_kib)); then
-    hard_reserve=$((4 * gib_kib))
-  fi
-  memory_high=$((total_kib - soft_reserve))
-  memory_max=$((total_kib - hard_reserve))
-  ((memory_high > 0 && memory_max > memory_high)) || return 1
-  printf '%d %d\n' "$memory_high" "$memory_max"
+# Print MemoryHigh, MemoryMax and MemorySwapMax in KiB as shares (percent) of
+# total RAM. Fail when the ceiling would leave less than the reserve in GiB.
+calculate_memory_shares() {
+  local total_kib=$1 high_percent=$2 max_percent=$3 swap_percent=$4 reserve_gib=$5
+  local memory_high memory_max swap_max value
+  for value in "$@"; do
+    [[ "$value" =~ ^[0-9]+$ ]] || return 2
+  done
+  ((max_percent > high_percent && max_percent <= 100)) || return 2
+  memory_high=$((total_kib * high_percent / 100))
+  memory_max=$((total_kib * max_percent / 100))
+  swap_max=$((total_kib * swap_percent / 100))
+  ((memory_high > 0 && total_kib - memory_max >= reserve_gib * 1024 * 1024)) || return 1
+  printf '%d %d %d\n' "$memory_high" "$memory_max" "$swap_max"
 }
 
 usage_mode() {
