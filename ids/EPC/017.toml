@@ -1,0 +1,11 @@
+id = "EPC-017"
+uid = "bf143717-549e-480b-bf6d-d2fe11680dec"
+kind = "EPC"
+title = "Remote desktop unit"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-21T09:18:21Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
