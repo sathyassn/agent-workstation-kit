@@ -157,22 +157,28 @@ What the code does today, and the problem each fact causes:
 | S0 Configure | interview, machine TOML, `plan` | same | setup user (conductor) | yes (a file in the fleet) |
 | G0 `recovery` | console recovery tested | same, with the recovery key | human; probe: attestation typed at the gate | n/a |
 | S1 `stage` | versioned `/opt` release (T6), state folders, baseline (its own `baseline` scope from T2 until T6) | same | root | no; removed by the documented uninstall |
-| S2 `packages` | dpkg repair, apt packages, vendor packages, hardware drivers, mesh VPN client; install guard on SSH and remote desktop | Homebrew formulae and casks (package owner); mesh VPN client from the vendor `.pkg` (root sub-phase) | root, or package owner for Homebrew | yes (ledger) |
+| S2 `packages` | dpkg repair, apt packages, vendor packages, hardware drivers, mesh VPN client; install guard on SSH and remote desktop | two units in order: `packages-brew` (Homebrew formulae and casks, as the package owner), then `packages-pkg` (vendor `.pkg` files such as the mesh VPN client, as root) | root; on macOS the package owner, then root | yes (ledger) |
 | S3 `identity` | hostname, `/etc/hosts` block, accounts and groups | computer names; accounts created with a disabled password | root | yes (homes archived, from T4) |
-| G1 `access` | passwords, SSH keys, mesh VPN up, a second tailnet device holding a named user's key | passwords, secure tokens, mesh VPN up (system extension approved), Remote Login and Screen Sharing enabled for named users only, a second tailnet device | human; conductor polls the non-root probes, root check once at the end | n/a |
+| G1 `access` | credential readiness: passwords, SSH keys, mesh VPN up, a second tailnet device holding a named user's key. No SSH reachability is required here | credential readiness: passwords, secure tokens, mesh VPN up (system extension approved), Remote Login and Screen Sharing enabled for named users only, a second tailnet device | human; conductor polls the non-root probes, root check once at the end | n/a |
 | S4 `services` | the `agentctl` helper and its sudoers rule (atomic), workloads | none | root | yes |
-| S5 `remote` | SSH and firewall hardening, alone, under the dead-man timer; releases the SSH and remote-desktop install guards | SSH limited to named users, Application Firewall checked, under a launchd dead-man | root | yes, under the timer |
+| S5 `remote` | SSH and firewall hardening, alone, under the dead-man timer; releases the SSH and remote-desktop install guards; its verify is the connectivity proof: a new SSH session over the mesh VPN from the second device | SSH limited to named users, Application Firewall checked, under a launchd dead-man; the same connectivity proof | root | yes, under the timer |
 | G2 `session` | agent desktop or console session; the conductor's CLI signed in there | same, plus privacy prompts; FileVault verified | human; agent-account probe | n/a |
-| S6 `agent` | shell, mise tools, agent settings | same, plus workloads (OrbStack needs the agent's GUI session) | agent account | yes |
+| S6 `agent` | shell, runtimes (mise tools), agent CLIs, agent settings, MCP, tunnel hook | same, plus workloads (OrbStack needs the agent's GUI session) | agent account | yes |
 | G3 `sign-ins` | provider sign-ins | same | human; agent-account probe | revoke by hand-over |
-| S7 `resources` | reserve, one ceiling for agent work (user slice), early OOM handling, `/tmp` policy (section 7a); deferrable | a gate until a macOS method is qualified; deferrable | root | yes |
+| S7 `resources` | resource limits (section 7a): reserve, one ceiling for agent work (user slice), early OOM handling, `/tmp` policy; snapshots where the filesystem supports them; deferrable | resource limits by priority and process limits (a recorded capability gap for memory ceilings); snapshots are `skipped`; deferrable | root | yes |
 | S8a `audit` | root checks, reboot acceptance | same | root | n/a |
 | S8b `audit-agent` | agent checks | same | agent account | n/a |
 
 - **Order.** Each scope's preflight reads the public export (section 11) and
   stops with the next step when an earlier stage is not verified.
-- **Deferring S7.** S7 is the only stage that can be deferred, because it
-  needs a measured load. The deferral is recorded in the receipts.
+- **Outcomes that count as verified.** A unit's outcome is `verified`,
+  `skipped` (the capability matrix says it does not apply on this
+  platform), or `deferred` (allowed only for S7, with the reason recorded).
+  All three count toward the stable point, and `next` returns them, so a
+  macOS machine reaches `stable` without a Linux-only unit.
+- **Deferring S7.** S7 is the only stage that can be deferred, because its
+  limits are best set after a measured load. The deferral is recorded in
+  the receipts, and the doctor reminds until it is applied.
 - **The stable point** is tagged by root after S8a passes and root has
   checked S8b's record live.
 - **Gate owners and records.**
@@ -180,9 +186,11 @@ What the code does today, and the problem each fact causes:
     executor, so their records are root's. The approval is low risk, because
     a probe is read-only.
   - **Polling G1.** The conductor polls G1's non-root probes as often as it
-    likes: mesh VPN up, Remote Login reachable over the tailnet, and on macOS
-    `com.apple.access_ssh` listing only named users. When they pass, the human
-    runs the root check once.
+    likes: credentials in place, mesh VPN up, the second device enrolled, and
+    on macOS Remote Login enabled with `com.apple.access_ssh` listing only
+    named users. When they pass, the human runs the root check once. G1 does
+    not ask for SSH reachability: on a fresh Linux host SSH stays masked by
+    the install guard until S5, and S5's verify is the connectivity proof.
   - **Agent records.** G2, G3, S6 and S8b records are kept in the agent
     account's store. Root reads them to show status, never as the authority
     for a root step.
@@ -315,20 +323,9 @@ This is a user decision (2026-11-21).
   | `conductor` | The JSON interface (section 4) |
   | `docs` | Generation from the schema |
 
-- **Units,** about 15. Stages compose them in the order of the stage table
-  (section 2):
-
-  | Stage | Units |
-  |---|---|
-  | S1 | baseline |
-  | S2 | packages, runtimes, agent CLIs; the mesh VPN client is installed here |
-  | S3 | accounts, git identity, secrets hand-overs |
-  | S4 | containers and workloads (Linux; macOS workloads run in S6) |
-  | S5 | SSH, firewall, remote desktop, mesh VPN settings |
-  | S6 | shell, agent settings and sandbox, MCP, browser tunnel hook; macOS workloads |
-  | S7 | resource limits, snapshots |
-  | S8 | doctor and the stable point |
-  | Any stage, optional | corporate VPN, workspace and repositories |
+- **Units,** about 20, each in exactly one stage. The one mapping of unit
+  to domain, stage, scope, dependencies and epic is section 15.1; it is
+  generated from `registry/units.toml`.
 
 - **CLI conventions, defined once** and shared by every command and unit:
   - preview by default, with `--apply` to make changes;
@@ -365,16 +362,27 @@ This is a user decision (2026-11-21).
   root.
 - **Data is embedded.** The schema, the registries, dotfile templates and
   docs templates are compiled into the binary with `go:embed`, so the
-  one-liner fetches only the binary. A fleet adds to them, never replaces
-  them: with `--fleet-root`, `wskit plan` reads the fleet's `[x-org]`
-  schema fragment, its registry entries and its templates. Fleet additions
-  may add fields, tools and values; they cannot loosen a kit rule (a pin
-  policy, a refusal or a platform). The plan records the digest of every
-  fleet file it read.
+  one-liner fetches only the binary. `go:embed` cannot reach parent
+  folders, so one small package at the module root, `assets.go`, embeds
+  `schema/`, `registry/`, `dotfiles/` and `templates/`, and other packages
+  read the data through it. A fleet adds to the data, never replaces it:
+  with `--fleet-root`, `wskit plan` reads the fleet's `[x-org]` schema
+  fragment, its registry entries, its templates and its declarative units.
+  - **Merge rules.** A fleet entry whose ID duplicates a kit ID is refused.
+    Only new keys under `[x-org]` are accepted; a fleet value for a kit
+    field is a value in the fleet layer (section 2b, config layers), never a
+    change to the field's definition. A fleet entry cannot loosen a kit rule
+    (a pin policy, a refusal or a platform).
+  - **Approval binds to exact inputs.** Approval records the fleet's
+    reviewed commit and the digest of the resolved plan. Every fleet file
+    the plan read is staged with the plan, so a root step reads exactly
+    what was approved.
 - **Go details for T1:**
-  - **Module and layout.** One module,
-    `github.com/sathyassn/agent-workstation-kit`, with the Go toolchain
-    pinned in `go.mod`:
+  - **Module and layout.** One module, whose path is the repository's own
+    path, `github.com/sathyassn/agent-workstation-kit`, so `go install` and
+    vulnerability tooling resolve it; if the repository moves to an
+    organisation, the module path moves with it in one PR. The Go toolchain
+    is pinned in `go.mod`:
 
     ```text
     cmd/wskit/          main only
@@ -382,6 +390,7 @@ This is a user decision (2026-11-21).
     internal/cli  engine  planner  schema  registry  conductor  docsgen  redact  ui
     internal/platform/{linux,darwin}
     internal/units/<unit>/
+    assets.go                                      embeds the data folders below
     schema/  registry/  dotfiles/  templates/      data, embedded
     scripts/bootstrap.sh                           the only shell
     testdata/  e2e/                                fixtures, container and VM runs
@@ -440,9 +449,18 @@ This is a user decision (2026-11-21).
       stable point.
     - Status and doctor are a compact dashboard, problems first; `--verbose`
       adds detail.
-  - **Agents,** the preferred way to run setup: `--json`, no terminal, or
-    `WSKIT_PLAIN=1` gives stable, versioned JSON and plain text, with no
-    animation, no colour codes and no prompts. Every interactive question
+  - **Agents,** the preferred way to run setup, get stable, versioned JSON
+    or plain text, with no animation, no colour codes and no prompts.
+  - **Which front end runs,** in order of precedence:
+    1. `--json`: JSON on standard output only; everything else (progress,
+       logs, warnings) on standard error as plain lines;
+    2. `--plain` or `WSKIT_PLAIN=1`: plain text, no prompts;
+    3. the terminal UI only when both standard output and standard error
+       are terminals, `TERM` is not `dumb`, and neither of the above is set;
+    4. otherwise plain.
+
+    The conductor recipe sets `WSKIT_PLAIN=1`, so an agent running in a
+    pseudo-terminal never gets the terminal UI. Every interactive question
     has a flag or config equivalent, so nothing needs a terminal. `next
     --json` drives the conductor.
   - **Accessibility.** `NO_COLOR`, `TERM=dumb`, narrow terminals and screen
@@ -451,14 +469,109 @@ This is a user decision (2026-11-21).
   - **Tests:** snapshot tests for plain and JSON output, and golden-file
     tests for the terminal views (`teatest`).
   - Every Charm dependency is pinned in `go.mod` and listed in the registry.
-- **Fleet logic.** Logic that a fleet holds today moves into generic kit
-  units driven by fleet values. The fleet keeps config, machine records and
-  values only its organisation uses.
+- **One tool going forward.** From the P5 cutover, `wskit` is the only tool
+  for the kit and for every private fleet. Logic that a fleet holds today
+  moves into generic kit units driven by fleet values, or into the fleet's
+  declarative units and plugins (section 2d). The fleet keeps company
+  values, machine records and organisation-only extensions. A fleet
+  adoption epic covers the convergence run for existing hosts, migrating
+  the fleet repository to `wskit fleet`, and retiring the fleet's scripts.
 - **How the earlier sections read in Go.** Phase scripts become units.
   `--describe` is the unit's `Describe`, and a phase's apply is the unit's
   `Apply` as the engine runs it. Commands named in this document are `wskit`
   commands: for example `wskit next --json`, `wskit approve`, `wskit resume`
   and `wskit interview`.
+
+### 2c. Revert everywhere
+
+The kit's headline guarantee: every unit and every stage can return to the
+previous stable point, or to the baseline taken before the first change.
+
+- **Per unit.** Each unit's `Revert`, with the engine's restore (section
+  5), returns its owned paths and state to the unit's previous receipt.
+  Section 15.1 lists every unit; none is exempt, and a unit that cannot
+  revert a part (a package upgrade, say) lists it in the cannot-undo list.
+- **Per stage and point.** `revert --to POINT` walks the units back in
+  reverse dependency order, each step a transaction.
+- **The cannot-undo list** (section 9) appears in every preview: apply,
+  revert and `next`.
+- **Hand-built hosts.** At their first convergence run they get an
+  `as-found` baseline. Hand changes made before that run are recorded in
+  the machine record, not reverted.
+- **Proof.** Every unit epic's acceptance includes standalone apply and
+  revert tests, and an interrupted revert that resumes. The composed run
+  ends with `revert --to baseline` passing the match digest (section 5).
+
+### 2d. Extensibility
+
+- **Functional domains** are unit metadata: `system`, `identity`,
+  `network`, `remote`, `agent`, `workspace`, `data` and `ops`. Commands stay
+  flat (`wskit vpn up`); `wskit list [--domain D]` groups units by domain.
+  Stages and profiles compose units by domain and dependency.
+- **A unit catalog.** A new kit unit implements the `Unit` interface and is
+  added to `registry/units.toml`; `go generate` writes the catalog list
+  (`internal/units/catalog_gen.go`), so no core file is edited by hand and
+  no package-level registration state exists. `wskit dev new-unit NAME
+  --domain D` creates the package from a template, with tests and a docs
+  page, and the docs explain how to add a unit.
+- **Organisation-specific units,** two mechanisms, both through the same
+  engine (plan, apply, verify, revert, receipts, owned paths,
+  dependencies):
+  - **Declarative units** (preferred): TOML recipes in the fleet, with
+    packages, files from templates, commands, checks and undo steps,
+    validated by the schema. The engine runs them like any unit; their
+    commands run through `engine.Tx` with declared paths.
+  - **Plugin executables:** `wskit-NAME`, found the way git and kubectl
+    plugins are, speaking a versioned JSON protocol over standard input and
+    output (`describe`, `plan`, `apply`, `verify`, `revert`, `status`).
+    Each plugin is registered and checksum-pinned in the fleet, runs under
+    the same privilege rules, and never runs as root without the approval
+    phrase. File changes a plugin makes are requested through the protocol
+    and carried out by the engine, so they are backed up and receipted.
+- **Fleet data stays add-only** (section 2b).
+- **Tests:** a sample declarative unit and a sample plugin under
+  `testdata/`, both taken through apply, revert and an interrupt.
+- **When:** the catalog, domains and the `Unit` interface in P1 (T1); the
+  declarative units and the plugin protocol in P3.
+
+### 2e. Desired state, converged
+
+- **The machine config declares what is wanted:** `[tools].enable`,
+  `[mcp].servers` and each unit's options under `[units]`. `wskit setup`
+  converges the machine to it.
+- **Adding later is one more unit.** The plan shows only the delta; removing
+  something is that unit's revert. First setup and later changes use the
+  same code path and transactions.
+- **Direct verbs record themselves in the config.** `wskit tools add|remove
+  TOOL`, `wskit mcp add|remove SERVER` and `wskit UNIT apply|revert` first
+  update the machine config, then run the same transaction, so the config
+  always matches the machine. `wskit config set ...` followed by `wskit
+  setup` does the same thing. When the config lives in a fleet, the change
+  is written to the local copy and drafted as a fleet PR (section 5,
+  changes on permission).
+- **A generic, registry-driven `tools` unit.** Most CLIs (Google Workspace,
+  GitHub and GitLab CLIs, cloud CLIs, agent CLIs) need no code. A registry
+  entry gives:
+  - the pinned version per OS;
+  - the source and its checksum or signature;
+  - the install and uninstall method;
+  - the verify command;
+  - an optional sign-in hand-over;
+  - capability notes, such as "no headless sign-in on macOS".
+
+  A new CLI is a reviewed registry PR. An entry whose method needs root (an
+  apt or `.pkg` install) is installed by `packages` in S2 from the same
+  entry.
+- **An MCP catalog,** `registry/mcp.toml`. Each entry gives the name, the
+  endpoint or pinned command, the harnesses that get it, and the auth type
+  (OAuth, or a client ID and callback port where dynamic registration is not
+  supported). `wskit mcp add` applies it to every agent config home through
+  the `mcp` unit (section 10), and the sign-in is a hand-over. It replaces a
+  fleet's interim MCP scripts.
+- **Support limits show in `plan`,** from the capability matrix, never as
+  surprises during apply.
+- **The interview** offers `[tools]` and `[mcp]` choices from the registry
+  and the catalog (T5).
 
 ### 3. One apply path (T1)
 
@@ -474,7 +587,36 @@ This is a user decision (2026-11-21).
   descriptor is listed. It passes none, so no lock or failure descriptor
   reaches a tool, and a daemon a package starts can never hold the host
   lock. Each tool's environment is built from an allowlist, never inherited
-  whole.
+  whole: `PATH` (set to the system default, not the caller's), `HOME`,
+  `USER`, `LOGNAME`, `LANG`, `LC_ALL`, `TERM`, `TMPDIR`, and
+  `DEBIAN_FRONTEND=noninteractive` on Linux. A unit adds a named variable
+  only by declaring it in `Describe`.
+- **Tools never outlive the lock unnoticed.** The engine starts each tool in
+  a new process group that it owns, and records the group ID, each process
+  ID and its start time in the intent record before the tool runs. On
+  Linux, a root apply also runs inside a transient systemd scope named
+  after the run ID, so every descendant is tracked even if it leaves the
+  group. If the engine dies, the lock is released but the record remains.
+  The next start reads the intent first: it waits up to the grace period
+  for recorded processes that are still alive (matched by ID and start
+  time, so a reused ID is never touched), then stops the group or scope,
+  and only then restores or unlocks. This minimal intent and recovery is
+  part of T1, not only T2.
+- **Durable writes.** Every record (intent, receipt, journal entry, export
+  file) is written to a temporary file in the same folder, fsynced,
+  renamed into place, and then the folder is fsynced. The order is: intent
+  before apply; receipt after verify; the public export after the receipt.
+  At start, receipts are the authority, and the export is regenerated from
+  them when the two disagree. A temporary file left by a crash is ignored
+  and removed.
+- **A refused root approval changes nothing.** When the person declines the
+  approval phrase, or `sudo` fails, no mutation starts. The engine records a
+  `blocked` hand-over for that step, keeps every earlier receipt, and exits
+  3. The conductor reports it, does not retry by itself, and asks the person
+  again only after they say so.
+- **Two binaries.** `wskit`, and the minimal sudo helper `agentctl`
+  (below). Nothing else ships as an executable, apart from the day-zero
+  `bootstrap.sh`.
 - **Staged binary check.** As root, `wskit` refuses to run (exit 5) unless
   its own resolved path is one of these, with the whole parent chain
   root-owned and not writable by group or others:
@@ -487,11 +629,26 @@ This is a user decision (2026-11-21).
 
   This replaces `path_safety.require_staged_root()` and the root block of
   `common.sh` for Go code.
-- **Staging from T1 to T5.** A documented root step stages a release
-  binary: it copies the binary into a root-owned temporary folder, checks it
-  there with the system checksum tool (`sha256sum` on Linux, `shasum -a 256`
-  on macOS) against the checksum published with the release, and only then
-  installs it at the fixed staged path. The binary never checks itself.
+- **First install and staging use system tools only.** No `wskit` runs as
+  root before it is staged. The documented root step, the same from T1 on:
+  1. download the binary, the checksum file and its signature into a
+     root-owned temporary folder (`curl`);
+  2. verify the signature of the checksum file with `ssh-keygen -Y verify`
+     against the release public key embedded in the docs and the
+     one-liner;
+  3. verify the binary against that checksum with the system tool
+     (`sha256sum` on Linux, `shasum -a 256` on macOS);
+  4. install it at the staged path with `install -o root -m 0755`.
+
+  The owner signs the checksum file with the release key when publishing,
+  from the first Go release. The binary never checks itself. From T6,
+  `wskit stage` performs later upgrades the same way, starting from an
+  already staged and trusted binary.
+- **macOS Gatekeeper.** `curl` sets no quarantine attribute, so Gatekeeper
+  does not block the downloaded binary; Go signs `darwin/arm64` binaries
+  ad hoc, which Apple silicon requires. Notarization is not needed for this
+  path. When a person downloads with a browser instead, the docs give the
+  verify steps above, then `xattr -d com.apple.quarantine`.
   CI tests this on Linux and macOS runners: it stages a built binary with
   `sudo` into the fixed path and checks that the root check passes there
   and refuses a user-writable copy, a symlinked parent and a group-writable
@@ -582,7 +739,10 @@ This is a user decision (2026-11-21).
   | 3 | A person must act; the hand-over says what |
   | 4 | An interrupted phase must be finished, restored or reapplied first; or a dead-man timer is armed and waiting for disarm |
   | 5 | Refused as root: not the staged binary (section 3) |
+  | 6 | Drift found: `verify`, `status` or the doctor saw live state that differs from the receipts |
   | 130 | Cancelled at a safe point |
+
+  Snapshot results are informational and never change the exit code.
 
 - **The conductor recipe** in `AGENTS.md` is a loop: read `next`, act or hand
   over, verify, report, repeat.
@@ -635,8 +795,11 @@ preflight -> describe -> backup -> intent=applying -> apply (logged) -> verify -
   - `irreversible` items.
 
   The executor fails closed when a phase does not answer.
-- **Backup.** Before the apply, each item is copied with its owner, mode and
-  digest, or recorded as absent. State providers write snapshots.
+- **Backup.** Before the apply, each item is copied with its owner, mode,
+  ACLs, extended attributes and digest, or recorded as absent. Where a
+  filesystem does not support ACLs or extended attributes, the manifest
+  records that they were not captured, and the revert preview says so.
+  State providers write snapshots of their state.
   `manifest.json` is written and fsynced last, so a manifest exists only for a
   complete backup. A kill during the backup leaves no manifest, and the next
   start backs up again.
@@ -651,12 +814,19 @@ preflight -> describe -> backup -> intent=applying -> apply (logged) -> verify -
   reverse, then the validators run (`sshd -t`, `visudo -c`, `ufw status`).
   Restore is idempotent, and a `restoring` phase is always finished before
   anything else runs.
-- **Signals and the terminal.**
-  - The engine ignores SIGHUP, and each tool it starts runs in its own
-    session. Output goes to the log first; a lost terminal never stops a run.
-  - On SIGINT or SIGTERM, the executor stops at the next safe point: it lets
-    the running phase finish, or after the grace period stops it, leaving the
-    intent record for the next start. It then exits 130.
+- **Signals, cancellation and the terminal.** The engine is the one owner
+  of cancellation.
+  - The engine ignores SIGHUP. Each tool runs in a process group the engine
+    owns (section 3). Output goes to the log first; a lost terminal never
+    stops a run.
+  - SIGINT, SIGTERM, or a cancel from the terminal UI, all become one
+    cancel request to the engine. The UI never stops anything itself: it
+    sends the request, stays up, and shows "stopping at the next safe
+    point".
+  - The engine lets the running step finish. When the grace period ends,
+    it cancels the step's context and stops its process group, leaving the
+    intent record for the next start. It then exits 130. A second cancel
+    request changes nothing; the UI says so.
 - **Baseline.** A root step captures it once, before any other scope:
   - from T2 on, it is its own root scope, `baseline`, which runs before
     every other scope on both OSes; from T6, it becomes part of S1;
@@ -744,6 +914,17 @@ preflight -> describe -> backup -> intent=applying -> apply (logged) -> verify -
     export.
   - The point after S8a and S8b is tagged `stable`.
   - `restore-points [--json]` lists them.
+  - **Retention.** Nothing that an advertised point references (manifests,
+    backups, receipts, and the release binary that wrote them) is ever
+    pruned. Pruning happens only by retiring a point, which is an approved
+    step that removes the point from the list first. Release binaries that
+    points reference stay staged, so a point made by an older kit release
+    is restored by that release's code.
+- **Dependants go stale on every undo.** When a unit is restored after a
+  failure, reverted, or rolled back by `revert --to`, every applied unit
+  that depends on it (section 15) is marked `stale`. A stale unit is
+  re-verified before any apply or resume continues, and reapplied when its
+  verify fails.
 - **`revert --to POINT`:**
   - **Preview first:** the steps in reverse stage order, plus what cannot be
     reverted (section 9).
@@ -836,12 +1017,55 @@ preflight -> describe -> backup -> intent=applying -> apply (logged) -> verify -
     secure tokens so the accounts can unlock FileVault.
   - The kit never sees either value.
 - **The dead-man timer** guards every apply and revert step that touches SSH
-  or the firewall.
-  - **Linux.** A persistent unit pair is written to `/etc/systemd/system`: a
-    service that restores the step from its manifest with the staged
-    binary, and a timer with `OnActiveSec=10min` and
-    `OnBootSec=2min`. A power loss before disarm therefore restores at the
-    next boot.
+  or the firewall. If the person cannot prove they can still get in, the
+  step is restored automatically.
+  - **Before arming,** the hand-over asks the person to open a second
+    session now (SSH over the mesh VPN from the second device, the console,
+    or Screen Sharing on macOS), so they never depend on the session that
+    runs the change.
+  - **Order.** Arm, apply, re-arm, verify:
+    1. arm with the full deadline before apply, so a crash during apply is
+       covered;
+    2. apply;
+    3. re-arm, which resets the deadline so it counts from the end of
+       apply (10 minutes by default);
+    4. verify, whose last check is the connectivity proof: a new SSH session
+       over the mesh VPN from the second device, through OpenSSH. A Tailscale
+       SSH session (with `tailscaled` as its server) does not count, because
+       it bypasses the OpenSSH config being changed.
+
+    The scope then ends with the timer still armed and releases the host
+    lock. While a timer is armed, the engine refuses new applies with exit 4.
+  - **Disarm** is accepted only after the connectivity proof is recorded,
+    from any login session other than the one that armed it: SSH, the
+    console, or Screen Sharing. The recorded proof is the second factor.
+    - Disarm writes `disarmed` to the root journal and fsyncs it before it
+      removes the units. A torn disarm (journal written, units still
+      present) is safe: the restore reads the journal first and exits when
+      it says `disarmed`, and the next start removes the leftover units.
+    - T3 moves the ancestor check from bash (`remote_login_ancestor_present`)
+      into Go for both OSes.
+  - **Deadline and boot recovery are separate.**
+    - **Linux:** a timer unit with `OnActiveSec` set at each arm runs the
+      restore service at the deadline. Boot recovery is a separate oneshot
+      service, enabled at arm, that runs once at boot and restores only if
+      the journal shows the step armed and not disarmed. `OnBootSec` is not
+      used, because combined with `OnActiveSec` on a running host it fires
+      at once.
+    - **macOS:** a root LaunchDaemon with `RunAtLoad=true` and
+      `StartInterval=30` runs `deadman check --run RUN-ID` from the restore
+      copy. Each run reads the deadline file and the journal: it restores
+      when the deadline has passed and the step is not disarmed, and
+      otherwise exits. `RunAtLoad` covers boot.
+  - **The restore never blocks on a lock it cannot get.** If an apply of
+    the same run is still running at the deadline, the restore first stops
+    that run's process group (recorded in the intent, section 5), then takes
+    the host lock and the root journal lock.
+  - **Restores keep a proven path.** Every restore keeps the mesh-VPN SSH
+    path that an earlier connectivity proof established: firewall rules for
+    the mesh interface and the SSH listener on it are never removed by a
+    restore.
+  - **The restore** writes `restored-by-timer` to the journal.
   - **What the restore runs from.** The restore code must not change while
     the timer is armed.
     - **T3 to T5,** before versioned releases exist: arming copies the
@@ -853,20 +1077,6 @@ preflight -> describe -> backup -> intent=applying -> apply (logged) -> verify -
     - **From T6,** the restore names the exact `releases/<version>`, not
       `current`, and the unit checks the binary's digest the same way.
       `wskit stage` refuses to prune a release that an armed timer names.
-  - **macOS.** A root LaunchDaemon with `RunAtLoad` and a deadline file does
-    the same.
-  - **Order.** Arm, then apply, then verify. The scope then ends with the
-    timer still armed, and releases the host lock.
-  - **Lock.** While a timer is armed, the executor refuses new applies with
-    exit 4. The timer's restore takes the host lock and the root journal
-    lock, so it races nothing.
-  - **The restore** writes `restored-by-timer` to the journal.
-  - **Disarm.** `disarm --run RUN-ID` removes the units. It is accepted only
-    from a session that has `sshd` as a process ancestor, never `tailscaled`,
-    with a login session ID different from the one that armed it.
-    - T3 moves the ancestor check from bash (`remote_login_ancestor_present`)
-      into Go for both OSes.
-    - Disarm needs the second tailnet device from G1.
   - **Accounts.** A revert removes an account only after access is proven
     with an account that stays.
 
@@ -1049,12 +1259,12 @@ hours, while a guard that watched load and available memory stayed green.
     - a fixture smoke test passes.
   - **Vetting:** known vulnerabilities and maintainer status, recorded in the
     entry.
-  - **Permission:**
-    - automatic only for low-risk patch updates that the entry's approval
-      policy allows;
-    - human approval for minor and major updates, for tools that run as root,
-      touch the network or the security boundary, or handle credentials, and
-      for any update during a live setup.
+  - **Permission.** Every pin change lands through a pull request that a
+    person merges. The update watch may open low-risk patch updates on its
+    own, as the entry's approval policy allows; it never merges them. Tools
+    that run as root, touch the network or the security boundary, or handle
+    credentials, and any update during a live setup, also need the person's
+    explicit approval in the PR.
   - **Pin and record:** a kit PR (generic) or a fleet PR (company tools), with
     a changelog entry, logged through the transaction layer. Only then is it
     installed.
@@ -1075,12 +1285,8 @@ hours, while a guard that watched load and available memory stayed green.
     their checksums against the registry, makes the tree root-owned, swaps
     `current` atomically and keeps the last N releases.
   - **The fleet checkout** is staged the same way.
-  - **The first staging** has no staged copy to run from. The root step
-    copies the downloaded binary into a root-owned temporary folder, checks
-    its checksum and signature there with system tools (the checksum tool
-    and `ssh-keygen -Y verify`) against the values embedded in the one-liner
-    and the docs, and only then runs `wskit stage` from that copy. A file
-    the setup user could still change is never run as root.
+  - **The first staging** is the system-tools root step in section 3. A
+    file the setup user could still change is never run as root.
   - **The command path** becomes
     `sudo /opt/agent-workstation-kit/current/bin/wskit ...`. The binary's
     root check (section 3) accepts `current` only when it resolves under
@@ -1091,14 +1297,13 @@ hours, while a guard that watched load and available memory stayed green.
     SHA-256, and runs it to install one agent CLI from its vendor's verified
     source.
   - Its trust anchor is the release public key and the checksums, embedded
-    in the one-liner text and in the docs. From T6 every release is signed,
-    and the one-liner verifies both the checksum and the signature
-    (`ssh-keygen -Y verify`, which ships with both OSes). From P0 to T5,
-    releases carry checksums only, and staging is the documented root step
-    in section 3.
+    in the one-liner text and in the docs. Every Go release is signed, and
+    the one-liner verifies both the signature and the checksum
+    (`ssh-keygen -Y verify`, which ships with both OSes).
   - It prints the sign-in step, then hands over to the conductor.
-- **Filesystem snapshots (T6).** Btrfs, ZFS or LVM-thin snapshots are taken at
-  baseline and at each stable point where available.
+- **Filesystem snapshots** (the `snapshots` unit in S7, section 15.1).
+  Btrfs, ZFS or LVM-thin snapshots are taken at baseline and at each stable
+  point where available. Results are informational.
   - On macOS, APFS local snapshots are purged after about a day, so they are
     only a short-term net around a stage.
   - Revert never depends on any snapshot.
@@ -1136,7 +1341,7 @@ What revert cannot undo, listed in every revert preview:
     machine are excluded by exact command, never by a pattern that would
     let them run other commands. Shared state folders go in `allowWrite`.
     Each exception states its reason and its undo.
-- **MCP preset (T7).** MCP servers are declared once, independent of chat
+- **MCP servers (the `mcp` unit and catalog, section 2e).** MCP servers are declared once, independent of chat
   accounts. The pilots found the same tracker integration set up three ways
   (a chat-account connector, a user-scope server in some profiles only, and
   a plugin with its own copy), and configs still pointing at a deprecated
@@ -1189,79 +1394,96 @@ What revert cannot undo, listed in every revert preview:
 
 ### 10a. Browser sign-in tunnel (first unit, after T1)
 
-- **What it is.** The `browser-tunnel` unit: `wskit tunnel` commands on the
-  client, a browser hook on the workstation, and managed SSH host entries.
-  Together they finish a remote CLI's localhost sign-in, or show a
-  workstation page, in the client's own browser, over a loopback-only SSH
-  tunnel that closes itself. It replaces the earlier `awk-auth` and
-  `awk-open` scripts.
+- **What it is.** The `browser-tunnel` unit. It finishes a remote CLI's
+  localhost sign-in, or shows a workstation page, in the client's own
+  browser, over a loopback-only SSH tunnel that closes itself. It replaces
+  the earlier `awk-auth` and `awk-open` scripts.
 
   ```text
   workstation (Linux)                          client (macOS or Linux)
-    CLI waits on 127.0.0.1:P                     wskit tunnel auth --host WS 'URL'
-    BROWSER hook hands the URL over  ------->      | reads P from a loopback redirect_uri
+    CLI calls $BROWSER URL                       person runs the printed command:
+    wskit-browser-hook stores URL (0600),        wskit tunnel auth --host WS --handle H
+      prints handle H and the client command       | fetches URL over SSH, deletes it there
+                                                   | checks redirect host and port P
                                                    | ssh -L 127.0.0.1:P:127.0.0.1:P WS
-    127.0.0.1:P <---- SSH, loopback only -----     | opens URL in the system browser
-    callback served                                | closes: callback done or time limit
+    127.0.0.1:P <---- SSH, loopback only -----     | waits for "forward ready", opens browser
+    callback served                                | "callback delivered", or time limit
   ```
 
-- **Workstation side (Linux).** `BROWSER` points at the hook, which receives
-  the URL a CLI tries to open and hands it to the client as a hand-over line
-  with the exact client command. It never opens a listener of its own. On a
-  macOS workstation, many CLIs open URLs through Launch Services and ignore
-  `BROWSER`, so the workstation side is Linux only, and macOS is recorded as
-  a gap in the capability matrix.
+- **Commands.** `wskit tunnel auth|open|host|hook|fetch|close|status`.
+  `host set|update|remove` manages host entries; `close PORT` ends a
+  tunnel; `status` lists live ones. The unit's `plan`, `apply`, `verify`
+  and `revert` cover the host entries and the hook setting.
+- **Workstation side (Linux).** `BROWSER` points at `wskit-browser-hook`, a
+  symlink to the `wskit` binary that runs `tunnel hook` when called by that
+  name, because many tools run `BROWSER` as a single program path with no
+  arguments.
   - **Where `BROWSER` is set.** A marked block in `~/.zshenv`, which every
     zsh reads, interactive or not, so agent tool shells get it too. The
     block sets `BROWSER` only when `SSH_CONNECTION` is set, so a local
     desktop session keeps opening its own browser. Revert removes only the
     block.
-- **Client side (macOS or Linux).** The client opens the URL in the system
-  browser. When the URL carries a loopback redirect URI (`localhost` or
-  `127.0.0.1` with a port), it first opens an SSH `-L` forward for that one
-  port, bound to the client's loopback, and keeps it only until the callback
-  completes or the time limit passes. `wskit tunnel open` shows a plain
-  local page, such as a dev server on a workstation port, on request, under
-  the same rules.
-  - **Host entries** live in a kit-owned file,
-    `~/.ssh/config.d/agent-workstations`, included by one marked `Include`
-    line at the top of `~/.ssh/config`. Entries use the tailnet name, never
-    a raw address.
-  - **Time limit:** 600 seconds by default, settable from 30 to 3600. A
-    watchdog closes the forward at the limit even if the client process is
-    stuck.
-  - **The "tunnel ready" handshake.** Readiness and callback progress are
-    read only from the local `ssh` client's own debug log (`ssh -v -E
-    FILE`), which the workstation cannot write. Text that arrives over the
-    session's output is never trusted, so a workstation that prints a
-    "forwarded" line changes nothing. A test proves this.
-- **Scope.** User scope only, on both sides. No root, no system settings.
-- **Coexistence.** It works alongside the mesh VPN (host entries use the
-  tailnet name), NoMachine and other remote desktops. It binds only client
-  loopback ports, and refuses a port that is already in use.
-- **A unit (section 2a).** `plan`, `apply`, `verify` and `revert` cover its
-  SSH host entries and the hook setting, with a preview, a dated backup,
-  atomic writes inside a marked block, and an undo that removes only what it
-  wrote. The binary is pinned like every release. Its client rows follow the
-  platform rule (section 9).
-- **Order.** It is needed day to day and runs only in user space. It comes
-  right after T1, whose CLI skeleton, unit interface and platform table it
-  uses, and before T2, with its own backup and undo. When T2 lands, it moves
-  onto T2's client mode (section 5) for its writes, logs and undo. T3
-  composes its workstation hook into S6; until then it runs standalone only.
-- **Security properties** carried over from the earlier scripts: loopback
-  only, a time limit enforced by a watchdog, no secrets in logs, and
-  refusing "tunnel ready" lines faked by the workstation.
-- **Tests:** standalone apply and revert of the host entries and the hook;
-  the watchdog time limit; a port already in use; a faked "tunnel ready"
-  line; a redirect URI that is not loopback (no forward); and an
-  interruption at each write.
-- **Later.** It uses the T3 hand-over format once T3 lands.
+  - **The hook's output.** It never prints the URL, because sign-in URLs
+    can carry codes. It stores the URL in a 0600 file in the account run
+    folder, under a random handle, and prints two lines: one plain
+    hand-over line for people, and one machine line, `WSKIT-TUNNEL v1
+    host=ALIAS handle=HANDLE port=P`. The client fetches the URL over SSH
+    (`wskit tunnel fetch HANDLE`), which deletes the file. Handles expire
+    with the time limit.
+  - **macOS workstations** are a recorded gap: many macOS CLIs open URLs
+    through Launch Services and ignore `BROWSER`. T1's capability table
+    records it.
+- **Client side (macOS or Linux).**
+  - **Redirect hosts.** A forward opens only when the redirect URI's host is
+    exactly `localhost`, `127.0.0.1` or `::1`, with a port from 1024 to
+    65535. Any other host opens the browser with no forward. The forward
+    binds the same address family on the client's loopback only.
+  - **SSH is supervised.** `ssh` runs with `-N -v -E LOGFILE -o
+    ExitOnForwardFailure=yes -o ControlMaster=no -o ControlPersist=no`, in a
+    process group the unit owns. A small watchdog process, started detached,
+    holds the deadline and stops the group at the time limit even if the
+    client process dies. Each tunnel's record (port, process IDs with their
+    start times, deadline) sits in the account run folder; the next run
+    sweeps expired records, matching processes by ID and start time so a
+    reused ID is never touched.
+  - **"Forward ready"** is the OpenSSH debug line `Local connections to
+    LOCALHOST:P forwarded to remote address ...`, read only from `ssh`'s own
+    `-E` log, which the workstation cannot write. The browser opens only
+    after it. Text arriving over the session is never trusted, so a
+    workstation that prints such a line changes nothing.
+  - **"Callback delivered"** is separate: the log shows a connection on the
+    forwarded port and its close, followed by three quiet seconds. The unit
+    reports "callback delivered", never "signed in", because only the CLI
+    knows whether the sign-in worked.
+  - **Plain output** never shows a URL's query values.
+- **Host entries** live in a kit-owned file,
+  `~/.ssh/config.d/agent-workstations`, included by one marked `Include`
+  line at the top of `~/.ssh/config`. Entries use the tailnet name, never a
+  raw address.
+- **Time limit:** 600 seconds by default, settable from 30 to 3600.
+- **Threats it handles,** each with a test:
+  - IPv6: `::1` is handled as its own family, and a forward never binds a
+    non-loopback address;
+  - injection: aliases, handles and ports are validated against strict
+    patterns, and no value reaches a shell;
+  - orphans and process-ID reuse: process records carry start times;
+  - concurrent tunnels: one lock file per port, and a port in use is
+    refused;
+  - a faked "forward ready" line from the workstation;
+  - a redirect URI that is not loopback.
+- **Scope and coexistence.** User scope only, on both sides; no root and no
+  system settings. It works alongside the mesh VPN, NoMachine and other
+  remote desktops, and binds only client loopback ports.
+- **Order.** It comes right after T1, whose CLI skeleton, unit interface,
+  minimal `engine.Tx` and platform table it uses, and before T2. When T2
+  lands, it moves onto T2's client mode (section 5) without changing its
+  commands or records. T3 composes its workstation hook into S6; until
+  then it runs standalone only. It uses T1's hand-over object (section 15).
+- **Parity.** The earlier Python tests are carried into the repository as
+  Go tests with their fixtures under `testdata/tunnel/`, as the parity list.
+  Their source is the maintainer's unpublished branch
+  `feat/remote-browser-signin`.
 - **Gate.** The full gate.
-- **Starting point.** The earlier Python scripts and their tests, on the
-  maintainer's unpublished branch `feat/remote-browser-signin`
-  (`scripts/lib/remote_signin.py`, `tests/test_remote_signin.py`). The
-  unit's epic carries their behaviours and test cases as the parity list.
 
 ### 10b. Fleet side
 
@@ -1466,7 +1688,173 @@ Where this ADR differs from the consolidated design on issue #5, and why:
 | Browser sign-in tunnel | After T8, then right after T2 | The first unit, right after T1 and before T2; onto T2's layer when T2 lands | Principle 11 makes it a unit that needs no stage, it is needed day to day, and it needs T1's CLI skeleton (user decision, 2026-11-21) |
 | Implementation | Python and shell | Go, one `wskit` binary; Python and shell frozen and deleted at parity; the schema moves to T1 | User decision, 2026-11-21 (section 2b) |
 | Units per stage | The implementation decision lists the firewall in S4, the mesh VPN in S5, and resources in S6 and S7 | Firewall with SSH in S5, mesh VPN client installed in S2 and set up in S5, resource limits in S7 only | The dead-man timer guards SSH and firewall changes together; the client is a package; one owner for resources |
+| Dead-man order | Arm after apply, before verify | Arm before apply, re-arm after apply so the deadline counts from there, then verify | A crash during apply stays covered |
+| Module path | The cross-family review asked for a neutral path | The repository's own path | `go install` and vulnerability tooling resolve it; it moves with the repository |
+| Secret hand-overs as a unit | The implementation decision listed "secrets hand-overs" in S3 | Secrets are entered only at gates G1 and G3; there is no secrets unit | A unit changes machine state; a gate only checks it |
 | Principle 7 | `latest` not allowed | `latest` and ranges refused for every source; enforcement per source kind is proposed amendment A1 | Some sources keep no old versions |
+
+### 15. Contracts published before code
+
+These are the interfaces T1 builds against. Each becomes a Go type or a
+data file with golden tests in T1; a change to one is a reviewed change to
+this ADR or its successor.
+
+#### 15.1 Units, stages, domains and epics
+
+Generated from `registry/units.toml`, the one source for the unit catalog,
+`--stage`, the docs tables and the Go constants. CI checks that the
+dependency graph has no cycles. Epic numbers are the provisional ones in
+the roadmap (`docs/plan/roadmap.md`).
+
+| Unit | Domain | Stage | Runs as | Depends on | Epic |
+|---|---|---|---|---|---|
+| `baseline` | system | S1 | root | none | E05 |
+| `packages` (Linux) | system | S2 | root | baseline | E13 |
+| `packages-brew` (macOS) | system | S2 | package owner | baseline | E13 |
+| `packages-pkg` (macOS) | system | S2 | root | packages-brew | E13 |
+| `machine-identity` | identity | S3 | root | packages | E14 |
+| `accounts` | identity | S3 | root | machine-identity | E14 |
+| `agentctl` (Linux) | system | S4 | root | accounts | E19 |
+| `workloads` | system | S4 on Linux, S6 on macOS | root on Linux, agent on macOS | agentctl on Linux, accounts on macOS | E19 |
+| `firewall` | network | S5 | root | packages | E15 |
+| `ssh` | remote | S5 | root | accounts, packages | E15 |
+| `mesh-vpn` | network | S5 | root | packages | E16 |
+| `remote-desktop` | remote | S5 | root | firewall, packages | E17 |
+| `corporate-vpn` | network | S5, optional | root | packages | E07 |
+| `shell` | agent | S6 | agent | accounts | E08 |
+| `git-identity` | identity | S6 | agent | accounts | E14 |
+| `runtimes` | agent | S6 | agent | shell | E13 |
+| `tools` | agent | S6 (entries that need root install through `packages` in S2) | agent | runtimes | E11 |
+| `agent-settings` | agent | S6 | agent | tools | E09 |
+| `mcp` | agent | S6 | agent | agent-settings | E12 |
+| `browser-tunnel` | remote | S6 (workstation hook); client side standalone | user | none | E06 |
+| `workspace` | workspace | S6, optional | agent | tools, git-identity | E21 |
+| `resource-limits` | ops | S7 | root | accounts | E10 |
+| `snapshots` | data | S7 | root | baseline | E20 |
+| `doctor` | ops | S8 | root and agent | every applied unit | E22 |
+
+- Gates (G0 to G3) are not units. Secret entry happens only at gates.
+- ADR items to epics: T1 is E03, T2 E05, T3 E23, T4 E24, T5 E25, T6 E26,
+  T7 E09, T8 E22.
+
+#### 15.2 The unit catalog
+
+`internal/units/catalog_gen.go` is generated from `registry/units.toml` and
+lists each unit's constructor. There is no `init()` registration and no
+package-level mutable state. A unit's `ID()` must match its catalog entry;
+a test checks it.
+
+#### 15.3 `engine.Tx`
+
+```go
+type Tx interface {
+    // Every mutating call refuses a path or state the unit did not declare
+    // in Describe, backs it up first, and records it for the receipt.
+    WriteFile(ctx context.Context, path string, data []byte, perm fs.FileMode, owner Owner) error
+    EnsureBlock(ctx context.Context, path string, b ManagedBlock) error // marked block, other content kept
+    RemoveBlock(ctx context.Context, path string, id BlockID) error
+    Remove(ctx context.Context, path string) error
+    SetState(ctx context.Context, p StateProvider, key string, want State) error // unit masks, sysctl, packages
+    Run(ctx context.Context, c Command) (Result, error) // argv only, declared env, timeout; output to the log
+    Emit(e Event)                                      // the only way a unit reports
+}
+```
+
+In T1, `WriteFile`, `EnsureBlock`, `RemoveBlock`, `Remove`, `Run` and
+`Emit` exist with file backups, receipts and durable intent; T2 adds
+`SetState`, manifests, the ledger and restore points behind the same
+interface.
+
+#### 15.4 Events
+
+Units emit typed events through `Tx.Emit`; the engine adds sequence, time
+and run ID, redacts, and passes them to the active front end (section 2b).
+
+```go
+type Event struct {
+    Seq    uint64
+    Time   time.Time
+    RunID  RunID
+    Unit   UnitID
+    Step   string
+    Kind   EventKind // Started, Progress, Changed, Warning, HandOver, Verified, Skipped, Deferred, Failed, Cancelled
+    Text   string    // redacted, one line
+    Data   map[string]string
+}
+```
+
+In JSON mode each event is one line on standard error with
+`schema_version`; results are on standard output.
+
+#### 15.5 Plans and approvals
+
+- **Plan digest:** SHA-256 over the plan in canonical JSON (RFC 8785),
+  without the digest field.
+- **Approval records:** root approvals in the root journal, user approvals
+  in the account state. Each holds the plan digest, the fleet commit (when
+  there is a fleet), the approving account and the time.
+
+#### 15.6 Lock order
+
+Always the host lock, then the root journal lock; and the account lock,
+then the account journal lock. A user scope never takes a root lock. The
+dead-man restore follows the same order.
+
+#### 15.7 `next --json`
+
+```json
+{
+  "schema_version": 1,
+  "run_id": "0123456789abcdef0123456789abcdef",
+  "stage": "S2", "unit": "packages", "owner": "root",
+  "root": true, "gate": null,
+  "preview_argv": ["wskit", "setup", "--unit", "packages", "--plan", "PLAN"],
+  "apply_argv": ["sudo", "/opt/agent-workstation-kit/bin/wskit", "setup", "--unit", "packages", "--plan", "PLAN", "--apply"],
+  "handover": {"...": "section 15.8"},
+  "probe": null, "log_path": null, "blocked_by": [],
+  "outcome": null
+}
+```
+
+Commands are argument arrays, never shell strings. `outcome` is one of
+`verified`, `skipped`, `deferred`, `failed`, `stale` or null.
+
+#### 15.8 Hand-over object (from T1)
+
+`machine`, `account`, `step`, `command` (argument array plus a display
+form), `why`, `verify` (argument array), `undo`, `probe` and `status`
+(`open`, `blocked` or `done`). T1 defines it for root steps; T3 adds gates.
+
+#### 15.9 Torn states
+
+| Interrupted at | What the next start finds | What it does |
+|---|---|---|
+| Writing an intent | a temporary file, no intent | ignores and removes it; nothing was applied |
+| After the intent, during apply | intent `applying`, maybe live processes | stops recorded processes (section 3), restores, then reapplies |
+| After verify, before the receipt | intent `applying`, state verified | re-verifies, then writes the receipt |
+| During restore | intent `restoring` | finishes the restore before anything else |
+| During disarm | journal `disarmed`, units present | removes the units; the restore would have exited |
+| Writing the export | an old export | regenerates it from the receipts |
+
+#### 15.10 What schema 3 rules move in T1
+
+Every rule that `fleetctl validate` and `validate-fleet.py` apply to schema
+3 profiles today. T1 proves parity by running the Python and Go validators
+over the same fixture profiles, with identical accept and reject results.
+
+#### 15.11 Dependencies
+
+Runtime libraries: `pelletier/go-toml/v2` (TOML), `spf13/cobra` and
+`charmbracelet/fang` (CLI), Bubble Tea, Huh, Bubbles, Lip Gloss and Glamour
+(terminal UI), `teatest` (UI tests), and `golang.org/x/sys`. Tools through
+`go tool`: `golangci-lint` and `govulncheck`. The first P0 PR pins each to
+an exact version, with a registry entry and its review. Nothing else is
+added without a registry entry.
+
+#### 15.12 Resource fields
+
+Resource settings are generated as shares of the machine (percent of
+memory and CPU), never absolute amounts.
 
 ## Consequences
 
@@ -1477,7 +1865,8 @@ Where this ADR differs from the consolidated design on issue #5, and why:
   piece by piece at parity.
 - macOS root scopes work again (T1).
 - More state on disk (backups, logs, baseline). The doctor reports its size,
-  and backups older than the stable point can be pruned by an approved step.
+  and a point can be retired by an approved step, which frees what only it
+  referenced.
 - Units have `Describe` and never prompt. macOS account passwords
   move to G1.
 - Existing receipts are invalidated once, by T1; the next run re-records
@@ -1489,7 +1878,8 @@ Where this ADR differs from the consolidated design on issue #5, and why:
 
 ## Acceptance for 0.2.0
 
-- T1 to T8 merged, each with its evidence.
+- T1 to T8 and the P2 unit epics merged, each with its evidence, including
+  standalone apply and revert tests for every unit (section 2c).
 - An agent conducts one clean setup on a supported Linux machine and one on a
   supported macOS machine. Each run:
   - goes from the interview to the stable point;
@@ -1503,25 +1893,28 @@ Where this ADR differs from the consolidated design on issue #5, and why:
 
 ```text
 D0 (this ADR, reviewed alone)
- -> T1 Go CLI skeleton (wskit), unit interface, engine locks and receipts, schema, platforms,
-       plan, next --json, conductor recipe and review rules in AGENTS.md, CI builds on Linux
-       and macOS; frozen-code fixes: fleetctl run --apply refused, macOS host lock,
-       remote-desktop guard
- -> browser tunnel unit and host entries, on T1, with its own backup and undo
- -> T2 engine: transaction layer, baseline scope, ledger, match digest, revert (no accounts,
-       SSH or firewall yet), logs, failure records, client mode; the tunnel moves onto it
- -> T3 gates (G0 replaces the recovery flags), hand-overs with su -P, stages composing
-       units, dead-man timer (revert of SSH and firewall enabled), mesh VPN, human-steps policy
- -> T4 lockout and convergence units, shell managed block, resources (S7), account archive
-       (revert of accounts enabled)
- -> T5 interview, shell prompt field, schema 4 migration, capabilities, fleet schema fragment,
-       generated docs
- -> T6 tool registry and bump flow, generated pins, staging, day-zero one-liner, snapshots
- -> update watch (follows T6)
- -> T7 agent settings, every config home, MCP preset
- -> T8 doctor, fleet machine-record drift
- -> remaining units: corporate IPsec VPN, workspace and repositories, explainer refresh;
-       each frozen script is deleted when its unit reaches parity
+ -> P0 foundation: CodeFlow full tier, Go module and layout, CI (lint, test, govulncheck,
+       signed release build), code generation, bootstrap.sh; public-safety scan hardening
+ -> T1 in four milestones, each its own PR:
+       T1a CLI skeleton and contracts: cobra and fang, typed constants, catalog and domains,
+           events and the UI sink interface, exit codes, frozen-code fixes
+       T1b schema 3 parity, generated types, config layers, platforms, planner, next --json
+       T1c engine.Tx minimum: locks, durable intent and recovery, process supervision,
+           receipts, staged binary check
+       T1d terminal UI and plain or JSON front ends
+ -> browser tunnel unit, on T1
+ -> T2 engine: transaction layer, baseline, ledger, match digest, revert, restore points,
+       logs, failure records, client mode; the tunnel moves onto it
+ -> P2 unit waves, in parallel:
+       A: corporate VPN, shell, agent settings, resources, tools (registry-driven), MCP catalog
+       B: packages and runtimes, identity and accounts, SSH and firewall (dead-man timer),
+          mesh VPN, remote desktop, fleet commands
+       C: workloads and agentctl, snapshots, workspace, doctor
+ -> P3: T3 stages and gates, T4 lockout guarantees, T5 one config and interview,
+       T6 registry and staging, update watch, conductor recipe, organisation units
+       (declarative units and plugins)
+ -> P4: v0.2.0 acceptance
+ -> P5: cutover (frozen Python and shell deleted at parity), fleet adoption
 
-Public-safety scan hardening: its own security PR, at any point.
+Plan and design PRs pass the gate in section 12 before merge.
 ```
