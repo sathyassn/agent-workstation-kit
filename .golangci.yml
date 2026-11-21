@@ -1,0 +1,52 @@
+# golangci-lint configuration for the Go kit (ADR 0005, section 2b).
+# golangci-lint itself is pinned through `go tool` in go.mod (E01).
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: standard        # errcheck, govet, ineffassign, staticcheck, unused
+  enable:
+    - errcheck
+    - staticcheck
+    - revive
+    - gosec
+    - goconst
+    - unparam
+    - misspell
+    - wrapcheck
+    - errorlint
+    - forbidigo
+  settings:
+    goconst:
+      min-len: 3
+      min-occurrences: 2
+    misspell:
+      locale: UK
+    revive:
+      rules:
+        - name: exported
+        - name: error-return
+        - name: error-strings
+        - name: context-as-argument
+        - name: unexported-return
+    forbidigo:
+      forbid:
+        # Units never print: they emit events through engine.Tx.
+        - pattern: ^fmt\.Print.*$
+          msg: emit an event through engine.Tx instead of printing
+        - pattern: ^os\.Exit$
+          msg: return a typed error; only cmd/ maps errors to exit codes
+  exclusions:
+    rules:
+      - path: ^cmd/
+        linters: [forbidigo]
+      - path: _test\.go$
+        linters: [goconst, wrapcheck]
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
