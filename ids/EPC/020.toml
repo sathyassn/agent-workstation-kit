@@ -1,0 +1,11 @@
+id = "EPC-020"
+uid = "210d5678-9362-4580-9bee-ba3acbef3d96"
+kind = "EPC"
+title = "Snapshots unit"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-21T09:20:00Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
