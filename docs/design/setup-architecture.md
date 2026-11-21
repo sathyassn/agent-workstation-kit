@@ -163,7 +163,7 @@ What the code does today, and the problem each fact causes:
 | S3 `identity` | hostname, `/etc/hosts` block, accounts and groups | computer names; accounts created with a disabled password | root | yes (homes archived, from T4) |
 | G1 `access` | credential readiness: passwords, SSH keys, mesh VPN up, a second tailnet device holding a named user's key. No SSH reachability is required here | credential readiness: passwords, secure tokens, mesh VPN up (system extension approved), Remote Login and Screen Sharing enabled for named users only, a second tailnet device | human; conductor polls the non-root probes, root check once at the end | n/a |
 | S4 `services` | the `agentctl` helper and its sudoers rule (atomic), workloads | none | root | yes |
-| S5 `remote` | in order, under the dead-man timer: `firewall`, `ssh` (releases the SSH install guard), `mesh-vpn` settings, `remote-desktop` (releases its install guard, behind the firewall); the scope's last verify, owned by `ssh`, is the connectivity proof: a new SSH session over the mesh VPN from the second device | `firewall` only checks the Application Firewall (pf is left alone); `ssh` limits SSH to named users under a launchd dead-man; `mesh-vpn` settings; `remote-desktop` is `skipped`, because Screen Sharing is enabled by hand-over at G1; the same connectivity proof | root | yes, under the timer |
+| S5 `remote` | one protected change group under one dead-man arming: `firewall` rules, then the `ssh` change and the release of the SSH install guard, then the connectivity proof (a new SSH session over the mesh VPN from the second device), owned by `ssh`; then `mesh-vpn` settings and `remote-desktop` (which releases its install guard behind the firewall), each its own step. With no SSH path (sshd absent or still masked), `firewall` may run alone without the timer only from a local console session | `firewall` only checks the Application Firewall (pf is left alone); `ssh` limits SSH to named users under a launchd dead-man; `mesh-vpn` settings; `remote-desktop` is `skipped`, because Screen Sharing is enabled by hand-over at G1; the same connectivity proof | root | yes, under the timer |
 | G2 `session` | agent desktop or console session; the conductor's CLI signed in there | same, plus privacy prompts; FileVault verified | human; agent-account probe | n/a |
 | S6 `agent` | shell, git identity, runtimes (mise tools), agent CLIs, agent settings, MCP, tunnel hook | same, plus workloads (OrbStack needs the agent's GUI session) | agent account | yes |
 | G3 `sign-ins` | provider sign-ins | same | human; agent-account probe | revoke by hand-over |
@@ -387,7 +387,7 @@ This is a user decision (2026-11-21).
     and vulnerability tooling resolve it;
   - `cmd/wskit` and `cmd/agentctl` hold `main` only; everything else is
     under `internal/`; a public `pkg/sdk` comes only with plugins, after
-    v0.2.0 (section 2d);
+    1.0.0 (section 2d);
   - data folders are embedded through one package at the module root;
   - one `Unit` interface (`Describe`, `Plan`, `Apply`, `Verify`, `Revert`,
     `Status`); units change the machine only through `engine.Tx` and report
@@ -507,7 +507,7 @@ previous stable point, or to the baseline taken before the first change.
   paths, so backup, undo and the owned-path rule apply. There are no
   arbitrary command steps and no `command` destination source until an
   enforceable isolation boundary exists.
-- **After v0.2.0, not in this plan:**
+- **After 1.0.0, not in this plan:**
   - **Command steps and `command` sources,** with plugins, under the same
     isolation contract.
   - **Plugin executables** (`wskit-NAME`, shown as `wskit fleet NAME`),
@@ -582,7 +582,10 @@ previous stable point, or to the baseline taken before the first change.
   new receipt), re-apply the config, or ignore it (recorded as accepted
   drift). `setup` shows drift in its plan and never overwrites a manual
   change without one of those choices. The dead-man restore of the kit's
-  own in-flight SSH or firewall step is the one automatic undo.
+  own in-flight SSH or firewall step is the one automatic undo. Drift
+  reconciliation is separate from in-flight recovery, which follows the
+  intent record (section 5). For a root unit or a fleet config, `adopt`
+  uses the draft-and-stop path (section 2e).
 - **Shared files are changed only inside the kit's marked blocks or its own
   drop-in files** (`~/.zshrc`, `~/.zshenv`, `~/.ssh/config`, `sudoers.d`,
   firewall rules, `environment.d`). Content outside them is never touched,
@@ -590,9 +593,11 @@ previous stable point, or to the baseline taken before the first change.
 - **Outputs are standard and readable without `wskit`:** plain systemd units
   and launchd plists, `sshd_config.d` drop-ins, dotfiles and plain TOML. No
   daemon runs, and no kit state is needed for the machine to keep working.
-- **Walking away is always possible.** `wskit unmanage UNIT` removes the unit
-  from the ledger and records and leaves the machine as it is; `wskit adopt
-  UNIT` is the reverse. Removing `wskit` entirely leaves the machine
+- **Walking away is always possible.** `wskit unmanage UNIT` removes the
+  unit's active membership and leaves the machine as it is; its history and
+  point references stay as a tombstone, with an accepted match exception, so
+  a later revert to baseline still passes. `wskit adopt UNIT` is the
+  reverse. Removing `wskit` entirely leaves the machine
   working. Only `revert` undoes, and only on request.
 - **Every unit page documents its manual equivalent:** what the unit
   changed, and how to change it by hand.
@@ -627,12 +632,38 @@ previous stable point, or to the baseline taken before the first change.
   - disk encryption is required on portable machines and warned on fixed
     ones;
   - backup and snapshot timing that is aware of sleep.
-- **Account topology** is chosen in the config, and both are supported
-  equally: a separate named working account plus an admin (the agent-host
-  default), or a single account (common on a developer machine). Access
-  rules, where the conductor runs (section 4), and which accounts revert may
-  remove depend on the topology; revert never removes the account the
-  person signs in with. Acceptance covers both topologies.
+- **Presets narrow the gates.** `plan` keeps G1, G2, S4 and S5 only for the
+  units selected; a dropped gate or stage is `skipped` and counts toward the
+  stable point. A default `developer` and `standard` run on a portable
+  machine reaches S6 with no remote-access gate.
+- **Which axis wins.** Purpose decides which units are selected. Form factor
+  adjusts only the five defaults of the selected units. An explicit setting
+  overrides both, and an `agent-host` on a portable machine gets a warning
+  in `plan`. Disk encryption on a portable machine is a safety requirement,
+  not a default: a hand-over that refuses to continue until its probe
+  passes.
+- **Account topology** is chosen in the config (asked after the tier, with
+  the default from the purpose), and both are supported equally. Roles are
+  modelled separately from the number of accounts:
+
+  | | Separate (default for agent-host) | Single (default for developer) |
+  |---|---|---|
+  | Accounts | admin, one per named person, agent | one account |
+  | Roles held | admin: root steps; person: sign-ins, SSH; agent: agent work | all three |
+  | Who may SSH | named people only, never the agent account | that account, when SSH is selected |
+  | Where the conductor runs | the setup user until G2, then the agent account (section 4) | that account throughout |
+  | Accounts revert may remove | those the kit created, never the one the person signs in with | none |
+  | Resource boundary (section 7a) | the agent account's user slice | a separate agent-work slice for processes the agent manager starts, or an opt-in with the limit stated in `plan` |
+  | Tunnel transport (section 10a) | SSH as the person's own account over the mesh VPN | the same, as that account |
+  | Tunnel hook active in | the agent account | that account, when remote sessions are used |
+
+  Acceptance covers both topologies end to end.
+- **Baselines.** The root baseline is required before any machine change. A
+  user-scope unit run on its own needs only an account-local baseline, kept
+  in the account state (section 11).
+- **Selectors and overrides.** `--stage` takes a scope ID. `--platform` and
+  `--form-factor` are preview selectors. `--set`, `--add`, `--remove` and
+  `--config` are persistent overrides written to the config.
 - **Platform detection is automatic.** The platform layer detects the OS,
   version and architecture and admits only what `registry/platforms.toml`
   lists. People never pass the OS. `--platform OS-VERSION` and
@@ -900,7 +931,8 @@ preflight -> describe -> backup -> intent=applying -> apply (logged) -> verify -
   fsynced to the journal before the apply. On the next start, a phase that is
   still `applying` blocks its own journal (the root journal, or that
   account's journal) with exit 4 until it is handled; other journals are
-  not blocked:
+  not blocked. While the step's dead-man timer is armed, section 6 decides
+  instead: only `disarm` or the timer may change it. Otherwise:
   - it is restored from its manifest, then reapplied. This is the one
     rule wherever the crash happened, including after a passed verify and
     before the receipt: a step without a receipt is always restored, then
@@ -928,10 +960,10 @@ preflight -> describe -> backup -> intent=applying -> apply (logged) -> verify -
 - **Baseline.** A root step captures it once, before any other scope:
   - from T2 on, it is its own root scope, `baseline`, which runs before
     every other scope on both OSes; from T6, it becomes part of S1;
-  - on macOS, the first change is made by `packages`, run by the package
-    owner, so the executor refuses `packages` until the root `baseline`
-    record exists in the public export; `next` hands the `baseline` root
-    step over first.
+  - on macOS, the first change is made by `packages-user`, run by the
+    package owner, so the executor refuses both S2 scopes (`packages-user`
+    and `packages`) until the root `baseline` receipt exists in the public
+    export; `next` hands the `baseline` root step over first.
   - It is taken through the same providers and covers:
     - packages with their manual or auto marks;
     - accounts and groups;
@@ -1060,7 +1092,8 @@ preflight -> describe -> backup -> intent=applying -> apply (logged) -> verify -
 - **Logs.**
   - Tool output goes only to the step's log (0600), through one redactor;
     it is never copied to the terminal in JSON or plain mode. The only
-    exception is the browser hook's two non-secret lines (section 10a). The
+    exception is the browser hook's two non-secret lines, printed only when it
+    runs as the `BROWSER` program (section 10a). The
     terminal UI shows progress events, and can open the log. The redactor masks token shapes,
     `password=` style pairs, URL user info and query values, `Authorization:`
     headers and PEM blocks.
@@ -1244,8 +1277,8 @@ preflight -> describe -> backup -> intent=applying -> apply (logged) -> verify -
 - **Shell baseline.** `install-shell-baseline.sh` installs `~/.zshrc` and
   `~/.zsh_plugins.txt` only when they are absent. When a CLI installer has
   written a `.zshrc` first, apply stops and asks for a manual merge, and a
-  host where the phase never ran has no baseline at all. From T4, in the
-  shell unit:
+  host where the phase never ran has no baseline at all. The `shell` unit's
+  epic ships these, in the shell unit's first PR:
   - an existing `.zshrc` gets a delimited managed block, with other tools'
     blocks kept, a backup first and a syntax check (`zsh -n`) before the
     swap; revert removes only the block;
@@ -1324,6 +1357,15 @@ hours, while a guard that watched load and available memory stayed green.
   writes a draft profile, which `validate` and `plan` check. Secrets are
   never asked; the interview names the native tool where each one is
   entered.
+- **Every input has a default** or a derived default, settable in the
+  config and shown and editable in the interview with its why and risk: the
+  machine name from a validated naming pattern (purpose and form factor, or
+  the fleet's pattern), account names, mesh-VPN hostname, tags and auth
+  method (interactive sign-in by default; an auth key only as a secret
+  hand-over), exit-node and route acceptance (off by default), the
+  remote-desktop choice, and timezone and locale from the OS. Git identity
+  is asked with no guessed value. Secrets have no default and are never
+  stored in config; they are entered at hand-overs.
 - **Flags instead of questions,** for `plan`, `setup` and `config`:
   `--set key=value` (repeatable, schema-validated), `--add UNIT`,
   `--add tools:NAME`, `--add mcp:NAME`, `--remove UNIT` and `--config FILE`.
@@ -1333,8 +1375,8 @@ hours, while a guard that watched load and available memory stayed green.
   overridden, and a refusal names the rule.
 - **Capability matrix.** `registry/capabilities.toml` gives, per capability:
   the Linux and macOS means, how to verify it, its status per OS and its gaps.
-  `plan` refuses a component that is unsupported on the target OS, with the
-  reason and any equivalent.
+  A component that is unsupported on the target OS is `skipped` by `plan`,
+  with the reason and any equivalent, never refused or failed.
 - **Root acts only on the approved plan.** `wskit plan` resolves the
   profile, the platform table, the schema and the registries into one JSON
   plan with a digest. A root step reads only that plan, staged root-owned,
@@ -1386,6 +1428,13 @@ hours, while a guard that watched load and available memory stayed green.
     with, and the minimum OS version;
   - the command that prints its installed version, and the doctor probe
     that checks it.
+- **References registry.** `registry/sources.toml` lists curated,
+  authoritative links per unit, capability and topic (vendor docs, release
+  notes, security advisories, upgrade guides), each with its purpose and
+  last-verified date, under the same review rules as the tool registry. Each
+  unit's page renders them, and `wskit explain UNIT --sources` shows them:
+  a reliable starting point, not the final word. The update watch checks
+  their health and staleness and opens PRs to refresh them.
 - **Generated from the registry:**
   - `config/mise.toml` and `mise.lock` (installed with `--locked`);
   - `config/packages.toml`;
@@ -1442,7 +1491,8 @@ hours, while a guard that watched load and available memory stayed green.
   - **Each release:** `wskit stage` copies a released binary and its data
     files to `/opt/agent-workstation-kit/releases/<version>/`, verifies
     their checksums against the registry, makes the tree root-owned, swaps
-    `current` atomically and keeps the last N releases.
+    `current` atomically, and prunes only releases that no advertised point
+    and no armed timer names.
   - **The fleet checkout** is staged the same way.
   - **The first staging** is the system-tools root step in section 3. A
     file the setup user could still change is never run as root.
@@ -1481,7 +1531,7 @@ What revert cannot undo, listed in every revert preview:
 ### 10. Agent settings (T7) and doctor (T8)
 
 - **Agent settings (T7)** is the component designed earlier on issue #5:
-  - presets: `keyring-clis`, `git-network`, `orchestrator`, `cloud-clis` and
+  - settings bundles: `keyring-clis`, `git-network`, `orchestrator`, `cloud-clis` and
     `dotnet`;
   - discovery of the user settings, every agent-manager profile and the Codex configs;
   - merge, never remove;
@@ -1707,6 +1757,8 @@ client hid this, because it routes everything.
   symlinks and user-owned files, and a missing or stale file reads as
   `unknown`. Sandboxed agents and other users get status without `sudo`;
   the live view stays root-only.
+- **Under the dead-man timer.** Route and firewall changes arm the timer of
+  section 6 before apply, like `ssh` and `firewall`.
 - **Status** is concise by default (state, time left, N of M routed,
   problems only); `--verbose` lists each destination by kind and name.
 - **Discovery aid.** A read-only audit lists cloud resources with
@@ -1764,7 +1816,8 @@ client hid this, because it routes everything.
     private-range prefixes.
 - **Doc tests.** From T2 on, runbook command blocks run in preview mode
   against fixtures. Each block is marked `preview-tested` or `human-only`.
-- **Each PR's gate:**
+- **Each PR's gate:** the engineering standard (`docs/standards/engineering.md`,
+  added with the P0 plan) as acceptance criteria, and:
   - tests;
   - an adversarial review of code and docs;
   - a stress run that kills at every boundary;
@@ -1882,18 +1935,37 @@ code is built against live in specs and generated files that tests check:
 | Tunnel protocol: hook line, handle store, readiness and callback signals | the tunnel unit's spec | E06 |
 | Dependencies and their versions | `go.mod` and registry entries | P0 |
 
-Units by stage, as decided (the catalog is authoritative for details):
+The unit catalog, generated from `registry/units.toml` (edit the TOML file,
+never this table; a repository check keeps this copy, the roadmap's and
+SPC-001's identical):
 
-| Stage | Units |
-|---|---|
-| S1 | `baseline` |
-| S2 | Linux: `packages`. macOS: `packages-user` (Homebrew, as the package owner) in its own scope, then `packages` (vendor `.pkg` files, as root) |
-| S3 | `machine-identity`, `accounts` |
-| S4 | Linux: `agentctl`, `workloads` |
-| S5 | `firewall`, `ssh`, `mesh-vpn`, `remote-desktop`; optional `vpn` |
-| S6 | `shell`, `git-identity`, `runtimes`, `tools`, `agent-settings`, `mcp`, `browser-tunnel` (workstation hook); macOS `workloads`; optional `workspace` |
-| S7 | `resource-limits`, `snapshots` |
-| S8 | `doctor` (S8a root, S8b agent) |
+<!-- catalog:units:begin -->
+| Unit | Domain | Linux stage | Linux runs as | macOS stage | macOS runs as | Depends on (Linux; macOS) | Epic | Milestone |
+|---|---|---|---|---|---|---|---|---|
+| `baseline` | system | baseline | root | baseline | root | none; none | EPC-005 | alpha |
+| `packages-user` | system | none | none | packages-user | package-owner | none; baseline | EPC-013 | alpha |
+| `packages` | system | packages | root | packages | root | baseline; packages-user | EPC-013 | alpha |
+| `machine-identity` | identity | identity | root | identity | root | packages; packages | EPC-014 | alpha |
+| `accounts` | identity | identity | root | identity | root | machine-identity; machine-identity | EPC-014 | alpha |
+| `agentctl` | system | services | root | none | none | accounts; none | EPC-019 | alpha |
+| `workloads` | system | services | root | agent | agent | agentctl; accounts | EPC-019 | alpha |
+| `firewall` | network | remote | root | remote | root | packages; packages | EPC-015 | alpha |
+| `ssh` | remote | remote | root | remote | root | accounts, firewall; accounts, firewall | EPC-015 | alpha |
+| `mesh-vpn` | network | remote | root | remote | root | packages; packages | EPC-016 | alpha |
+| `remote-desktop` | remote | remote | root | none | none | firewall, packages; none | EPC-017 | alpha |
+| `vpn` | network | remote | root | remote | root | packages; packages | EPC-007 | alpha |
+| `shell` | agent | agent | agent | agent | agent | accounts; accounts | EPC-008 | alpha |
+| `git-identity` | identity | agent | agent | agent | agent | accounts; accounts | EPC-014 | alpha |
+| `runtimes` | agent | agent | agent | agent | agent | shell; shell | EPC-013 | alpha |
+| `tools` | agent | agent | agent | agent | agent | runtimes; runtimes | EPC-011 | alpha |
+| `agent-settings` | agent | agent | agent | agent | agent | tools; tools | EPC-009 | alpha |
+| `mcp` | agent | agent | agent | agent | agent | agent-settings; agent-settings | EPC-012 | alpha |
+| `browser-tunnel` | remote | agent | user | agent | user | none; none | EPC-006 | alpha |
+| `workspace` | workspace | agent | agent | agent | agent | tools, git-identity; tools, git-identity | EPC-021 | alpha |
+| `resource-limits` | ops | resources | root | resources | root | accounts; accounts | EPC-010 | alpha |
+| `snapshots` | data | resources | root | none | none | baseline; none | EPC-020 | alpha |
+| `doctor` | ops | audit | root | audit | root | none; none | EPC-022 | alpha |
+<!-- catalog:units:end -->
 
 A dependency on `packages` is satisfied by the OS's own package units, so
 macOS edges never point at a Linux-only unit. Each stage is exactly one
@@ -1917,10 +1989,20 @@ stage, the stage has two scopes, as S2 on macOS and S8 do.
   them.
 - Profiles move to schema 4 with a migration.
 - Tool updates become registry pull requests with a security note.
-- The kit stays a release candidate (`0.2.0-rc.N`) until the acceptance
-  below.
+- **Versions.** The Go `wskit` is a new major version, 1.0.0. The Python
+  `0.2.0-rc` line is frozen for fixes and is never released as a final
+  0.2.0. Pre-releases are `1.0.0-alpha.N` (P1 and P2), `1.0.0-beta.N` (P3)
+  and `1.0.0-rc.N` (P4). From 1.0.0, releases follow Semantic Versioning:
+  breaking config or CLI changes only in a major version, after one minor
+  release of deprecation warnings; the machine config has a schema version,
+  and `wskit migrate` previews and reverses config migrations; JSON output
+  and the `next` schema are versioned; catalog, registry and preset changes
+  are noted in the changelog. Releases are signed.
+- **The final tree** matches the documented Go layout exactly: P5 deletes
+  all frozen Python and shell, and a CI check compares the layout table in
+  `docs/architecture.md` with the tree.
 
-## Acceptance for 0.2.0
+## Acceptance for 1.0.0
 
 - T1 to T8 and the P2 unit epics merged, each with its evidence, including
   standalone apply and revert tests for every unit (section 2c).
@@ -1930,6 +2012,8 @@ stage, the stage has two scopes, as S2 on macOS and S8 do.
   - includes one deliberate interrupt that the agent diagnoses and resumes;
   - ends with `revert --to baseline` passing the match digest (section 5),
     in a fixture or a disposable machine.
+- Both account topologies, and a default `developer` run on a portable Mac,
+  are covered.
 - The browser tunnel runs on T2's client mode, standalone and composed.
 - The doctor is green, and a docs-only walkthrough passes.
 
@@ -1958,8 +2042,8 @@ D0 (this ADR, reviewed alone)
        C: workloads and agentctl, snapshots, workspace, doctor
  -> P3: T3 stages and gates, T4 lockout guarantees, T5 one config and interview,
        T6 registry and staging, update watch, conductor recipe, organisation units
-       (declarative units with typed operations; plugins after v0.2.0)
- -> P4: v0.2.0 acceptance
+       (declarative units with typed operations, after 1.0.0; plugins later)
+ -> P4: 1.0.0 acceptance (1.0.0-rc.N)
  -> P5: cutover (frozen Python and shell deleted at parity), fleet adoption
 
 Plan and design PRs pass the gate in section 12 before merge.
