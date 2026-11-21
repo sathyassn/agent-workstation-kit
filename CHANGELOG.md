@@ -15,9 +15,14 @@ step is in [docs/maintenance/releasing.md](docs/maintenance/releasing.md).
 
 - CodeFlow full tier: skills, project records (`project-management/`), product, capabilities and architecture pages, and the Go roadmap with its 32 epics (`docs/plan/roadmap.md`).
 - `.golangci.yml`, the lint configuration the Go code will be held to.
+- The unit catalog, `registry/units.toml`, with a check that keeps the shared tables in the roadmap, the core spec and ADR 0005 current, and that finds cycles and dangling edges per OS.
+- The engineering standard and review checklist (`docs/standards/`), checked from the pull request template.
+- The traceability table from design decisions to epics, tasks and tests.
 
 ### Changed
 
+- Versions: the Python `0.2.0-rc` line is frozen and never released as a final 0.2.0; the Go `wskit` releases as `1.0.0-alpha.N`, `-beta.N`, `-rc.N`, then `1.0.0` (`docs/maintenance/releasing.md`).
+- CodeFlow's authority job runs only for pull requests from this repository, never from forks.
 - The branch policy allows the `codeflow/` prefix, so CodeFlow can publish its ID registry branch (`codeflow/registry`).
 - The repository scan allows two exact sandbox wildcards only inside CodeFlow's own folders, and skips link checks there. CodeFlow's model-evaluation skill is left out until its eval case IDs stop matching CodeFlow's own secret scan.
 

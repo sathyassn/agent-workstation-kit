@@ -1,4 +1,4 @@
-# Roadmap: the Go kit to v0.2.0
+# Roadmap: the Go kit to 1.0.0
 
 [Documentation home](../README.md)
 
@@ -24,9 +24,10 @@ P0 Foundation --> P1 Core --> P2 Units (waves A, B, C in parallel) --> P3 Compos
 | P0 Foundation | The repository is ready for Go: CodeFlow full tier, layout, module, CI with lint, tests, vulnerability scan and a signed release build, code generation from the schema, and the day-zero `bootstrap.sh` | EPC-001, EPC-002 |
 | P1 Core | `wskit` runs: the CLI skeleton and contracts, the unit catalog and domains, schema-generated types, platforms, `plan`, `next --json`, the UI layer, and the transaction engine | EPC-003, EPC-004, EPC-005 |
 | P2 Units | Each part of the setup is a standalone unit with its own epic and PR series | Wave A: EPC-006 to EPC-012; wave B: EPC-013 to EPC-018; wave C: EPC-019 to EPC-022 |
-| P3 Composition | Stages and gates compose the units; lockout guarantees, one config and the interview, the registry and staging, the update watch, the conductor recipe, and organisation units | EPC-023 to EPC-029 |
-| P4 Acceptance | v0.2.0: a clean agent-driven run on Linux and macOS, with an interrupt and resume, and revert to baseline passing the match digest | EPC-030 |
-| P5 Cutover | `wskit` is the only tool for the kit and every fleet; the frozen Python and shell are deleted at parity | EPC-031, EPC-032 |
+| P3 Composition | Stages and gates compose the units; lockout guarantees, one config and the interview, the registry and staging, the update watch and the conductor recipe | EPC-023 to EPC-028 |
+| P4 Acceptance | 1.0.0: a clean agent-driven run on Linux and macOS, with an interrupt and resume, and revert to baseline passing the match digest | EPC-030 |
+| P5 Cutover | `wskit` is the only tool for the kit and every fleet; the frozen Python and shell are deleted at parity, and the tree matches the documented layout | EPC-031, EPC-032 |
+| After 1.0.0, alongside P5 | Organisation units: declarative units built from typed operations; command steps and plugins later | EPC-029 |
 
 ## Epics
 
@@ -47,7 +48,7 @@ unit it owns, and an interrupted revert that resumes (ADR 0005 section 2c).
 | EPC-010 Resources unit | P2 A | agent work runs under one ceiling with a reserve, early OOM handling and a `/tmp` policy, admitted by pressure | EPC-005 | resource-limits |
 | EPC-011 Registry-driven tools unit | P2 A | a CLI is added or removed with `wskit tools add|remove` from a reviewed registry entry, with no code | EPC-005 | tools |
 | EPC-012 MCP catalog unit | P2 A | an MCP server is added to every agent config home with `wskit mcp add`, with sign-in as a hand-over | EPC-009 | mcp |
-| EPC-013 Packages and runtimes units | P2 B | OS packages and runtimes install at exact pins, with the SSH and remote-desktop install guards | EPC-005 | packages, packages-brew, packages-pkg, runtimes |
+| EPC-013 Packages and runtimes units | P2 B | OS packages and runtimes install at exact pins, with the SSH and remote-desktop install guards | EPC-005 | packages-user, packages, runtimes |
 | EPC-014 Identity and accounts units | P2 B | hostnames, accounts, groups and git identity are set and revertible for both account topologies, with homes archived before removal | EPC-005 | machine-identity, accounts, git-identity |
 | EPC-015 SSH and firewall units | P2 B | SSH and firewall changes apply and revert under the dead-man timer, which ships in this epic, on both OSes | EPC-005, EPC-014 | ssh, firewall |
 | EPC-016 Mesh VPN unit | P2 B | the mesh VPN is configured and verified, with its sign-in as a hand-over | EPC-013 | mesh-vpn |
@@ -63,14 +64,62 @@ unit it owns, and an interrupted revert that resumes (ADR 0005 section 2c).
 | EPC-026 Registry and staging (T6) | P3 | tools move only through `registry bump`, releases are staged, and the one-liner verifies them | EPC-001, EPC-005 | none |
 | EPC-027 Update watch | P3 | upcoming tool updates and end-of-support dates are flagged before they matter | EPC-026 | none |
 | EPC-028 Conductor recipe | P3 | an agent conducts setup from `AGENTS.md`, in the kit and in a private fleet | EPC-023 | none |
-| EPC-029 Organisation units | P3 | a fleet adds declarative units built from typed operations, through the same engine; command steps and plugins come after v0.2.0 | EPC-005, EPC-018 | declarative units |
-| EPC-030 v0.2.0 acceptance | P4 | the release criteria hold on one Linux and one macOS machine | EPC-023 to EPC-028 | all |
+| EPC-029 Organisation units | after 1.0.0 | a fleet adds declarative units built from typed operations, through the same engine; command steps and plugins come later | EPC-005, EPC-018 | declarative units |
+| EPC-030 Acceptance for 1.0.0 | P4 | the release criteria hold on one Linux and one macOS machine | EPC-023 to EPC-028 | all |
 | EPC-031 Cutover | P5 | the frozen Python and shell are gone | EPC-030 | all |
 | EPC-032 Fleet adoption | P5 | existing hosts are converged, fleets use `wskit fleet`, and fleet scripts are retired | EPC-029, EPC-030 | all |
 
 The dependency graph has no cycles. Within a phase, edges run EPC-011 to EPC-009
 to EPC-012 in wave A, and EPC-014 to EPC-015 to EPC-017 in wave B; every other edge points
 to an earlier phase.
+
+## Versions and milestones
+
+The Go `wskit` is a new major version, 1.0.0. The Python `0.2.0-rc` line is
+frozen for fixes and is never released as a final 0.2.0.
+
+| Milestone | Release tags | Phases |
+|---|---|---|
+| alpha | `1.0.0-alpha.N` | P1 and P2 (waves A, B and C, in parallel) |
+| beta | `1.0.0-beta.N` | P3 |
+| rc | `1.0.0-rc.N` | P4 |
+| 1.0.0 | `1.0.0` | after P4's criteria hold |
+
+Each unit's milestone is in the catalog below.
+
+## Unit catalog
+
+Generated from `registry/units.toml` by `tests/catalog_tables.py`; edit the
+TOML file, never this table. The same table appears in SPC-001 and in ADR
+0005 section 15.
+
+<!-- catalog:units:begin -->
+| Unit | Domain | Linux stage | Linux runs as | macOS stage | macOS runs as | Depends on (Linux; macOS) | Epic | Milestone |
+|---|---|---|---|---|---|---|---|---|
+| `baseline` | system | baseline | root | baseline | root | none; none | EPC-005 | alpha |
+| `packages-user` | system | none | none | packages-user | package-owner | none; baseline | EPC-013 | alpha |
+| `packages` | system | packages | root | packages | root | baseline; packages-user | EPC-013 | alpha |
+| `machine-identity` | identity | identity | root | identity | root | packages; packages | EPC-014 | alpha |
+| `accounts` | identity | identity | root | identity | root | machine-identity; machine-identity | EPC-014 | alpha |
+| `agentctl` | system | services | root | none | none | accounts; none | EPC-019 | alpha |
+| `workloads` | system | services | root | agent | agent | agentctl; accounts | EPC-019 | alpha |
+| `firewall` | network | remote | root | remote | root | packages; packages | EPC-015 | alpha |
+| `ssh` | remote | remote | root | remote | root | accounts, firewall; accounts, firewall | EPC-015 | alpha |
+| `mesh-vpn` | network | remote | root | remote | root | packages; packages | EPC-016 | alpha |
+| `remote-desktop` | remote | remote | root | none | none | firewall, packages; none | EPC-017 | alpha |
+| `vpn` | network | remote | root | remote | root | packages; packages | EPC-007 | alpha |
+| `shell` | agent | agent | agent | agent | agent | accounts; accounts | EPC-008 | alpha |
+| `git-identity` | identity | agent | agent | agent | agent | accounts; accounts | EPC-014 | alpha |
+| `runtimes` | agent | agent | agent | agent | agent | shell; shell | EPC-013 | alpha |
+| `tools` | agent | agent | agent | agent | agent | runtimes; runtimes | EPC-011 | alpha |
+| `agent-settings` | agent | agent | agent | agent | agent | tools; tools | EPC-009 | alpha |
+| `mcp` | agent | agent | agent | agent | agent | agent-settings; agent-settings | EPC-012 | alpha |
+| `browser-tunnel` | remote | agent | user | agent | user | none; none | EPC-006 | alpha |
+| `workspace` | workspace | agent | agent | agent | agent | tools, git-identity; tools, git-identity | EPC-021 | alpha |
+| `resource-limits` | ops | resources | root | resources | root | accounts; accounts | EPC-010 | alpha |
+| `snapshots` | data | resources | root | none | none | baseline; none | EPC-020 | alpha |
+| `doctor` | ops | audit | root | audit | root | none; none | EPC-022 | alpha |
+<!-- catalog:units:end -->
 
 ## Mappings
 
@@ -79,8 +128,11 @@ EPC-005, T3 is EPC-023, T4 is EPC-024, T5 is EPC-025, T6 is EPC-026, T7 is EPC-0
 The tunnel of ADR section 10a is EPC-006; the fleet commands are EPC-018; the
 extensibility of section 2d is EPC-003 (catalog and domains) and EPC-029.
 
-**Units to epics.** ADR 0005 section 15.1 maps each unit to exactly one
-epic, and the Units column above matches it.
+**Units to epics.** The unit catalog above maps each unit to exactly one
+epic and one stage per OS.
+
+Traceability from each ADR decision to its epic, tasks and tests is in
+[traceability](traceability.md).
 
 **Plan items from issue #5 to epics,** each tracked once:
 

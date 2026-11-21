@@ -340,7 +340,11 @@ verify command passes.
   belong in the private fleet repository.
 - Run the strict `make public-check` before every release, and complete
   [the release checklist](docs/13-public-release-checklist.md) before a final
-  (non-rc) release; see [releasing](docs/maintenance/releasing.md).
+  (non-rc) release; see [releasing](docs/maintenance/releasing.md). The Python
+  `0.2.0-rc` line is frozen; the Go `wskit` releases as `1.0.0-alpha.N`,
+  `-beta.N`, `-rc.N`, then `1.0.0`. Note every change to the unit catalog,
+  registries and presets in `CHANGELOG.md`.
+- Every pull request meets the [engineering standard](docs/standards/engineering.md).
 - A person reviews and merges every pull request.
 
 <!-- codeflow:managed:begin scaffold=4.0.0 -->

@@ -88,6 +88,7 @@ restating changing product choices, field definitions, or operating rules.
 | What the kit does, by capability | [Capabilities](capabilities.md) |
 | Code layout and areas of the Go kit | [Architecture](architecture.md) |
 | Phases, epics and their order | [Roadmap](plan/roadmap.md) |
+| Which epic, task and test proves each design decision | [Traceability](plan/traceability.md) |
 
 ## Task runbooks
 
@@ -111,6 +112,8 @@ restating changing product choices, field definitions, or operating rules.
 | Prepare and publish a release | [Releasing](maintenance/releasing.md) |
 | Work in this repository as an agent | [Agent operating manual](../AGENTS.md) |
 | Write a new decision record | [Decision template](decisions/template.md) |
+| Meet the engineering standard for a pull request | [Engineering standard](standards/engineering.md) |
+| Review a pull request | [Review checklist](standards/review-checklist.md) |
 
 ## Design decisions and evidence
 

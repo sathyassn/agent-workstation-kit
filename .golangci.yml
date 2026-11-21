@@ -37,6 +37,10 @@ linters:
         # Units never print: they emit events through engine.Tx.
         - pattern: ^fmt\.Print.*$
           msg: emit an event through engine.Tx instead of printing
+        - pattern: ^fmt\.Fprint.*$
+          msg: emit an event through engine.Tx instead of printing
+        - pattern: ^log\..*$
+          msg: emit an event through engine.Tx instead of logging
         - pattern: ^os\.Exit$
           msg: return a typed error; only cmd/ maps errors to exit codes
   exclusions:
