@@ -1,0 +1,11 @@
+id = "EPC-011"
+uid = "f564d7c1-485b-4598-93d6-c01f869bfabe"
+kind = "EPC"
+title = "Registry-driven tools unit"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-21T09:14:01Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
