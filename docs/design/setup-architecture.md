@@ -151,6 +151,10 @@ What the code does today, and the problem each fact causes:
     compose units (section 2a).
 12. **No lock-in.** The kit sets things up faster and correctly; people and
     their agents stay free to change anything by hand (section 2f).
+13. **Best practices on by default.** Every configuration area applies the
+    learned best practice automatically, shown in `plan` with its reason,
+    and each default is configurable or can be opted out. People are never
+    required to know to ask for it (section 2h).
 
 ### 2. Stages, gates and owners
 
@@ -163,7 +167,7 @@ What the code does today, and the problem each fact causes:
 | S3 `identity` | hostname, `/etc/hosts` block, accounts and groups | computer names; accounts created with a disabled password | root | yes (homes archived, from T4) |
 | G1 `access` | credential readiness: passwords, SSH keys, mesh VPN up, a second tailnet device holding a named user's key. No SSH reachability is required here | credential readiness: passwords, secure tokens, mesh VPN up (system extension approved), Remote Login and Screen Sharing enabled for named users only, a second tailnet device | human; conductor polls the non-root probes, root check once at the end | n/a |
 | S4 `services` | the `agentctl` helper and its sudoers rule (atomic), workloads | none | root | yes |
-| S5 `remote` | one protected change group under one dead-man arming: `firewall` rules, then the `ssh` change and the release of the SSH install guard, then the connectivity proof (a new SSH session over the mesh VPN from the second device), owned by `ssh`; then `mesh-vpn` settings and `remote-desktop` (which releases its install guard behind the firewall), each its own step. With no SSH path (sshd absent or still masked), `firewall` may run alone without the timer only from a local console session | `firewall` only checks the Application Firewall (pf is left alone); `ssh` limits SSH to named users under a launchd dead-man; `mesh-vpn` settings; `remote-desktop` is `skipped`, because Screen Sharing is enabled by hand-over at G1; the same connectivity proof | root | yes, under the timer |
+| S5 `remote` | `firewall` and `ssh` are one engine transaction under one dead-man arming (no exit 4 between its steps): firewall rules, then the SSH change and the release of the SSH install guard, then the proof. Proof depends on the change: with remote access selected, a new SSH session over the mesh VPN from the second device; otherwise a local console confirmation, with no timer. `mesh-vpn`, `remote-desktop` and `vpn` follow, each depending on the group's disarm. Any other firewall-touching apply is refused while no proof is possible | `firewall` only checks the Application Firewall (pf is left alone); `ssh` limits SSH to named users under a launchd dead-man; `mesh-vpn` settings; `remote-desktop` is `skipped`, because Screen Sharing is enabled by hand-over at G1; the same connectivity proof | root | yes, under the timer |
 | G2 `session` | agent desktop or console session; the conductor's CLI signed in there | same, plus privacy prompts; FileVault verified | human; agent-account probe | n/a |
 | S6 `agent` | shell, git identity, runtimes (mise tools), agent CLIs, agent settings, MCP, tunnel hook | same, plus workloads (OrbStack needs the agent's GUI session) | agent account | yes |
 | G3 `sign-ins` | provider sign-ins | same | human; agent-account probe | revoke by hand-over |
@@ -240,7 +244,8 @@ units and keep their names.
   running inside a stage.
 - **Order rules.** `setup --all` enforces stage order. `wskit UNIT` and
   `setup --unit` enforce only that unit's dependencies. A stale dependant
-  waits until its dependencies verify.
+  waits until its dependencies verify. A unit whose dependency is
+  unsupported or left out is `skipped` with the reason, never refused.
 - **Declared once.** Each unit declares:
   - its inputs (schema fields, from T1);
   - its dependencies: other units, capabilities and OS support;
@@ -654,8 +659,7 @@ previous stable point, or to the baseline taken before the first change.
   | Where the conductor runs | the setup user until G2, then the agent account (section 4) | that account throughout |
   | Accounts revert may remove | those the kit created, never the one the person signs in with | none |
   | Resource boundary (section 7a) | the agent account's user slice | a separate agent-work slice for processes the agent manager starts, or an opt-in with the limit stated in `plan` |
-  | Tunnel transport (section 10a) | SSH as the person's own account over the mesh VPN | the same, as that account |
-  | Tunnel hook active in | the agent account | that account, when remote sessions are used |
+  | Browser tunnel (section 10a) | `skipped` with its reason in 1.0, recorded as a capability gap: the hook store is private to the agent account, but the fetch runs as the person over SSH; a forced-command design is planned after 1.0 | supported: one account owns the hook store and the fetch, over SSH as that account (this also covers a person who runs agents in their own account) |
 
   Acceptance covers both topologies end to end.
 - **Baselines.** The root baseline is required before any machine change. A
@@ -672,6 +676,28 @@ previous stable point, or to the baseline taken before the first change.
   capability gaps are reported at plan time.
 - **Windows is out of scope.** Adding it later means new adapters and
   capability rows, not a redesign.
+
+### 2h. Best practices on by default (principle 13)
+
+- Defaults across every configuration area apply the learned best practice
+  automatically, shown in `plan` with their reason; each is configurable or
+  can be opted out.
+- **Resources,** proven on the pilot: the agent-work memory and CPU ceiling
+  as shares of RAM with early OOM handling (systemd-oomd; launchd and
+  taskpolicy on macOS); swap and zram sized as a share of RAM; `/tmp` kept
+  disk-backed or caches redirected off tmpfs; disk free-space floors with
+  cleanup guidance; the resource runner and sweep wired into the agent
+  settings bundle.
+- **macOS:** development volumes detected and confirmed; Spotlight and the
+  FSEvents on-disk log off for them; Time Machine excluded where a
+  destination exists (section 7b).
+- **Elsewhere,** the same approach: security hardening, pinned versions,
+  update policy and log rotation.
+- **Rules:** defaults come from one table and may differ by purpose, tier
+  and form factor; each has a reason and a source in
+  `registry/sources.toml`; `wskit explain SETTING` shows the default, the
+  reason and how to change it; tests show each default is applied when the
+  setting is unset, and that every opt-out works.
 
 ### 3. One apply path (T1)
 
@@ -1288,9 +1314,12 @@ preflight -> describe -> backup -> intent=applying -> apply (logged) -> verify -
     `CLAUDECODE`), so agent commands see a predictable environment. The
     shell unit's page documents the guard.
 
-### 7a. Resources (S7, T4)
+### 7a. Resources (S7; built early, right after the tunnel)
 
-A supervised pilot showed the failure this stage must prevent: one test
+The machine-wide part is built first among the units, right after the
+browser tunnel, on T1's minimal engine, because a pilot host kept
+thrashing; it moves onto T2 when T2 lands. A supervised pilot showed the
+failure this stage must prevent: one test
 suite grew to about a third of RAM, several sessions ran full gates in
 parallel, swap filled, and every agent session and the desktop stalled for
 hours, while a guard that watched load and available memory stayed green.
@@ -1317,6 +1346,24 @@ hours, while a guard that watched load and available memory stayed green.
 - **The session side** (a runner that caps each heavy job, and a scheduled
   sweep) belongs to the agent tooling, not the kit. The kit installs the
   machine-wide part and checks for it.
+
+### 7b. Indexing on macOS development volumes
+
+A macOS unit, `indexing`, on by default for `developer` and `agent-host`
+at every tier. Heavy file churn on development volumes makes `fseventsd`
+and Spotlight use CPU and memory for days.
+
+- Development volumes (separate volumes under `/Volumes` holding
+  repositories, worktrees or `node_modules`) are detected and confirmed in
+  the interview. The system volume is never accepted; folders on it are
+  left to System Settings.
+- Apply turns Spotlight indexing off, removes the volume's index store,
+  writes `.fseventsd/no_log` (live file watching keeps working), adds a
+  Time Machine exclusion when a destination exists, and restarts
+  `fseventsd` once. A keep-Spotlight option turns off only the FSEvents
+  on-disk log.
+- The previous state is recorded and revert restores it exactly. The
+  removed index store is in the cannot-undo list: macOS rebuilds it.
 
 ### 8. One schema (T1), interview and capabilities (T5)
 
@@ -1758,7 +1805,9 @@ client hid this, because it routes everything.
   `unknown`. Sandboxed agents and other users get status without `sudo`;
   the live view stays root-only.
 - **Under the dead-man timer.** Route and firewall changes arm the timer of
-  section 6 before apply, like `ssh` and `firewall`.
+  section 6 before apply. They are verified by route checks, a local
+  confirmation and the preserved mesh connectivity if present, never by an
+  incoming-SSH proof. The unit depends on the S5 group's disarm.
 - **Status** is concise by default (state, time left, N of M routed,
   problems only); `--verbose` lists each destination by kind and name.
 - **Discovery aid.** A read-only audit lists cloud resources with
@@ -1951,9 +2000,9 @@ SPC-001's identical):
 | `workloads` | system | services | root | agent | agent | agentctl; accounts | EPC-019 | alpha |
 | `firewall` | network | remote | root | remote | root | packages; packages | EPC-015 | alpha |
 | `ssh` | remote | remote | root | remote | root | accounts, firewall; accounts, firewall | EPC-015 | alpha |
-| `mesh-vpn` | network | remote | root | remote | root | packages; packages | EPC-016 | alpha |
-| `remote-desktop` | remote | remote | root | none | none | firewall, packages; none | EPC-017 | alpha |
-| `vpn` | network | remote | root | remote | root | packages; packages | EPC-007 | alpha |
+| `mesh-vpn` | network | remote | root | remote | root | packages, ssh; packages, ssh | EPC-016 | alpha |
+| `remote-desktop` | remote | remote | root | none | none | packages, ssh; none | EPC-017 | alpha |
+| `vpn` | network | remote | root | remote | root | packages, ssh; packages, ssh | EPC-007 | alpha |
 | `shell` | agent | agent | agent | agent | agent | accounts; accounts | EPC-008 | alpha |
 | `git-identity` | identity | agent | agent | agent | agent | accounts; accounts | EPC-014 | alpha |
 | `runtimes` | agent | agent | agent | agent | agent | shell; shell | EPC-013 | alpha |
@@ -1962,7 +2011,8 @@ SPC-001's identical):
 | `mcp` | agent | agent | agent | agent | agent | agent-settings; agent-settings | EPC-012 | alpha |
 | `browser-tunnel` | remote | agent | user | agent | user | none; none | EPC-006 | alpha |
 | `workspace` | workspace | agent | agent | agent | agent | tools, git-identity; tools, git-identity | EPC-021 | alpha |
-| `resource-limits` | ops | resources | root | resources | root | accounts; accounts | EPC-010 | alpha |
+| `resource-limits` | ops | resources | root | resources | root | none; none | EPC-010 | alpha |
+| `indexing` | system | none | none | resources | root | none; baseline | EPC-033 | alpha |
 | `snapshots` | data | resources | root | none | none | baseline; none | EPC-020 | alpha |
 | `doctor` | ops | audit | root | audit | root | none; none | EPC-022 | alpha |
 <!-- catalog:units:end -->
@@ -2030,11 +2080,12 @@ D0 (this ADR, reviewed alone)
        T1c engine.Tx minimum: locks, durable intent and recovery, process supervision,
            receipts, staged binary check
        T1d terminal UI and plain or JSON front ends
- -> browser tunnel unit, on T1
+ -> browser tunnel unit, then the machine-wide resources unit, both on T1
  -> T2 engine: transaction layer, baseline, ledger, match digest, revert, restore points,
        logs, failure records, client mode; the tunnel moves onto it
  -> P2 unit waves, in parallel:
-       A: VPN, shell, agent settings, resources, tools (registry-driven), MCP catalog
+       A: resources first (on T1, with the tunnel), then VPN, shell, agent settings,
+          tools (registry-driven), MCP catalog, macOS indexing
        B: packages and runtimes; identity and accounts, with the home archive (account
           removal refused until it ships); SSH and firewall, with the dead-man timer in
           the same epic (their apply and revert refused until it ships); mesh VPN;
