@@ -1,0 +1,11 @@
+id = "TSK-009"
+uid = "c43bb97e-d6dc-4bd0-9816-0c0f5c4e0324"
+kind = "TSK"
+title = "CLI skeleton, typed constants and unit catalog"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-21T09:37:53Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
