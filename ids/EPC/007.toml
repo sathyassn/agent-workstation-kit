@@ -1,0 +1,11 @@
+id = "EPC-007"
+uid = "a556e336-18b1-48b8-aea9-f16cfcfb4298"
+kind = "EPC"
+title = "Corporate VPN unit"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-21T09:11:29Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
