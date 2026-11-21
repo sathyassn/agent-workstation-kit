@@ -74,16 +74,22 @@ practice, relayed by the supervisor and approved as a process change.
 
 ## CI authority and scaffold updates
 
-- CodeFlow's authority job uses its App key only for pull requests from this
-  repository, never from forks. Its environment, `codeflow-authority`,
-  requires a reviewer. Fork pull requests never see a secret; a test in the
-  policy workflow's checks proves it once the App is configured.
+- CodeFlow 3.1.1's workflows use no secret: its policy workflow runs on
+  `pull_request_target` and checks out only the base commit, so a pull
+  request cannot change the job that judges it. When a later CodeFlow
+  release adds an authority job with an App key, that job runs only for
+  pull requests from this repository, never from forks, behind an
+  environment with a required reviewer, and the upgrade PR proves that fork
+  pull requests see no secret.
 - CodeFlow scaffold updates (`codeflow update`) land in their own pull
   request, reviewed separately, including every link they add.
 - The branch policy allows the `codeflow/` prefix for CodeFlow's ID registry
-  branch. CodeFlow 4.0.0 accepts prefixes only, so this is the narrowest
-  form available; it narrows to the one branch name, `codeflow/registry`,
-  once CodeFlow supports that (its issue 922).
+  branch. CodeFlow accepts prefixes only, so this is the narrowest form
+  available; it narrows to the one branch name, `codeflow/registry`, once
+  CodeFlow supports that (its issue 922).
+- CodeFlow is pinned to the released 3.1.1, with its release digests in
+  `.codeflow/project.toml`. A move to a later release is a pull request of
+  its own.
 
 ## Public identifiers
 
