@@ -1,0 +1,11 @@
+id = "TSK-023"
+uid = "f4a82e74-fabb-4d98-a7b4-a8b2f225096f"
+kind = "TSK"
+title = "Contracts package, JSON schemas and fixtures"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-21T10:07:28Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
