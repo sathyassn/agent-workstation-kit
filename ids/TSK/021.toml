@@ -1,0 +1,11 @@
+id = "TSK-021"
+uid = "44f9e1c9-ba31-4aa1-9286-04f2ef4485c8"
+kind = "TSK"
+title = "Logs, redactor and failure records"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-21T09:42:49Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
