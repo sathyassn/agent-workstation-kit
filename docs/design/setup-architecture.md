@@ -291,6 +291,10 @@ This is a user decision (2026-11-21).
   wskit disarm --run RUN-ID | propose-change FILE
   wskit stage | registry check|bump | docs gen
   wskit tunnel auth|open|host|hook                             the browser-tunnel unit
+  wskit config get|set|explain|validate                        layered config
+  wskit fleet init | validate | check [--host] | privacy-lint
+  wskit fleet host add|show|record|retire | lock show|bump | values get|set|explain
+  wskit version | completion bash|zsh|fish
   ```
 
   - **Common flags:** `--json`; preview by default, with `--apply` to make
@@ -326,6 +330,39 @@ This is a user decision (2026-11-21).
   | S8 | doctor and the stable point |
   | Any stage, optional | corporate VPN, workspace and repositories |
 
+- **CLI conventions, defined once** and shared by every command and unit:
+  - preview by default, with `--apply` to make changes;
+  - `--json`, `--verbose` and `--quiet`;
+  - `status` and `explain` for every unit;
+  - documented, typed exit codes (section 4);
+  - shell completion for bash, zsh and fish; `version`; generated help and
+    man pages;
+  - the same verbs and flags across units, declared in one place in
+    `internal/cli`, so a unit cannot invent its own spelling.
+
+  **Framework:** cobra with Charm's fang, both pinned in `go.mod` and listed
+  in the registry. Cobra gives the command tree, completions and man pages;
+  fang styles help and errors with the same Lip Gloss theme as the terminal
+  UI. Kong was the alternative; cobra is chosen because its completion and
+  man-page generation are built in and widely used.
+- **Fleet management in the same CLI.** The private fleet repository holds
+  config and records only, with no fleet code. `wskit fleet`:
+  - `init` creates a private fleet repository from the kit's template;
+  - `validate` checks the schema and that company and machine files agree;
+  - `host add|show|record|retire` manages machine records;
+  - `check [--host]` is the doctor with fleet inputs;
+  - `privacy-lint` is the keyed identifier scan (section 12), generic;
+  - `lock show|bump` shows and moves the kit pin, verified against the
+    release checksum and signature;
+  - `values get|set|explain` reads and writes company values with their
+    schema docs.
+- **Everything configurable, from one schema.** Values come in layers, each
+  overriding the one before: kit defaults, then fleet or organisation, then
+  machine, then user, then environment variables, then flags. `wskit config
+  get|set|explain|validate` shows each effective value and the layer it came
+  from. The safety floor is not configurable, and the docs say so: backups,
+  undo, the dead-man timer, secret handling, and the approval phrase for
+  root.
 - **Data is embedded.** The schema, the registries, dotfile templates and
   docs templates are compiled into the binary with `go:embed`, so the
   one-liner fetches only the binary. A fleet adds to them, never replaces
