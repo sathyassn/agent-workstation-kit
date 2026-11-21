@@ -1,0 +1,11 @@
+id = "EPC-006"
+uid = "bd5ae094-3688-4c66-b135-ae40da7426da"
+kind = "EPC"
+title = "Browser tunnel unit"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-21T09:11:05Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
