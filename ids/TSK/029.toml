@@ -1,0 +1,11 @@
+id = "TSK-029"
+uid = "fa330c93-828a-4971-986c-69e04821c2c3"
+kind = "TSK"
+title = "Move the tunnel onto client mode"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-21T10:09:50Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
