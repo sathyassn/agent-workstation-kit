@@ -84,6 +84,11 @@ restating changing product choices, field definitions, or operating rules.
 | Vendor claims and research dates | [Primary-source register](11-primary-sources.md) |
 | Inventory, migrations, canaries, and cohorts | [Fleet rollout and change management](12-fleet-rollout-and-change-management.md) |
 | Publication and production gates | [Production and public-release checklist](13-public-release-checklist.md) |
+| Product purpose, users and non-goals | [Product](product.md) |
+| What the kit does, by capability | [Capabilities](capabilities.md) |
+| Code layout and areas of the Go kit | [Architecture](architecture.md) |
+| Phases, epics and their order | [Roadmap](plan/roadmap.md) |
+| Which epic, task and test proves each design decision | [Traceability](plan/traceability.md) |
 
 ## Task runbooks
 
@@ -106,6 +111,9 @@ restating changing product choices, field definitions, or operating rules.
 |---|---|
 | Prepare and publish a release | [Releasing](maintenance/releasing.md) |
 | Work in this repository as an agent | [Agent operating manual](../AGENTS.md) |
+| Write a new decision record | [Decision template](decisions/template.md) |
+| Meet the engineering standard for a pull request | [Engineering standard](standards/engineering.md) |
+| Review a pull request | [Review checklist](standards/review-checklist.md) |
 
 ## Design decisions and evidence
 

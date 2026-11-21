@@ -18,6 +18,29 @@ FORBIDDEN_NAMES = {".env", "id_rsa", "id_ed25519", "credentials.json", "auth.jso
 PLACEHOLDER = re.compile(r"\b(TODO|FIXME|CHANGEME)\b")
 SECRET_LIKE = re.compile(r"(?:AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{30,}|glpat-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9_-]{24,})")
 PERSONAL_PATH = re.compile(r"/(?:Users|home)/[^/\s]+/")
+# Folders that CodeFlow installs and updates (`codeflow init`, `codeflow update`).
+# Their Markdown is upstream text, so its links are not checked here. Their
+# content is still scanned for secrets and personal paths.
+CODEFLOW_MANAGED_PREFIXES = (".agents/", ".claude/skills/", ".claude/agents/", ".codeflow/.baseline/", ".grok/", ".codex/")
+# Exact synthetic values that CodeFlow's files contain, each allowed only in
+# those folders: the sandbox deny-list wildcards in its Grok settings. The
+# values are assembled from parts so that this file does not match itself.
+CODEFLOW_SYNTHETIC_VALUES = frozenset({
+    "/Users" + "/*/",
+    "/home" + "/*/",
+})
+
+
+def codeflow_managed(relative: str) -> bool:
+    return relative.startswith(CODEFLOW_MANAGED_PREFIXES)
+
+
+def unexpected_matches(pattern: re.Pattern, content: str, relative: str) -> bool:
+    for match in pattern.finditer(content):
+        if codeflow_managed(relative) and match.group(0) in CODEFLOW_SYNTHETIC_VALUES:
+            continue
+        return True
+    return False
 BARE_KVM_MODEL = re.compile(r"(?<!GL-)\bRM(?:1|1PE|4PE)\b")
 HOSTNAME_EXAMPLE = re.compile(
     r"\b([a-z0-9]{2,8})-(?:ws|mac|hv|vws|nas|mgmt|srv)-[0-9]{3}\b",
@@ -207,9 +230,10 @@ def main() -> int:
             content = path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             content = ""
-        if SECRET_LIKE.search(content):
+        relative = path.relative_to(ROOT).as_posix()
+        if unexpected_matches(SECRET_LIKE, content, relative):
             failures.append(f"secret-like value in {path.relative_to(ROOT)}")
-        if PERSONAL_PATH.search(content):
+        if unexpected_matches(PERSONAL_PATH, content, relative):
             failures.append(f"personal absolute path in {path.relative_to(ROOT)}")
         non_neutral = non_neutral_hostname_examples(content)
         if non_neutral:
@@ -221,7 +245,7 @@ def main() -> int:
             failures.append(
                 f"bare remote-KVM model shorthand in {path.relative_to(ROOT)}"
             )
-        if path.suffix != ".md":
+        if path.suffix != ".md" or codeflow_managed(relative):
             continue
         text = content
         for match in MARKDOWN_LINK.finditer(text):
@@ -311,7 +335,7 @@ def main() -> int:
     workflow_text = workflow.read_text(encoding="utf-8") if workflow.is_file() else ""
     if "run: make ci-check" not in workflow_text:
         failures.append("hosted CI has no independent make ci-check gate")
-    if "sathyassn/codeflow" in workflow_text:
+    if "sathyassn" + "/codeflow" in workflow_text:
         failures.append("hosted CI depends on a private Codeflow release")
     if "./gitleaks git" not in workflow_text:
         failures.append("hosted secret scan does not use the supported Gitleaks git command")

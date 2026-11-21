@@ -55,7 +55,8 @@
       "perf/",
       "build/",
       "dependabot/",
-      "revert/"
+      "revert/",
+      "codeflow/"
     ],
     "secret_scan": "block",
     "test_gate_on_push": "block"

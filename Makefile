@@ -61,6 +61,7 @@ unit-check: bash-check
 
 repo-check:
 	@$(PYTHON) tests/check_repository.py
+	@$(PYTHON) tests/catalog_tables.py
 
 git-discipline-check:
 	@$(PYTHON) scripts/check_git_discipline.py policy

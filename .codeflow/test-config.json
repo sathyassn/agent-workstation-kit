@@ -1,0 +1,27 @@
+{
+  "_description": "Kit gates. Go targets (gofmt, vet, golangci-lint, go test, govulncheck) are added by EPC-001 once go.mod exists.",
+  "$schema": "test-config.schema.json",
+  "schema_version": "1.0",
+  "execution": {
+    "parallel": false,
+    "fail_fast": false
+  },
+  "defaults": {
+    "coverage": []
+  },
+  "targets": [
+    {
+      "name": "kit",
+      "enabled": true,
+      "runner": "custom",
+      "modes": {
+        "essential": {
+          "command": "make check"
+        },
+        "full": {
+          "command": "make ci-check && make public-check"
+        }
+      }
+    }
+  ]
+}

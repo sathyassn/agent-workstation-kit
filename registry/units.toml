@@ -1,0 +1,248 @@
+# The unit catalog: the one source for every unit's stage, privilege, OS,
+# dependencies, epic and milestone (ADR 0005 sections 2a and 15).
+# Tables in docs/plan/roadmap.md, SPC-001 and ADR 0005 are generated from this
+# file by tests/catalog_tables.py; `make check` fails when they are stale.
+# TSK-005 replaces the generator with `go generate`.
+#
+# Fields:
+#   stage      scope ID per OS ("-" when the unit does not run on that OS)
+#   privilege  root | package-owner | agent | user, per OS
+#   depends    unit IDs per OS, always required; "packages" is satisfied on
+#              macOS by packages-user and packages together
+#   depends_if unit IDs required only when a condition holds, per OS
+#              ("remote-access": remote access is selected)
+#   waits_for  barriers the unit waits for, only when that barrier's work ran
+#              in the same setup ("s5-disarm": the firewall and ssh group's disarm)
+#   epic       the epic that builds the unit; milestone: the release phase
+
+schema_version = 1
+
+[[unit]]
+id = "baseline"
+domain = "system"
+stage = { linux = "baseline", macos = "baseline" }
+privilege = { linux = "root", macos = "root" }
+depends = { linux = [], macos = [] }
+epic = "EPC-005"
+milestone = "alpha"
+
+[[unit]]
+id = "packages-user"
+domain = "system"
+stage = { linux = "-", macos = "packages-user" }
+privilege = { linux = "-", macos = "package-owner" }
+depends = { linux = [], macos = ["baseline"] }
+epic = "EPC-013"
+milestone = "alpha"
+
+[[unit]]
+id = "packages"
+domain = "system"
+stage = { linux = "packages", macos = "packages" }
+privilege = { linux = "root", macos = "root" }
+depends = { linux = ["baseline"], macos = ["packages-user"] }
+epic = "EPC-013"
+milestone = "alpha"
+
+[[unit]]
+id = "machine-identity"
+domain = "identity"
+stage = { linux = "identity", macos = "identity" }
+privilege = { linux = "root", macos = "root" }
+depends = { linux = ["packages"], macos = ["packages"] }
+epic = "EPC-014"
+milestone = "alpha"
+
+[[unit]]
+id = "accounts"
+domain = "identity"
+stage = { linux = "identity", macos = "identity" }
+privilege = { linux = "root", macos = "root" }
+depends = { linux = ["machine-identity"], macos = ["machine-identity"] }
+epic = "EPC-014"
+milestone = "alpha"
+
+[[unit]]
+id = "agentctl"
+domain = "system"
+stage = { linux = "services", macos = "-" }
+privilege = { linux = "root", macos = "-" }
+depends = { linux = ["accounts"], macos = [] }
+epic = "EPC-019"
+milestone = "alpha"
+
+[[unit]]
+id = "workloads"
+domain = "system"
+stage = { linux = "services", macos = "agent" }
+privilege = { linux = "root", macos = "agent" }
+depends = { linux = ["agentctl"], macos = ["accounts"] }
+epic = "EPC-019"
+milestone = "alpha"
+
+[[unit]]
+id = "firewall"
+domain = "network"
+stage = { linux = "remote", macos = "remote" }
+privilege = { linux = "root", macos = "root" }
+depends = { linux = ["packages"], macos = ["packages"] }
+depends_if = { remote-access = { linux = ["mesh-vpn"], macos = ["mesh-vpn"] } }
+epic = "EPC-015"
+milestone = "alpha"
+
+[[unit]]
+id = "ssh"
+domain = "remote"
+stage = { linux = "remote", macos = "remote" }
+privilege = { linux = "root", macos = "root" }
+depends = { linux = ["accounts", "firewall"], macos = ["accounts", "firewall"] }
+depends_if = { remote-access = { linux = ["mesh-vpn"], macos = ["mesh-vpn"] } }
+epic = "EPC-015"
+milestone = "alpha"
+
+[[unit]]
+id = "mesh-vpn"
+domain = "network"
+stage = { linux = "remote", macos = "remote" }
+privilege = { linux = "root", macos = "root" }
+depends = { linux = ["packages"], macos = ["packages"] }
+epic = "EPC-016"
+milestone = "alpha"
+
+[[unit]]
+id = "remote-desktop"
+domain = "remote"
+stage = { linux = "remote", macos = "-" }
+privilege = { linux = "root", macos = "-" }
+depends = { linux = ["packages", "firewall"], macos = [] }
+waits_for = ["s5-disarm"]
+epic = "EPC-017"
+milestone = "alpha"
+
+[[unit]]
+id = "vpn"
+domain = "network"
+stage = { linux = "remote", macos = "remote" }
+privilege = { linux = "root", macos = "root" }
+depends = { linux = ["packages"], macos = ["packages"] }
+waits_for = ["s5-disarm"]
+epic = "EPC-007"
+milestone = "alpha"
+
+[[unit]]
+id = "shell"
+domain = "agent"
+stage = { linux = "agent", macos = "agent" }
+privilege = { linux = "agent", macos = "agent" }
+depends = { linux = ["accounts"], macos = ["accounts"] }
+epic = "EPC-008"
+milestone = "alpha"
+
+[[unit]]
+id = "git-identity"
+domain = "identity"
+stage = { linux = "agent", macos = "agent" }
+privilege = { linux = "agent", macos = "agent" }
+depends = { linux = ["accounts"], macos = ["accounts"] }
+epic = "EPC-014"
+milestone = "alpha"
+
+[[unit]]
+id = "runtimes"
+domain = "agent"
+stage = { linux = "agent", macos = "agent" }
+privilege = { linux = "agent", macos = "agent" }
+depends = { linux = ["shell"], macos = ["shell"] }
+epic = "EPC-013"
+milestone = "alpha"
+
+[[unit]]
+id = "tools"
+domain = "agent"
+stage = { linux = "agent", macos = "agent" }
+privilege = { linux = "agent", macos = "agent" }
+depends = { linux = ["runtimes"], macos = ["runtimes"] }
+epic = "EPC-011"
+milestone = "alpha"
+
+[[unit]]
+id = "agent-settings"
+domain = "agent"
+stage = { linux = "agent", macos = "agent" }
+privilege = { linux = "agent", macos = "agent" }
+depends = { linux = ["tools"], macos = ["tools"] }
+epic = "EPC-009"
+milestone = "alpha"
+
+[[unit]]
+id = "mcp"
+domain = "agent"
+stage = { linux = "agent", macos = "agent" }
+privilege = { linux = "agent", macos = "agent" }
+depends = { linux = ["agent-settings"], macos = ["agent-settings"] }
+epic = "EPC-012"
+milestone = "alpha"
+
+[[unit]]
+id = "browser-tunnel"
+# macOS: the client side only; the workstation hook is Linux only.
+domain = "remote"
+stage = { linux = "agent", macos = "agent" }
+privilege = { linux = "user", macos = "user" }
+depends = { linux = [], macos = [] }
+epic = "EPC-006"
+milestone = "alpha"
+
+[[unit]]
+id = "workspace"
+domain = "workspace"
+stage = { linux = "agent", macos = "agent" }
+privilege = { linux = "agent", macos = "agent" }
+depends = { linux = ["tools", "git-identity"], macos = ["tools", "git-identity"] }
+epic = "EPC-021"
+milestone = "alpha"
+
+[[unit]]
+id = "resource-limits"
+domain = "ops"
+stage = { linux = "resources", macos = "resources" }
+privilege = { linux = "root", macos = "root" }
+depends = { linux = ["baseline"], macos = ["baseline"] }
+epic = "EPC-010"
+milestone = "alpha"
+
+[[unit]]
+id = "indexing"
+domain = "system"
+stage = { linux = "-", macos = "resources" }
+privilege = { linux = "-", macos = "root" }
+depends = { linux = [], macos = ["baseline"] }
+epic = "EPC-033"
+milestone = "alpha"
+
+[[unit]]
+id = "snapshots"
+domain = "data"
+stage = { linux = "resources", macos = "-" }
+privilege = { linux = "root", macos = "-" }
+depends = { linux = ["baseline"], macos = [] }
+epic = "EPC-020"
+milestone = "alpha"
+
+[[unit]]
+id = "doctor"
+domain = "ops"
+stage = { linux = "audit", macos = "audit" }
+privilege = { linux = "root", macos = "root" }
+depends = { linux = [], macos = [] }
+epic = "EPC-022"
+milestone = "alpha"
+
+[[unit]]
+id = "audit-agent"
+domain = "ops"
+stage = { linux = "audit-agent", macos = "audit-agent" }
+privilege = { linux = "agent", macos = "agent" }
+depends = { linux = ["shell", "tools", "agent-settings", "mcp"], macos = ["shell", "tools", "agent-settings", "mcp"] }
+epic = "EPC-022"
+milestone = "alpha"

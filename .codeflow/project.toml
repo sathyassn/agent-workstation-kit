@@ -1,0 +1,26 @@
+areas = [
+    "cli",
+    "engine",
+    "units",
+    "platform",
+    "data",
+    "fleet",
+    "ui",
+    "legacy",
+    "docs",
+]
+git_hooks = "wired"
+permission_preset = "acceptEdits"
+policy_armed = true
+product_one_liner = "Set up and maintain Ubuntu and macOS machines where AI coding agents run"
+release_rules = 1
+scaffold_version = "3.1.1"
+schema_version = 1
+stack = "go"
+tier = "full"
+
+[scaffold_sha256]
+aarch64-apple-darwin = "eacff7b844d0f7e1f3d05da19ec58adfee049c328c70e6eafab6c76eef4766ca"
+version = "3.1.1"
+x86_64-apple-darwin = "56821a0eb0176daa8cc253259716a24fbda474a7468c84056f0e272468a1a2fc"
+x86_64-unknown-linux-gnu = "dc39687d009c3ace70e2fd01cfc3f38cc335f582b9e57fdbf1837cd519711735"

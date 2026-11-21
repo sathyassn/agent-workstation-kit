@@ -1,0 +1,67 @@
+---
+id: EPC-{{NNN}}
+uid: {{UID}}              # hidden record identity, written once by `new`; never edit
+title: {{TITLE_YAML}}
+status: draft            # draft | planning | in_progress | blocked | complete | cancelled | archived
+work_type: feat          # feat | fix | docs | refactor | test | chore | ci | hotfix | plan | spike | experiment
+capabilities: []         # CAP-### ids this epic creates or changes
+adrs: []                 # ADR ids consumed or produced
+specs: []                # SPC-### inputs consumed by this epic
+external_refs: []        # opaque links/ids only; never mirror external status
+created: {{DATE}}
+---
+
+# EPC-{{NNN}}: {{TITLE}}
+
+## Summary
+
+<!-- One to three short sentences of context: the problem, who it serves,
+     and what done looks like.
+     Write it by the copy guide
+     (`cf-editorial-review/references/copy-guide.md`).
+     Research repository and authoritative-source facts first. Ask only when
+     the remaining ambiguity is a consequential operator-owned choice under
+     the cf-plan clarity gate. -->
+
+## Acceptance Criteria
+
+<!-- Testable statements, preferably in EARS ("When <trigger>, the system shall
+     <response>") or Given/When/Then form. Each criterion names concrete,
+     claim-matched evidence: automate where meaningful, otherwise name a
+     bounded observable or review. Do not invent a hard-coded or meaningless
+     test merely to make the record look verifiable. "Works correctly" is not
+     a criterion. An epic is one outcome: when its criteria describe two
+     outcomes, make it two epics on one integration line.
+     List each as `- AC-n <criterion>` with no checkbox; a task criterion
+     serves one with `(serves EPC-NNN AC-m)`. `codeflow epic status` closes
+     the epic only when every task is terminal and every criterion is
+     verified. -->
+
+- AC-1
+
+## Out of scope
+
+<!-- What this epic deliberately does not do. Check docs/product.md non-goals. -->
+
+## Affected surfaces and interfaces
+
+<!-- Name the capabilities, user journeys, and material native build, runtime,
+     release, data/trust, and shared-contract boundaries affected. This epic
+     owns the cross-area outcome, not a team or directory. Name the repository
+     homes its tasks write (folders or files in the project's structure), or
+     point to the project's structure authority, the document that says where
+     things live; each task's `## Deliverables` names its own. Omit details
+     already owned by architecture or a linked authoritative source. -->
+
+## Plan graph (when needed)
+
+<!-- Optional: link the TASK_GRAPH for a multi-task body when one exists; omit
+     it otherwise. Task frontmatter owns membership (`epic_id`) and direct
+     predecessors (`depends_on`); this is not a second task roster. -->
+
+## Planning notes
+
+<!-- Tracked nits, one line each with the event that revisits it, and hotspot
+     notes: files that two tasks restructure, one writer at a time. Recorded
+     nits are folded into the next breakdown or dropped with a reason at epic
+     close. -->
