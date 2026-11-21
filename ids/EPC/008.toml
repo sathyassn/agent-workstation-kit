@@ -1,0 +1,11 @@
+id = "EPC-008"
+uid = "370c59f1-460a-43d6-b874-97cd1566c099"
+kind = "EPC"
+title = "Shell unit"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-21T09:11:54Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
