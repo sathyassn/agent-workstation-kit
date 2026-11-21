@@ -48,8 +48,8 @@ unit it owns, and an interrupted revert that resumes (ADR 0005 section 2c).
 | EPC-011 Registry-driven tools unit | P2 A | a CLI is added or removed with `wskit tools add|remove` from a reviewed registry entry, with no code | EPC-005 | tools |
 | EPC-012 MCP catalog unit | P2 A | an MCP server is added to every agent config home with `wskit mcp add`, with sign-in as a hand-over | EPC-009 | mcp |
 | EPC-013 Packages and runtimes units | P2 B | OS packages and runtimes install at exact pins, with the SSH and remote-desktop install guards | EPC-005 | packages, packages-brew, packages-pkg, runtimes |
-| EPC-014 Identity and accounts units | P2 B | hostnames, accounts, groups and git identity are set and revertible, with homes archived before removal | EPC-005 | machine-identity, accounts, git-identity |
-| EPC-015 SSH and firewall units | P2 B | SSH and firewall changes apply and revert under the dead-man timer on both OSes | EPC-005, EPC-014 | ssh, firewall |
+| EPC-014 Identity and accounts units | P2 B | hostnames, accounts, groups and git identity are set and revertible for both account topologies, with homes archived before removal | EPC-005 | machine-identity, accounts, git-identity |
+| EPC-015 SSH and firewall units | P2 B | SSH and firewall changes apply and revert under the dead-man timer, which ships in this epic, on both OSes | EPC-005, EPC-014 | ssh, firewall |
 | EPC-016 Mesh VPN unit | P2 B | the mesh VPN is configured and verified, with its sign-in as a hand-over | EPC-013 | mesh-vpn |
 | EPC-017 Remote desktop unit | P2 B | remote desktop is installed masked and released only behind the firewall | EPC-013, EPC-015 | remote-desktop |
 | EPC-018 Fleet commands | P2 B | a fleet maintainer manages a private fleet of config and records with `wskit fleet` | EPC-003, EPC-005 | none (command group) |
@@ -63,7 +63,7 @@ unit it owns, and an interrupted revert that resumes (ADR 0005 section 2c).
 | EPC-026 Registry and staging (T6) | P3 | tools move only through `registry bump`, releases are staged, and the one-liner verifies them | EPC-001, EPC-005 | none |
 | EPC-027 Update watch | P3 | upcoming tool updates and end-of-support dates are flagged before they matter | EPC-026 | none |
 | EPC-028 Conductor recipe | P3 | an agent conducts setup from `AGENTS.md`, in the kit and in a private fleet | EPC-023 | none |
-| EPC-029 Organisation units | P3 | a fleet adds constrained declarative units and command sources, through the same engine; plugin executables come after v0.2.0 | EPC-005, EPC-018 | declarative units, command sources |
+| EPC-029 Organisation units | P3 | a fleet adds declarative units built from typed operations, through the same engine; command steps and plugins come after v0.2.0 | EPC-005, EPC-018 | declarative units |
 | EPC-030 v0.2.0 acceptance | P4 | the release criteria hold on one Linux and one macOS machine | EPC-023 to EPC-028 | all |
 | EPC-031 Cutover | P5 | the frozen Python and shell are gone | EPC-030 | all |
 | EPC-032 Fleet adoption | P5 | existing hosts are converged, fleets use `wskit fleet`, and fleet scripts are retired | EPC-029, EPC-030 | all |
