@@ -1,0 +1,11 @@
+id = "SPC-001"
+uid = "4b188a8c-8103-4400-a906-bba84e8c4306"
+kind = "SPC"
+title = "Core contracts for wskit"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-21T09:37:01Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
