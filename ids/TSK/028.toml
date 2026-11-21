@@ -1,0 +1,11 @@
+id = "TSK-028"
+uid = "1fc6d999-d2cf-4e11-a865-9d99a4cb4d91"
+kind = "TSK"
+title = "Handle store, fetch and the threat tests"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-21T10:09:25Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
