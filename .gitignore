@@ -18,6 +18,17 @@ artifacts/
 reports/
 .fleetctl-identity.lock
 
+# CodeFlow gate artefacts
+target/
+
+# CodeFlow's model-evaluation skill is left out: its eval case IDs start
+# with "sk-", which CodeFlow's own pre-commit secret scan refuses. Restore it
+# once CodeFlow renames them.
+.agents/skills/cf-evaluate-model/
+.claude/skills/cf-evaluate-model/
+.codeflow/.baseline/.agents/skills/cf-evaluate-model/
+.codeflow/.baseline/.claude/skills/cf-evaluate-model/
+
 # codeflow:managed:begin
 # secrets, never tracked
 .env
@@ -44,14 +55,3 @@ reports/
 .codeflow/.docs-portal-transaction/
 .codeflow/.docs-portal-transaction-stage-*/
 # codeflow:managed:end
-
-# CodeFlow gate artefacts
-target/
-
-# CodeFlow's model-evaluation skill is left out: its eval case IDs start
-# with "sk-", which CodeFlow's own pre-commit secret scan refuses. Restore it
-# once CodeFlow renames them.
-.agents/skills/cf-evaluate-model/
-.claude/skills/cf-evaluate-model/
-.codeflow/.baseline/.agents/skills/cf-evaluate-model/
-.codeflow/.baseline/.claude/skills/cf-evaluate-model/

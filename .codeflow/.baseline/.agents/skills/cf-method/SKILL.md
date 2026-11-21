@@ -69,11 +69,7 @@ orchestrator point here). Do not draft until you can state all six:
 
 1. **Problem and audience.** What hurts, for whom, in one or two sentences.
 2. **Outcome and public behavior.** The intended result and what users or
-   adopters will observe. Its home is the record's `## Outcome` section:
-   the epic's value line and each task's outcome, one line each, in the
-   form "after this merges, <who> can <do what>". `codeflow validate
-   --docs` refuses an open record created after the project adopted the
-   section without it.
+   adopters will observe.
 3. **Scope boundary.** What is in, and, more important, what is explicitly
    out. Check `docs/product.md` non-goals; an epic that violates a non-goal is
    a conversation with the human, not a workaround. Name material authority,
@@ -90,8 +86,7 @@ orchestrator point here). Do not draft until you can state all six:
 6. **Deliverables and homes.** What each task produces (files or a folder,
    a decision record, a research note, evidence, a record update, a human
    board) and its home as a path in the project's structure, in the task's
-   `## Deliverables`; the epic's own `## Deliverables` names what the body
-   delivers as a whole. Before materializing records, check every home
+   `## Deliverables`. Before materializing records, check every home
    against the project's structure authority, the document that says where
    things live (an agreed target tree, an architecture doc, the "Where
    things live" line of `AGENTS.md`), where one exists. A home not known
@@ -105,21 +100,9 @@ facts yourself and make reversible, outcome-preserving implementation choices
 from evidence; do not offload research to the operator.
 
 An epic is one outcome. When its criteria describe two outcomes, it is two
-epics on one integration line; the epic that does not own the line declares
-it with `parent_line: integration/<epic-id>-<slug>`. Size tasks by the
-sizing test, which is guidance and matches the orchestrator's task-graph
-contract (one observable outcome per task, split only for a written reason): a task is one noticeable outcome with its own proof; siblings that
-share a cause, a code path or a proof merge, keeping every criterion; a
-helper-only task folds into the task it helps; a misfiled task moves to the
-epic that owns its outcome. No number caps a task's size or a plan's task
-count, so each merge, fold or split is a stated judgement. An epic is one
-coherent outcome built from meaningful Medium-to-Hard tasks, small enough that
-its finished part reaches main within a few days through checkpoint PRs; about
-5 to 10 tasks is a reference point for that, not a rule. Grade tasks by
-judgement: most are Medium or Hard, an Easy task usually belongs with a
-sibling that shares its cause, code path or proof, and a Very Hard task is
-split before claim. Every task carries its own outcome and proof.
-For an explicit estimate, capacity or deadline request, use
+epics on one integration line. Size tasks by the rule in the orchestrator's
+task-graph contract: one observable outcome per task, split only for a
+written reason. For an explicit estimate, capacity or deadline request, use
 `cf-estimate`. For a durable repository guide, `cf-docs-portal` owns the
 opt-in lifecycle; Markdown stays authoritative.
 
@@ -175,11 +158,8 @@ waive the clarity, safety, review or protected-branch conditions.
    into the task branch and resolves conflicts there. Each task still
    completes its producer verification and cross-lineage review before it
    joins a batch.
-3. **Land in batches.** When a line lands, the primary puts every PR
-   reviewed and ready at that moment on one candidate in dependency order; a
-   PR that becomes ready later joins the next candidate, never held behind
-   another PR's landing or hosted run. Each line has one candidate at a time,
-   and lines land in parallel. It inspects each landing merge (a clean
+3. **Land in batches.** The primary assembles reviewed heads into a small
+   batch candidate in dependency order, inspects each landing merge (a clean
    merge, its tree equal to the re-merge of its parents, does not reopen
    unit review and carries it as `codeflow ci` binds it; a hand-resolved
    product hunk is that task's own work and returns it to a whole-unit
@@ -187,17 +167,11 @@ waive the clarity, safety, review or protected-branch conditions.
    candidate, and that look is not a unit review), and runs one full gate on
    that exact candidate. It lands through one of two
    sanctioned modes: **Local**, `codeflow integrate <candidate> --into
-   integration/<…>` on a candidate cut from the current line tip (one per line at a time,
-   runs the non-selective full gate, keeps the tested tip); or **PR** into the
-   integration branch, merged by the primary once the candidate's
-   `codeflow test --mode full --all` gate is complete and green and the PR's
-   required checks pass. The PR cites the gate run by its id and
-   revision from its durable home. Local mode rebases by default; `--merge`
-   runs from a linked worktree and gates a no-fast-forward merge commit that
-   keeps the reviewed head and advances only the local line. Both modes execute
-   every target and refuse failures, skips and incomplete gates. A repository
-   with no targets retains the loud warning that the merge is not test-verified
-   and may land. Neither variant pushes.
+   integration/<…>` on a candidate cut from the current line tip (serialized,
+   runs the full gate, keeps the tested tip); or **PR** into the integration
+   branch, merged by the primary once the candidate's full gate is green and
+   the PR's required checks pass. The PR cites the gate run by its id and
+   revision from its durable home.
 4. **A red batch is diagnosed first.** Drop a member only when evidence
    attributes the failure to it; it and its dependents leave the batch, the
    fix goes in that task's PR, and the rest is regated. A shared runner or
@@ -208,18 +182,8 @@ waive the clarity, safety, review or protected-branch conditions.
 6. **Finish once.** After the last batch lands, prove the epic once on the
    integration branch (the full gate over everything, `validate --docs`, the
    capability, doc and epic-record updates), close the epic, and raise
-   **one** PR `integration -> main`. Where the project adopted the
-   `cf-estimate` time-box profile, the epic close on the line also runs
-   `codeflow estimate outcomes --epic <id>` at the line tip, commits the
-   result as the epic's outcome record
-   (`<estimate root>/outcomes/<epic id>.md`) and closes the epic's Estimate
-   section with the comparison, so the record reaches `main` in that PR
-   before the line ref is deleted. The human reviews and merges; cleanup
-   follows the worktree rules' "Cleanup" section, merge proof first. That
-   PR's `codeflow ci` judges each task of the line, and of a verified epic
-   line that joined it, at the task's landing on its line, so a task
-   reopened and re-completed in its own PR passes as it did there. An
-   early checkpoint PR from the line gets the same judgment.
+   **one** PR `integration -> main`. The human reviews and merges; cleanup
+   follows the worktree rules' "Cleanup" section, merge proof first.
 
 Boundaries are unchanged: `main` and every protected branch stay
 human-merge-only. The integration branch is not a backdoor: its content
