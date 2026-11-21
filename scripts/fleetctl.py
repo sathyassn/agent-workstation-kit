@@ -66,13 +66,15 @@ SECTION_KEYS = {
     "collaboration": {"atlassian_site", "atlassian_identity", "atlassian_principal", "atlassian_mcp_auth"},
     "model_auth": {"codex", "claude", "grok"},
     "security": {"disk_encryption_required", "secure_boot_required", "remote_scope", "endpoint_management"},
-    "resources": {"policy", "os_memory_reserve_gib", "os_cpu_reserve_threads"},
+    "resources": {"policy", "os_cpu_reserve_threads"},
     "backup": {"target", "retention_days"},
     "maintenance": {"timezone", "update_window", "owner"},
 }
 OPTIONAL_KEYS = {
     "tooling": {"apt_packages", "brew_formulae", "brew_casks", "mise_version", "mise_sha256"},
     "accounts": {"macos_provisioning"},
+    # os_memory_reserve_gib is deprecated: still accepted, no longer used.
+    "resources": {"os_memory_reserve_percent", "os_memory_reserve_gib"},
 }
 for _section, _keys in OPTIONAL_KEYS.items():
     SECTION_KEYS[_section] |= _keys
@@ -436,7 +438,9 @@ def validate_profile(profile: dict[str, Any], *, ready: bool) -> list[Issue]:
         issues.append(Issue("security.endpoint_management", "unsupported selection"))
     if resources["policy"] != "measured-balanced":
         issues.append(Issue("resources.policy", "must be measured-balanced"))
-    for key, lower, upper in (("os_memory_reserve_gib", 4, 32), ("os_cpu_reserve_threads", 1, 8)):
+    for key, lower, upper in (("os_memory_reserve_percent", 5, 50), ("os_memory_reserve_gib", 4, 32), ("os_cpu_reserve_threads", 1, 8)):
+        if key not in resources:
+            continue
         value = resources[key]
         if type(value) is not int or not lower <= value <= upper:
             issues.append(Issue(f"resources.{key}", f"must be an integer from {lower} through {upper}"))
@@ -554,7 +558,7 @@ def phase_for(
     if name == "resources":
         if machine["platform"] == "macos":
             return Phase(name, None, True, "Measure and apply macOS controls through the documented managed workflow.")
-        return Phase(name, (str(ROOT / "scripts/apply-resource-policy-linux.sh"), "--agent", accounts["agent"], "--memory-reserve-gib", str(profile["resources"]["os_memory_reserve_gib"]), *suffix), True, "Apply only after observation and load testing; audit cgroup placement after reboot.")
+        return Phase(name, (str(ROOT / "scripts/apply-resource-policy-linux.sh"), "--agent", accounts["agent"], "--memory-reserve-percent", str(profile["resources"].get("os_memory_reserve_percent", 10)), *suffix), True, "Apply only after observation and load testing; audit cgroup placement after reboot.")
     if name == "audit":
         return Phase(name, (str(ROOT / "scripts/validate-host.sh"), accounts["agent"], str(remote["nomachine_port"])), True, "Compare declared accounts and live security state.")
     raise ValueError(f"unknown phase: {name}")
@@ -794,7 +798,7 @@ schema_version = {SCHEMA_VERSION}\nprofile = {toml_string(args.context)}\nstate 
 [collaboration]\natlassian_site = "ask"\natlassian_identity = "ask"\natlassian_principal = "ask"\natlassian_mcp_auth = "ask"\n\n\
 [model_auth]\ncodex = "api-workload"\nclaude = "api-workload"\ngrok = "api-workload"\n\n\
 [security]\ndisk_encryption_required = true\nsecure_boot_required = true\nremote_scope = "tailscale-only"\nendpoint_management = {toml_string(endpoint)}\n\n\
-[resources]\npolicy = "measured-balanced"\nos_memory_reserve_gib = 8\nos_cpu_reserve_threads = 2\n\n\
+[resources]\npolicy = "measured-balanced"\nos_memory_reserve_percent = 10\nos_cpu_reserve_threads = 2\n\n\
 [backup]\ntarget = "ask"\nretention_days = 30\n\n\
 [maintenance]\ntimezone = "America/Toronto"\nupdate_window = "ask"\nowner = "ask"\n'''
 
