@@ -14,22 +14,24 @@ Tasks are listed once their epic is planned; the P1 spec PR adds P1's.
 | One source of truth, generated code (2a, 15) | EPC-001 | TSK-005 | staleness and graph checks |
 | First install with system tools only (3, 9) | EPC-001 | TSK-006 | shell tests with a fake download |
 | Public-safety scan (12) | EPC-002 | TSK-007, TSK-008 | scanner tests |
-| One apply path, staged binary, containment, recovery (3, 5) | EPC-003 | P1 spec PR | fault-injection tests |
-| Agent interface and output modes (4, 2b) | EPC-003, EPC-004 | P1 spec PR | golden and snapshot tests |
-| Transaction layer, baseline, revert, retention (5) | EPC-005 | P1 spec PR | fixture revert with the match digest |
+| Contracts published before code (15) | EPC-003 | TSK-023 | contract tests and schema fixtures |
+| One apply path, staged binary, containment, recovery (3, 5) | EPC-003 | TSK-013, TSK-024 | fault-injection and concurrency tests |
+| Frozen-code fixes (3) | EPC-003 | TSK-010 | regression tests |
+| Agent interface and output modes (4, 2b) | EPC-003, EPC-004 | TSK-009, TSK-012, TSK-014 to TSK-016 | golden and snapshot tests |
+| Transaction layer, baseline, revert, retention (5) | EPC-005 | TSK-018 to TSK-022 | fixture revert with the match digest |
 | Units, standalone and composed (2a) | EPC-006 to EPC-022 | per epic | standalone apply and revert per unit |
 | Revert everywhere (2c) | every unit epic | per epic | per-unit revert tests; EPC-030 |
-| Presets, form factor, topology, platforms (2g) | EPC-003, EPC-014, EPC-023 | P1 spec PR | combination tests; EPC-030 |
-| No lock-in (2f) | EPC-005, EPC-022 | per epic | marked-block and drift tests |
+| Presets, form factor, topology, platforms (2g) | EPC-003, EPC-014, EPC-023 | TSK-012 | combination tests; EPC-030 |
+| No lock-in (2f) | EPC-005, EPC-022 | TSK-021, TSK-025 | marked-block, drift and tombstone tests |
 | Desired state, tools and MCP (2e) | EPC-011, EPC-012, EPC-025 | per epic | verb and interview parity tests |
 | Gates and hand-overs (6) | EPC-023 | per epic | gate probe tests |
 | Dead-man timer (6) | EPC-015 | per epic | fault-injection tests per transition |
 | Lockout and convergence (7) | EPC-024 | per epic | end-to-end stress run |
 | Resources (7a) | EPC-010 | per epic | admission tests |
-| Schema, interview, input defaults (8) | EPC-003, EPC-025 | P1 spec PR | parity and default tests |
+| Schema, interview, input defaults (8) | EPC-003, EPC-004, EPC-025 | TSK-011, TSK-017 | parity and default tests |
 | Registry, bump flow, references, staging (9) | EPC-026, EPC-027 | per epic | CI rules; link-health job |
 | Agent settings and MCP (10) | EPC-009, EPC-012 | per epic | per-home tests |
-| Browser tunnel (10a) | EPC-006 | tunnel spec | threat tests per item |
+| Browser tunnel (10a) | EPC-006 | TSK-026 to TSK-029 (SPC-002) | threat and parity tests per item |
 | Fleet commands (2b, 10b) | EPC-018 | per epic | binding tests |
 | VPN unit (10c) | EPC-007 | per epic | address and status tests |
 | Organisation units, typed operations (2d) | EPC-029, after 1.0.0 | per epic | sample unit through the engine |
