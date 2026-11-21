@@ -160,7 +160,7 @@ What the code does today, and the problem each fact causes:
 | S2 `packages` | dpkg repair, apt packages, vendor packages, hardware drivers, mesh VPN client; install guard on SSH and remote desktop | Homebrew formulae and casks (package owner); mesh VPN client from the vendor `.pkg` (root sub-phase) | root, or package owner for Homebrew | yes (ledger) |
 | S3 `identity` | hostname, `/etc/hosts` block, accounts and groups | computer names; accounts created with a disabled password | root | yes (homes archived, from T4) |
 | G1 `access` | passwords, SSH keys, mesh VPN up, a second tailnet device holding a named user's key | passwords, secure tokens, mesh VPN up (system extension approved), Remote Login and Screen Sharing enabled for named users only, a second tailnet device | human; conductor polls the non-root probes, root check once at the end | n/a |
-| S4 `services` | agentctl (atomic sudoers), workloads | none | root | yes |
+| S4 `services` | the `agentctl` helper and its sudoers rule (atomic), workloads | none | root | yes |
 | S5 `remote` | SSH and firewall hardening, alone, under the dead-man timer; releases the SSH and remote-desktop install guards | SSH limited to named users, Application Firewall checked, under a launchd dead-man | root | yes, under the timer |
 | G2 `session` | agent desktop or console session; the conductor's CLI signed in there | same, plus privacy prompts; FileVault verified | human; agent-account probe | n/a |
 | S6 `agent` | shell, mise tools, agent settings | same, plus workloads (OrbStack needs the agent's GUI session) | agent account | yes |
@@ -229,7 +229,7 @@ units and keep their names.
   in order. No stage holds unit logic of its own, and no unit relies on
   running inside a stage.
 - **Declared once.** Each unit declares:
-  - its inputs (schema fields, from T5);
+  - its inputs (schema fields, from T1);
   - its dependencies: other units, capabilities and OS support;
   - its privilege: user or root scope;
   - the paths and state it owns (`--describe`).
@@ -313,9 +313,9 @@ This is a user decision (2026-11-21).
   | S1 | baseline |
   | S2 | packages, runtimes, agent CLIs; the mesh VPN client is installed here |
   | S3 | accounts, git identity, secrets hand-overs |
-  | S4 | containers and workloads |
+  | S4 | containers and workloads (Linux; macOS workloads run in S6) |
   | S5 | SSH, firewall, remote desktop, mesh VPN settings |
-  | S6 | shell, agent settings and sandbox, MCP, browser tunnel hook |
+  | S6 | shell, agent settings and sandbox, MCP, browser tunnel hook; macOS workloads |
   | S7 | resource limits, snapshots |
   | S8 | doctor and the stable point |
   | Any stage, optional | corporate VPN, workspace and repositories |
@@ -345,11 +345,32 @@ This is a user decision (2026-11-21).
   lock. Each tool's environment is built from an allowlist, never inherited
   whole.
 - **Staged binary check.** As root, `wskit` refuses to run (exit 5) unless
-  its own resolved path is `/opt/agent-workstation-kit/current/bin/wskit`
-  under `releases/` (from T6), or the fixed staged path before T6, with the
-  whole chain root-owned and not writable by others. This replaces
-  `path_safety.require_staged_root()` and the root block of `common.sh` for
-  Go code.
+  its own resolved path is one of these, with the whole parent chain
+  root-owned and not writable by group or others:
+  - from T1 to T5, the fixed staged path
+    `/opt/agent-workstation-kit/bin/wskit`;
+  - from T6, `/opt/agent-workstation-kit/current/bin/wskit`, where
+    `current` resolves under `releases/`;
+  - a dead-man restore copy in a root-only backup folder (section 6), run
+    only by the timer unit after the unit itself has checked its digest.
+
+  This replaces `path_safety.require_staged_root()` and the root block of
+  `common.sh` for Go code.
+- **Staging from T1 to T5.** A documented root step stages a release
+  binary: it copies the binary into a root-owned temporary folder, checks it
+  there with the system checksum tool (`sha256sum` on Linux, `shasum -a 256`
+  on macOS) against the checksum published with the release, and only then
+  installs it at the fixed staged path. The binary never checks itself.
+- **Two apply paths during the move.** Until a unit reaches parity, its
+  phase is applied by the frozen executor only. The PR that brings a unit to
+  parity makes the frozen executor refuse that phase, so each phase has one
+  owner at a time. `wskit` takes the same host lock and journal lock files
+  as the frozen executor, so the two can never apply at once.
+- **The sudoers helper stays narrow.** Today the agent account's sudoers
+  rule names the narrow `agentctl` helper. `wskit` takes over agentctl's
+  setup and management, but the root actions granted to the agent account
+  stay in a separate minimal binary, `cmd/agentctl`, with exact subcommands
+  and arguments. The sudoers rule never names `wskit`.
 - **macOS host lock.** The run folder moves under a root-owned 0755 parent
   (section 11). The engine creates that parent,
   `/Library/Application Support/agent-workstation-kit/`, and its `run/`
@@ -396,8 +417,9 @@ This is a user decision (2026-11-21).
 - **`status --json`** returns every phase's recorded status, run ID, receipt
   time and failure record (from T2). It reads the public export plus the
   caller's own records.
-- **`explain PHASE --json`** returns what a phase does, its owner, what it
-  may touch (from `--describe`, T2), and whether that is reversible.
+- **`explain UNIT --json`** returns what a unit does, its owner, what it
+  may touch (from `Describe`, T2), and whether that is reversible.
+  `explain FIELD --json` does the same for a schema field.
 - No JSON output carries a secret. Each schema has a version, golden-file
   tests and a checked example in the docs.
 - **Exit codes**, the same for every action:
@@ -424,7 +446,8 @@ This is a user decision (2026-11-21).
   - A private fleet's `AGENTS.md` gets the same recipe from the template
     (section 10b).
 - **Approvals.** Root approvals are enforced by `sudo` and the typed command.
-  A non-root `--approve-plan` is procedural. The conductor could pass it
+  A non-root plan approval (the approval phrase, today `--approve-plan`) is
+  procedural. The conductor could pass it
   itself, so the recipe forbids that, and the receipts record who ran the
   step. Config approval depends on where the profile lives:
   - **With a private fleet,** it is enforced by the fleet's branch
@@ -526,8 +549,11 @@ preflight -> describe -> backup -> intent=applying -> apply (logged) -> verify -
     apt and dpkg history (`/var/log/apt/history.log`, whose requester is
     `unattended-upgrades` for security updates) and the kit's ledger, which
     records every package change the kit makes, including upgrades of
-    baseline packages. A difference whose origin cannot be proved fails the
-    match. Every left-out difference is still listed in the revert report
+    baseline packages. On macOS, Homebrew keeps no record of who asked for
+    a change, so a formula change that the ledger does not record has an
+    unknown origin. A difference whose origin cannot be proved fails the
+    match; the human may accept it in the revert report, which records that
+    acceptance. Every left-out difference is still listed in the revert report
     with its origin. Any other difference fails the match. The full state
     digest is reported too, for information.
   - It is never overwritten.
@@ -658,10 +684,13 @@ preflight -> describe -> backup -> intent=applying -> apply (logged) -> verify -
     the timer is armed.
     - **T3 to T5,** before versioned releases exist: arming copies the
       staged `wskit` binary into the step's root-only backup folder, with
-      its digest in the manifest. The timer runs that copy, which refuses to
-      start if its digest differs. A restage while armed cannot change it.
+      its digest in the manifest. The timer unit checks that digest with the
+      system checksum tool before it runs the copy (on Linux an
+      `ExecStartPre` step; on macOS the LaunchDaemon's command checks, then
+      runs it). A restage while armed cannot change it.
     - **From T6,** the restore names the exact `releases/<version>`, not
-      `current`, so a release swap cannot change it either.
+      `current`, and the unit checks the binary's digest the same way.
+      `wskit stage` refuses to prune a release that an armed timer names.
   - **macOS.** A root LaunchDaemon with `RunAtLoad` and a deadline file does
     the same.
   - **Order.** Arm, then apply, then verify. The scope then ends with the
@@ -674,7 +703,7 @@ preflight -> describe -> backup -> intent=applying -> apply (logged) -> verify -
     from a session that has `sshd` as a process ancestor, never `tailscaled`,
     with a login session ID different from the one that armed it.
     - T3 moves the ancestor check from bash (`remote_login_ancestor_present`)
-      into shared Python for both OSes.
+      into Go for both OSes.
     - Disarm needs the second tailnet device from G1.
   - **Accounts.** A revert removes an account only after access is proven
     with an account that stays.
@@ -688,8 +717,8 @@ preflight -> describe -> backup -> intent=applying -> apply (logged) -> verify -
   3. fsync;
   4. rename;
   5. run the full `visudo -c` or `sshd -t`, restoring on failure.
-- **Managed blocks instead of refusal.** Managed files use marked blocks, rewritten with
-  a backup. Content outside the markers is kept.
+- **Managed blocks instead of refusal.** Managed files use marked blocks,
+  rewritten with a backup. Content outside the markers is kept.
 - **dpkg repair first** when dpkg reports a half-configured package.
 - **Intent before masks.** The SSH guard record is written as pending before
   `systemctl mask`.
@@ -726,7 +755,7 @@ hours, while a guard that watched load and available memory stayed green.
   `MemoryHigh` and `MemoryMax`. On macOS, priority and process limits,
   recorded in the capability matrix as a gap.
 - **Early out-of-memory handling:** `systemd-oomd` or an equivalent.
-- **Admit on pressure, never on fixed numbers.** Admission reads
+- **Admission by pressure.** Admission reads
   pressure-stall data on Linux (PSI) and the memory-pressure level on macOS.
   Swap use blocks only together with pressure, because cold pages in swap
   are harmless.
@@ -757,8 +786,9 @@ hours, while a guard that watched load and available memory stayed green.
   - `[agent_settings]` is the agent-settings component's table;
   - `[x-org]` holds fleet keys. The kit checks their shape, and a fleet may
     supply a schema fragment for them (section 10b).
-  - A new `scripts/migrate-profile.py` previews and writes a schema 4 file and
-    never edits in place. `check-profile-migration.py` stays a checker.
+  - `wskit migrate PROFILE` previews and writes a schema 4 file and never
+    edits in place. The frozen `check-profile-migration.py` stays a checker
+    until it is deleted.
 - **Shell prompt.** A schema field for the prompt, with what, why, options,
   default and undo. Options: the kit default prompt; a prompt from a pinned
   plugin or theme loaded through Antidote (for example an Oh My Zsh theme
@@ -880,10 +910,12 @@ hours, while a guard that watched load and available memory stayed green.
     their checksums against the registry, makes the tree root-owned, swaps
     `current` atomically and keeps the last N releases.
   - **The fleet checkout** is staged the same way.
-  - **The first staging** has no staged copy to run from. The human runs the
-    downloaded binary, verified by the one-liner, as
-    `sudo ./wskit stage` once from a root-owned temporary folder; it stages
-    itself and exits.
+  - **The first staging** has no staged copy to run from. The root step
+    copies the downloaded binary into a root-owned temporary folder, checks
+    its checksum and signature there with system tools (the checksum tool
+    and `ssh-keygen -Y verify`) against the values embedded in the one-liner
+    and the docs, and only then runs `wskit stage` from that copy. A file
+    the setup user could still change is never run as root.
   - **The command path** becomes
     `sudo /opt/agent-workstation-kit/current/bin/wskit ...`. The binary's
     root check (section 3) accepts `current` only when it resolves under
@@ -893,9 +925,12 @@ hours, while a guard that watched load and available memory stayed green.
     root, the pinned `wskit` binary for the OS and CPU, verifies its
     SHA-256, and runs it to install one agent CLI from its vendor's verified
     source.
-  - Its trust anchor is the checksums embedded in the one-liner text and in
-    the docs. Release signatures, verified with `ssh-keygen -Y verify`,
-    which ships with both OSes, are added later.
+  - Its trust anchor is the release public key and the checksums, embedded
+    in the one-liner text and in the docs. From T6 every release is signed,
+    and the one-liner verifies both the checksum and the signature
+    (`ssh-keygen -Y verify`, which ships with both OSes). From P0 to T5,
+    releases carry checksums only, and staging is the documented root step
+    in section 3.
   - It prints the sign-in step, then hands over to the conductor.
 - **Filesystem snapshots (T6).** Btrfs, ZFS or LVM-thin snapshots are taken at
   baseline and at each stable point where available.
@@ -1102,9 +1137,8 @@ client hid this, because it routes everything.
   problems only); `--verbose` lists each destination by kind and name.
 - **Discovery aid.** A read-only audit lists cloud resources with
   office-only allowlists, so the destination list can be checked for gaps.
-- **Prompts** read from the controlling terminal with separate read and
-  write handles (opening `/dev/tty` in combined read-write text mode fails in
-  Python), and are tested under a pseudo-terminal.
+- **Prompts** read from the controlling terminal, never from standard
+  input, and are tested under a pseudo-terminal.
 - **Uninstall** also removes the runtime folder and timers. Its host-touching
   steps are guarded, so a test-root run never acts on the real host.
 
@@ -1112,7 +1146,7 @@ client hid this, because it routes everything.
 
 | What | Linux | macOS | Mode |
 |---|---|---|---|
-| Kit releases | `/opt/agent-workstation-kit/releases/<rev>`, `current` | same | root, 0755, not writable by others |
+| Kit releases | `/opt/agent-workstation-kit/bin/wskit` (T1 to T5); `/opt/agent-workstation-kit/releases/<version>`, `current` (from T6) | same | root, 0755, not writable by others |
 | Kit state top folder | `/var/lib/agent-workstation-kit/` | `/Library/Application Support/agent-workstation-kit/` | root 0755, holding only the folders below |
 | Root run folder and host lock | `/run/agent-workstation-kit/` | `/Library/Application Support/agent-workstation-kit/run/` | root 0700 |
 | Root journals, receipts, the host's copy of the machine record | `/var/lib/agent-workstation-kit/state/` | `/Library/Application Support/agent-workstation-kit/state/` | root 0700 |
@@ -1122,7 +1156,8 @@ client hid this, because it routes everything.
 | Account state, journal, backups, logs | `${XDG_STATE_HOME:-~/.local/state}/agent-workstation-kit/` | same | 0700, files 0600 |
 | Account run folder | `$XDG_RUNTIME_DIR/agent-workstation-kit/`, or the account state folder's `run/` when that variable is unset | `${XDG_STATE_HOME:-~/.local/state}/agent-workstation-kit/run/` | 0700 |
 
-- Each root folder's parent chain passes the existing `secure_root_path` rule.
+- Each root folder's parent chain is root-owned, with no symlinks, and no
+  folder in it is writable by group or others.
   The kit's own folders are created by the first root scope, not only by S1:
   the macOS top folder and run folder from T1 (section 3), the rest from T2.
 - `/var/run` on macOS is never used, because it is group-writable.
@@ -1191,8 +1226,9 @@ Settled:
 3. **macOS workloads** stay in S6. OrbStack is a per-user GUI app.
 4. **Already-managed hosts** get an `as-found` baseline, captured by the root
    `baseline` scope before any other scope (section 5).
-5. **Run token:** the inherited lock descriptor plus a validated run ID
-   (section 3), for root and non-root alike.
+5. **Admission to apply:** in `wskit`, a unit's `Apply` is reached only
+   through the engine (section 3). The frozen executor keeps its current
+   checks until each phase moves.
 6. **The platform list** (section 9): Ubuntu 24.04 and 26.04 LTS, and
    macOS 27 and 26 on Apple silicon, with no best-effort tier.
 
@@ -1206,7 +1242,7 @@ kind enforces the pin. It is proposed, not settled; the operator decides.
 |---|---|---|
 | `exact` | downloads, vendor `.pkg` files (except apps that update themselves), mise tools, third-party apt repositories that keep old versions (such as Tailscale's) | installed at exactly the pin; apt pins and `apt-mark hold` where they apply |
 | `os-managed` | the Ubuntu archive, Homebrew formulae | the registry pin is installed exactly (`apt-get install PKG=VERSION`) while the source still serves it. When it no longer does, the install stops, and the version the source serves becomes the new pin only through `wskit registry bump`. A later change on the host, including an OS security update, is flagged as drift with its origin and recorded in the machine record |
-| `self-updating` | casks marked `auto_updates`, vendor `.deb` files that add their own apt repository | the registry pin is what is installed; the app's own later updates are flagged as drift with their origin, recorded in the machine record, and re-pinned through `wskit registry bump` |
+| `self-updating` | casks marked `auto_updates`, vendor `.deb` files that add their own apt repository | the registry pin is installed while the source still serves it; when it does not, the install stops until `wskit registry bump` moves the pin. The app's own later updates are flagged as drift with their origin, recorded in the machine record, and re-pinned through `wskit registry bump` |
 
 For `os-managed` tools, the OS security channel stays on
 (`unattended-upgrades`), as in ADR 0004. Its updates are then flagged and
@@ -1223,7 +1259,7 @@ security updates (which A1 would then flag and re-pin)?
 
 Where this ADR differs from the consolidated design on issue #5, and why:
 
-| Item | Consolidated design | This ADR | Why |
+| Item | Earlier design (issue #5, or the implementation comment where named) | This ADR | Why |
 |---|---|---|---|
 | Recovery gate | Recovery attested at apply time (T4) | Gate G0, once, before any change (T3) | One attestation, given before the steps that need it, instead of one per scope |
 | Audit stage | One S8 | S8a (root) and S8b (agent account) | Root and agent checks run as different accounts and keep separate records; root tags `stable` after checking both |
@@ -1231,7 +1267,6 @@ Where this ADR differs from the consolidated design on issue #5, and why:
 | Browser sign-in tunnel | After T8, then right after T2 | The first unit, right after T1 and before T2; onto T2's layer when T2 lands | Principle 11 makes it a unit that needs no stage, it is needed day to day, and it needs T1's CLI skeleton (user decision, 2026-11-21) |
 | Implementation | Python and shell | Go, one `wskit` binary; Python and shell frozen and deleted at parity; the schema moves to T1 | User decision, 2026-11-21 (section 2b) |
 | Units per stage | The implementation decision lists the firewall in S4, the mesh VPN in S5, and resources in S6 and S7 | Firewall with SSH in S5, mesh VPN client installed in S2 and set up in S5, resource limits in S7 only | The dead-man timer guards SSH and firewall changes together; the client is a package; one owner for resources |
-| Run token | Proposed for separate phase scripts | Not needed in Go: units are reached only through the engine (section 3); the frozen executor keeps its checks | One binary has no separate phase processes to admit |
 | Principle 7 | `latest` not allowed | `latest` and ranges refused for every source; enforcement per source kind is proposed amendment A1 | Some sources keep no old versions |
 
 ## Consequences
@@ -1244,7 +1279,7 @@ Where this ADR differs from the consolidated design on issue #5, and why:
 - macOS root scopes work again (T1).
 - More state on disk (backups, logs, baseline). The doctor reports its size,
   and backups older than the stable point can be pruned by an approved step.
-- Phase scripts gain `--describe` and lose prompts. macOS account passwords
+- Units have `Describe` and never prompt. macOS account passwords
   move to G1.
 - Existing receipts are invalidated once, by T1; the next run re-records
   them.
