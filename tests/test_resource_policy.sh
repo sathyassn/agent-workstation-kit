@@ -19,9 +19,14 @@ fail() {
 
 stubs="$work/stubs"
 mkdir -p "$stubs"
-printf '%s\n' '#!/bin/sh' 'if [ "${1:-}" = "-s" ]; then echo Linux; else /usr/bin/uname "$@"; fi' >"$stubs/uname"
-printf '%s\n' '#!/bin/sh' \
-  'case "${1:-}" in -u) [ "${2:-}" = agent-01 ] && echo 1001 || /usr/bin/id -u ;; agent-01) exit 0 ;; *) exit 1 ;; esac' >"$stubs/id"
+cat >"$stubs/uname" <<'EOF'
+#!/bin/sh
+if [ "${1:-}" = "-s" ]; then echo Linux; else /usr/bin/uname "$@"; fi
+EOF
+cat >"$stubs/id" <<'EOF'
+#!/bin/sh
+case "${1:-}" in -u) [ "${2:-}" = agent-01 ] && echo 1001 || /usr/bin/id -u ;; agent-01) exit 0 ;; *) exit 1 ;; esac
+EOF
 # systemctl: answers the detection queries and records state-changing calls.
 cat >"$stubs/systemctl" <<'EOF'
 #!/bin/sh
@@ -29,7 +34,12 @@ printf '%s\n' "$*" >>"$STUB_STATE/systemctl.log"
 case "$*" in
   --version) echo "systemd ${STUB_SYSTEMD_VERSION:-255} (255.4-1ubuntu8)" ;;
   "show --property=DelegateControllers --value user@1001.service") echo "${STUB_DELEGATE-cpu memory pids}" ;;
-  "is-enabled systemd-oomd.service") [ -f "$STUB_STATE/oomd-enabled" ] && echo enabled || echo disabled ;;
+  "is-enabled systemd-oomd.service")
+    if [ -n "${STUB_OOMD_STATE:-}" ]; then echo "$STUB_OOMD_STATE"
+    elif [ -f "$STUB_STATE/oomd-enabled" ]; then echo enabled; else echo disabled; fi ;;
+  "cat -- user@1001.service -.slice")
+    printf '%s\n' '# /usr/lib/systemd/system/user@.service.d/10-oomd-user-service-defaults.conf' \
+      '[Service]' 'ManagedOOMMemoryPressure=kill' 'ManagedOOMMemoryPressureLimit=50%' ;;
   "enable --now systemd-oomd.service") touch "$STUB_STATE/oomd-enabled" ;;
   "disable --now systemd-oomd.service") rm -f "$STUB_STATE/oomd-enabled" ;;
   "is-active --quiet user@1001.service") exit 0 ;;
@@ -47,7 +57,8 @@ EOF
 chmod 0755 "$stubs"/*
 
 # make_host DIR MEM_GIB: a fixture host with disk swap, tmpfs /tmp from the
-# packaged tmp.mount, oomd installed but disabled, and an old user-slice policy.
+# packaged tmp.mount, oomd installed but disabled with Ubuntu-style vendor
+# drop-ins, and an old user-slice policy.
 make_host() {
   local root=$1 mem_gib=$2
   mkdir -p "$root"/{proc/sys/vm,run/systemd/system,sys/fs/cgroup,etc/sysctl.d,etc/systemd/system/user-1001.slice.d,usr/lib/systemd/system,var/lib/systemd/linger}
@@ -60,6 +71,10 @@ make_host() {
   printf '[Mount]\nWhat=tmpfs\nWhere=/tmp\nType=tmpfs\n' >"$root/usr/lib/systemd/system/tmp.mount"
   printf '#!/bin/sh\n' >"$root/usr/lib/systemd/systemd-oomd"
   chmod 0755 "$root/usr/lib/systemd/systemd-oomd"
+  mkdir -p "$root/usr/lib/systemd/system/user@.service.d" "$root/usr/lib/systemd/system/-.slice.d"
+  printf '[Service]\nManagedOOMMemoryPressure=kill\nManagedOOMMemoryPressureLimit=50%%\n' \
+    >"$root/usr/lib/systemd/system/user@.service.d/10-oomd-user-service-defaults.conf"
+  printf '[Slice]\nManagedOOMSwap=kill\n' >"$root/usr/lib/systemd/system/-.slice.d/10-oomd-root-slice-defaults.conf"
   printf '[Slice]\nMemoryHigh=1K\n' >"$root/etc/systemd/system/user-1001.slice.d/50-agent-workstation.conf"
   printf 'vm.swappiness = 30\n' >"$root/etc/sysctl.d/60-agent-workstation-swap.conf"
   chmod 0640 "$root/etc/sysctl.d/60-agent-workstation-swap.conf"
@@ -73,7 +88,7 @@ snapshot() {
       if [[ -L "$path" ]]; then
         printf 'L %s -> %s\n' "$path" "$(readlink "$path")"
       elif [[ -f "$path" ]]; then
-        printf 'F %s %s %s\n' "$path" "$(ls -l "$path" | cut -c1-10)" "$(cksum <"$path")"
+        printf 'F %s %s %s\n' "$path" "$(stat -c %a "$path" 2>/dev/null || stat -f %Lp "$path")" "$(cksum <"$path")"
       else
         printf 'D %s\n' "$path"
       fi
@@ -81,11 +96,12 @@ snapshot() {
   )
 }
 
-# policy DIR ARGS...: run the script against the fixture DIR.
+# policy DIR ARGS...: run the script against the fixture DIR. EXTRA_STUBS
+# names a directory of stubs that take precedence, to make a step fail.
 policy() {
   local root=$1
   shift
-  STUB_STATE="$root.state" AWK_RESOURCE_TEST_ROOT="$root" PATH="$stubs:$PATH" \
+  STUB_STATE="$root.state" AWK_RESOURCE_TEST_ROOT="$root" PATH="${EXTRA_STUBS:+$EXTRA_STUBS:}$stubs:$PATH" \
     "$BASH" "$script" --agent agent-01 "$@"
 }
 
@@ -110,6 +126,10 @@ for expected in 'Would create /etc/systemd/user/agent-work.slice' \
   'Would remove /etc/systemd/system/user-1001.slice.d/50-agent-workstation.conf' \
   'Would mask tmp.mount' 'Would set vm.swappiness from 60 to 10' \
   'Would run loginctl enable-linger agent-01' 'Would run systemctl enable --now systemd-oomd.service' \
+  'Would create /etc/systemd/system/user@.service.d/10-oomd-user-service-defaults.conf' \
+  'Would create /etc/systemd/system/-.slice.d/10-oomd-root-slice-defaults.conf' \
+  'oomd scope:         agent-work.slice only; overrides 2 vendor default drop-in(s)' \
+  'ManagedOOMMemoryPressureLimit=50%' '(oomctl unavailable or systemd-oomd not running)' \
   'Preview only'; do
   grep -Fq "$expected" <<<"$preview" || fail "preview is missing: $expected"
 done
@@ -135,14 +155,20 @@ import sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 from phase_verification import agent_slice_text, resource_values
-profile = {"resources": {"os_memory_reserve_gib": 8}}
-command = ["apply-resource-policy-linux.sh", "--agent", "agent-01", "--memory-reserve-gib", "8"]
+profile = {"resources": {"os_memory_reserve_percent": 10}}
+command = ["apply-resource-policy-linux.sh", "--agent", "agent-01", "--memory-reserve-percent", "10"]
 expected = agent_slice_text("agent-01", resource_values(profile, int(sys.argv[3]), command), True)
 raise SystemExit(Path(sys.argv[2]).read_text() != expected)
 EOF
-[[ -L "$host/etc/systemd/system/tmp.mount" &&$(readlink "$host/etc/systemd/system/tmp.mount") == /dev/null ]] ||
+[[ -L "$host/etc/systemd/system/tmp.mount" && $(readlink "$host/etc/systemd/system/tmp.mount") == /dev/null ]] ||
   fail 'tmp.mount was not masked'
 [[ ! -e "$host/etc/systemd/system/user-1001.slice.d/50-agent-workstation.conf" ]] || fail 'old user-slice policy remains'
+for override in 'user@.service.d/10-oomd-user-service-defaults.conf' '-.slice.d/10-oomd-root-slice-defaults.conf'; do
+  grep -Fxq 'ManagedOOMMemoryPressure=auto' "$host/etc/systemd/system/$override" || fail "oomd default not overridden: $override"
+  grep -Fxq 'ManagedOOMSwap=auto' "$host/etc/systemd/system/$override" || fail "oomd swap default not overridden: $override"
+done
+grep -Fxq '[Service]' "$host/etc/systemd/system/user@.service.d/10-oomd-user-service-defaults.conf" || fail 'user@ override lacks [Service]'
+grep -Fxq '[Slice]' "$host/etc/systemd/system/-.slice.d/10-oomd-root-slice-defaults.conf" || fail 'root slice override lacks [Slice]'
 [[ $(cat "$host/proc/sys/vm/swappiness") == 10 ]] || fail 'swappiness was not set'
 [[ -f "$host/var/lib/systemd/linger/agent-01" ]] || fail 'linger was not enabled'
 [[ -f "$host.state/oomd-enabled" ]] || fail 'systemd-oomd was not enabled'
@@ -222,7 +248,8 @@ refuses() {
   grep -Fq "$pattern" <<<"$output" || fail "refusal $label printed: $output"
   [[ ! -e "$root/var/lib/agent-workstation-kit" ]] || fail "refusal $label wrote a receipt"
 }
-REFUSE_GIB=16 refuses small-ram 'leaves less than the 8 GiB reserve'
+refuses reserve 'leaves less than the 10% reserve' --memory-max-percent 95
+refuses reserve-gib 'replaced by --memory-reserve-percent' --memory-reserve-gib 8
 refuses high-over-max 'must be greater than' --memory-high-percent 80 --memory-max-percent 80
 STUB_SYSTEMD_VERSION=245 refuses old-systemd 'too old'
 cgroup_v1() { rm "$1/sys/fs/cgroup/cgroup.controllers"; }
@@ -242,5 +269,87 @@ if output=$(STUB_STATE="$work" PATH="$stubs:$PATH" "$BASH" "$script" --agent age
   fail 'expected a non-root apply without a fixture root to be refused'
 fi
 grep -Fq 'requires root' <<<"$output" || fail "non-root apply printed: $output"
+
+# 6. oomd states static, alias and enabled-runtime count as enabled.
+for state in static alias enabled-runtime; do
+  host=$(new_host "oomd-$state" 64)
+  output=$(STUB_OOMD_STATE=$state policy "$host")
+  if grep -Fq 'systemctl enable --now systemd-oomd.service' <<<"$output"; then
+    fail "oomd state $state was not treated as enabled"
+  fi
+done
+
+# 7. An interrupted apply never blocks revert, and revert restores the host.
+interrupt() {
+  local label=$1 command=$2 root before output
+  root=$(new_host "interrupt-$label" 64)
+  mkdir -p "$work/fail-$label"
+  printf '#!/bin/sh\nexit 1\n' >"$work/fail-$label/$command"
+  chmod 0755 "$work/fail-$label/$command"
+  before=$(snapshot "$root")
+  if output=$(EXTRA_STUBS="$work/fail-$label" policy "$root" --apply 2>&1); then
+    fail "expected apply to stop when $command fails"
+  fi
+  grep -Fq 'Apply stopped part way' <<<"$output" || fail "interrupted apply printed: $output"
+  policy "$root" --revert --apply >/dev/null || fail "revert after an interrupted $label apply failed"
+  [[ "$(snapshot "$root")" == "$before" ]] || {
+    diff <(printf '%s\n' "$before") <(snapshot "$root") >&2 || true
+    fail "revert after an interrupted $label apply did not restore the host"
+  }
+}
+# The mask step is recorded, then ln fails: the receipt lists a missing link.
+interrupt mask ln
+# lingering is recorded, then loginctl fails, after most files changed.
+interrupt linger loginctl
+
+# 8. Agent processes outside agent-work.slice are found; others are not.
+# make_proc DIR PID UID COMM CGROUP [ARGV...]
+make_proc() {
+  local dir="$1/$2" uid=$3 comm=$4 cgroup=$5
+  shift 5
+  mkdir -p "$dir"
+  printf 'Name:\t%s\nUid:\t%s\t%s\t%s\t%s\n' "$comm" "$uid" "$uid" "$uid" "$uid" >"$dir/status"
+  printf '%s\n' "$comm" >"$dir/comm"
+  printf '0::%s\n' "$cgroup" >"$dir/cgroup"
+  printf '%s\0' "${@:-$comm}" >"$dir/cmdline"
+}
+manager=/user.slice/user-1001.slice/user@1001.service
+proc="$work/proc-pass"
+make_proc "$proc" 101 1001 claude "$manager/agent.slice/agent-work.slice/run-r1.scope"
+make_proc "$proc" 102 1001 zsh "$manager/agent.slice/agent-work.slice/run-r2.scope"
+make_proc "$proc" 103 1001 nautilus "$manager/app.slice/app-nautilus.scope"
+make_proc "$proc" 104 1000 claude /user.slice/user-1000.slice/session-2.scope
+# Path is resolved from this test at runtime.
+# shellcheck disable=SC1091
+source "$repo_dir/scripts/lib/common.sh"
+[[ -z "$(agent_processes_outside_slice "$proc" 1001)" ]] || fail 'placement check failed a correctly placed host'
+cp -R "$proc" "$work/proc-fail"
+proc="$work/proc-fail"
+make_proc "$proc" 201 1001 node "$manager/app.slice/app-term.scope" node /opt/tools/codex exec
+make_proc "$proc" 202 1001 zsh "$manager/orca_ptys_orcad_123.slice/pty-1.scope"
+make_proc "$proc" 203 1001 grok "$manager/app.slice/app-term.scope"
+outside=$(agent_processes_outside_slice "$proc" 1001)
+for pid in 201 202 203; do
+  grep -q "^$pid " <<<"$outside" || fail "placement check missed PID $pid"
+done
+[[ $(wc -l <<<"$outside") -eq 3 ]] || fail "placement check flagged too much: $outside"
+# The phase verifier uses the same predicate and fails closed.
+python3 - "$repo_dir" "$work/proc-pass" "$work/proc-fail" <<'EOF' || fail 'phase verifier placement check'
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1] + "/scripts/lib")
+from phase_verification import agent_processes_outside_slice
+root = Path(sys.argv[1])
+assert agent_processes_outside_slice(root, 1001, sys.argv[2]) == []
+assert len(agent_processes_outside_slice(root, 1001, sys.argv[3])) == 3
+EOF
+
+# 9. The terminal wrapper runs the shell directly when the policy is absent.
+if [[ ! -e /etc/systemd/user/agent-work.slice ]]; then
+  [[ $(SHELL=/bin/echo "$repo_dir/scripts/agent-work-shell" hello) == '-l hello' ]] || fail 'agent-work-shell did not exec the shell'
+fi
+# shellcheck disable=SC2016 # the literal wrapper line, not an expansion
+grep -Fq 'exec systemd-run --user --scope --quiet --collect --slice=agent-work.slice -- "$shell" -l "$@"' \
+  "$repo_dir/scripts/agent-work-shell" || fail 'agent-work-shell lost its slice launch'
 
 printf 'Resource policy tests passed.\n'

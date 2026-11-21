@@ -22,7 +22,7 @@ Shares are percentages of total RAM, read at run time:
   --memory-high-percent N    MemoryHigh, the soft pressure threshold (default 70)
   --memory-max-percent N     MemoryMax, the hard ceiling (default 80)
   --swap-max-percent N       MemorySwapMax for agent work (default 10)
-  --memory-reserve-gib N     Refuse when the ceiling leaves less RAM than this (default 8)
+  --memory-reserve-percent N Refuse when the ceiling leaves less RAM than this share (default 10)
   --oomd-pressure-percent N  ManagedOOMMemoryPressureLimit for the slice (default 60)
   --swappiness auto|keep|N   auto: 100 with zram, 10 with disk swap only (default auto)
   --zram-percent N           zram size as a share of RAM; 0 leaves zram alone (default 0)
@@ -32,7 +32,7 @@ EOF
 }
 
 agent_account=''
-memory_reserve_gib=8
+memory_reserve_percent=10
 memory_high_percent=70
 memory_max_percent=80
 swap_max_percent=10
@@ -45,7 +45,8 @@ while (($#)); do
   case "$1" in
     --apply) APPLY_CHANGES=true; shift ;;
     --agent) agent_account=${2:?Missing agent account}; shift 2 ;;
-    --memory-reserve-gib) memory_reserve_gib=${2:?Missing memory reserve}; shift 2 ;;
+    --memory-reserve-percent) memory_reserve_percent=${2:?Missing memory reserve}; shift 2 ;;
+    --memory-reserve-gib) die '--memory-reserve-gib is replaced by --memory-reserve-percent, a share of RAM.' ;;
     --memory-high-percent) memory_high_percent=${2:?Missing share}; shift 2 ;;
     --memory-max-percent) memory_max_percent=${2:?Missing share}; shift 2 ;;
     --swap-max-percent) swap_max_percent=${2:?Missing share}; shift 2 ;;
@@ -68,7 +69,7 @@ require_int() {
 [[ $(uname -s) == Linux ]] || die 'Linux only.'
 [[ -n "$agent_account" ]] || die '--agent is required.'
 validate_unix_name "$agent_account"
-require_int --memory-reserve-gib "$memory_reserve_gib" 4 32
+require_int --memory-reserve-percent "$memory_reserve_percent" 5 50
 require_int --memory-high-percent "$memory_high_percent" 10 90
 require_int --memory-max-percent "$memory_max_percent" 20 95
 ((memory_max_percent > memory_high_percent)) || die '--memory-max-percent must be greater than --memory-high-percent.'
@@ -144,16 +145,28 @@ if [[ "$revert" == true ]]; then
   problems=()
   for entry in "${entries[@]:2}"; do
     IFS=$'\t' read -r kind path action backup installed <<<"$entry"
+    # Apply records each step before making it, so an interrupted apply can
+    # leave its last step recorded but not made. Accept both states.
+    current=$(host_path "$path")
     case "$kind" in
       file)
-        if [[ "$action" == removed ]]; then
-          [[ ! -e "$(host_path "$path")" ]] || problems+=("$path was recreated after apply")
-        elif [[ -L "$(host_path "$path")" ]] || ! cmp -s "$(host_path "$state_dir/installed/$installed")" "$(host_path "$path")"; then
-          problems+=("$path changed after apply")
+        if [[ -L "$current" ]]; then
+          problems+=("$path is now a symbolic link")
+        elif [[ ! -e "$current" ]]; then
+          [[ "$action" != replaced ]] || problems+=("$path was deleted after apply")
+        elif [[ "$action" == created ]]; then
+          { [[ -f "$(host_path "$state_dir/installed/$installed")" ]] && cmp -s "$(host_path "$state_dir/installed/$installed")" "$current"; } ||
+            problems+=("$path changed after apply")
+        elif [[ "$action" == removed ]]; then
+          cmp -s "$(host_path "$state_dir/backups/$backup")" "$current" || problems+=("$path was recreated after apply")
+        else
+          { cmp -s "$(host_path "$state_dir/installed/$installed")" "$current" 2>/dev/null ||
+              cmp -s "$(host_path "$state_dir/backups/$backup")" "$current"; } || problems+=("$path changed after apply")
         fi
         ;;
       mask)
-        [[ -L "$(host_path "$path")" && $(readlink "$(host_path "$path")") == /dev/null ]] || problems+=("$path is no longer the mask link")
+        [[ ! -e "$current" && ! -L "$current" ]] ||
+          [[ -L "$current" && $(readlink "$current") == /dev/null ]] || problems+=("$path is no longer the mask link")
         ;;
       dir|sysctl|linger|service) ;;
       *) problems+=("unknown receipt entry: $kind") ;;
@@ -189,7 +202,11 @@ if [[ "$revert" == true ]]; then
       file:created) rm -f -- "$(host_path "$path")" ;;
       file:replaced|file:removed) cp -p -- "$(host_path "$state_dir/backups/$backup")" "$(host_path "$path")" ;;
       mask:*) rm -f -- "$(host_path "$path")" ;;
-      dir:*) rmdir -- "$(host_path "$path")" 2>/dev/null || warn "$path is not empty; left in place." ;;
+      dir:*)
+        if [[ -d "$(host_path "$path")" ]]; then
+          rmdir -- "$(host_path "$path")" 2>/dev/null || warn "$path is not empty; left in place."
+        fi
+        ;;
       sysctl:*) printf '%s\n' "$action" >"$(host_path /proc/sys/vm/swappiness)" ;;
       linger:*) loginctl disable-linger "$path" ;;
       service:*) systemctl disable --now "$path" ;;
@@ -222,8 +239,8 @@ grep -qw memory <<<"$delegated" ||
 total_kib=$(awk '$1 == "MemTotal:" {print $2}' "$(host_path /proc/meminfo)" 2>/dev/null) || true
 [[ "$total_kib" =~ ^[0-9]+$ ]] || die 'Cannot read total memory from /proc/meminfo.'
 read -r memory_high memory_max swap_max < <(
-  calculate_memory_shares "$total_kib" "$memory_high_percent" "$memory_max_percent" "$swap_max_percent" "$memory_reserve_gib"
-) || die "A ${memory_max_percent}% ceiling leaves less than the ${memory_reserve_gib} GiB reserve outside agent work; lower --memory-max-percent or the reserve."
+  calculate_memory_shares "$total_kib" "$memory_high_percent" "$memory_max_percent" "$swap_max_percent" "$memory_reserve_percent"
+) || die "A ${memory_max_percent}% ceiling leaves less than the ${memory_reserve_percent}% reserve outside agent work; lower --memory-max-percent or the reserve."
 tasks_max=$(calculate_tasks_max "$total_kib")
 
 oomd_available=false
@@ -231,8 +248,26 @@ for candidate in /usr/lib/systemd/systemd-oomd /lib/systemd/systemd-oomd; do
   [[ -x "$(host_path "$candidate")" ]] && oomd_available=true
 done
 oomd_enabled=false
-if [[ "$oomd_available" == true && $(systemctl is-enabled systemd-oomd.service 2>/dev/null || true) == enabled ]]; then
-  oomd_enabled=true
+if [[ "$oomd_available" == true ]]; then
+  case $(systemctl is-enabled systemd-oomd.service 2>/dev/null || true) in
+    enabled|enabled-runtime|static|alias) oomd_enabled=true ;;
+  esac
+fi
+# Vendor drop-ins (Ubuntu's systemd-oomd package ships some) can let oomd act
+# on every user manager or on the root slice. A drop-in in /etc with the same
+# name replaces the vendor one, so the policy overrides each with ManagedOOM
+# set to auto, leaving agent-work.slice as the only cgroup oomd acts on.
+oomd_vendor_dropins=()
+if [[ "$oomd_available" == true ]]; then
+  for vendor_dir in /usr/lib/systemd/system /lib/systemd/system; do
+    for unit_dir in 'user@.service.d' '-.slice.d'; do
+      for vendor in "$(host_path "$vendor_dir/$unit_dir")"/*oomd*.conf; do
+        [[ -f "$vendor" ]] || continue
+        override="/etc/systemd/system/$unit_dir/${vendor##*/}"
+        [[ " ${oomd_vendor_dropins[*]} " == *" $override "* ]] || oomd_vendor_dropins+=("$override")
+      done
+    done
+  done
 fi
 
 zram_swaps=0
@@ -291,7 +326,7 @@ if [[ "$mask_tmp" == true && -L "$(host_path "$tmp_mask_path")" ]]; then
   mask_tmp=false
 fi
 
-for path in "$slice_path" "$sysctl_path" "$zram_path" "$old_dropin"; do
+for path in "$slice_path" "$sysctl_path" "$zram_path" "$old_dropin" "${oomd_vendor_dropins[@]}"; do
   [[ ! -L "$(host_path "$path")" ]] || die "$path is a symbolic link; review it by hand."
 done
 
@@ -323,6 +358,14 @@ if ((zram_percent > 0)); then
     '[zram0]' "zram-size = ram * $zram_percent / 100" 'compression-algorithm = zstd' >"$work_dir/zram"
 fi
 
+for index in "${!oomd_vendor_dropins[@]}"; do
+  section=Slice
+  [[ "${oomd_vendor_dropins[index]}" == */user@.service.d/* ]] && section=Service
+  printf '%s\n' '# Managed by agent-workstation-kit apply-resource-policy-linux.sh; undo with --revert.' \
+    '# Replaces the vendor oomd default so oomd acts only on agent-work.slice.' \
+    "[$section]" 'ManagedOOMMemoryPressure=auto' 'ManagedOOMSwap=auto' >"$work_dir/oomd-$index"
+done
+
 changes=()
 plan_file() {
   local path=$1 source=$2
@@ -336,6 +379,9 @@ plan_file() {
 plan_file "$slice_path" "$work_dir/slice"
 plan_file "$sysctl_path" "$work_dir/sysctl"
 plan_file "$zram_path" "$work_dir/zram"
+for index in "${!oomd_vendor_dropins[@]}"; do
+  plan_file "${oomd_vendor_dropins[index]}" "$work_dir/oomd-$index"
+done
 [[ -e "$(host_path "$old_dropin")" ]] && changes+=("file|$old_dropin|removed|-")
 [[ "$mask_tmp" == true ]] && changes+=("mask|$tmp_mask_path|created|-")
 [[ -n "$swappiness" && "$swappiness" != "$current_swappiness" ]] && changes+=("sysctl|vm.swappiness|$current_swappiness|$swappiness")
@@ -359,12 +405,19 @@ Agent work ceiling for $agent_account (UID $uid)
   MemoryHigh:         ${memory_high_percent}% of RAM = $(gib "$memory_high")
   MemoryMax:          ${memory_max_percent}% of RAM = $(gib "$memory_max")
   MemorySwapMax:      ${swap_max_percent}% of RAM = $(gib "$swap_max")
-  Outside the slice:  $(gib $((total_kib - memory_max))) (reserve ${memory_reserve_gib} GiB)
+  Outside the slice:  $(gib $((total_kib - memory_max))) (reserve ${memory_reserve_percent}% of RAM)
   CPUWeight:          90 of 100
   TasksMax:           $tasks_max
 EOF
 if [[ "$oomd_available" == true ]]; then
   printf '  oomd:               kill in the slice above %s%% memory pressure\n' "$oomd_pressure_percent"
+  printf '  oomd scope:         agent-work.slice only; overrides %s vendor default drop-in(s)\n' "${#oomd_vendor_dropins[@]}"
+  printf '\n  Current oomd settings (systemctl cat, ManagedOOM lines):\n'
+  { systemctl cat -- "user@$uid.service" -.slice 2>/dev/null | grep -E '^# /|ManagedOOM' ||
+      printf '(no ManagedOOM settings found)\n'; } | sed 's/^/    /'
+  printf '  oomctl dump (first 20 lines):\n'
+  { oomctl dump 2>/dev/null || printf '(oomctl unavailable or systemd-oomd not running)\n'; } | sed -n '1,20s/^/    /p'
+  printf '\n'
 else
   printf '  oomd:               unavailable; MemoryHigh throttles and MemoryMax runs the kernel OOM killer inside the slice only\n'
 fi
@@ -407,6 +460,7 @@ install -d -m 0700 "${owner_args[@]}" "$(host_path "$state_dir")" \
   "$(host_path "$state_dir/backups")" "$(host_path "$state_dir/installed")"
 printf 'version\t1\nagent\t%s\n' "$agent_account" >"$(host_path "$receipt")"
 chmod 0600 "$(host_path "$receipt")"
+trap 'warn "Apply stopped part way. Undo what it changed with: apply-resource-policy-linux.sh --agent $agent_account --revert --apply"' ERR
 
 ensure_dir() {
   local dir=$1 missing=() index

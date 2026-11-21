@@ -56,7 +56,8 @@ Start with `fleetctl init` or an example; do not invent a profile from memory.
 | `security.remote_scope` | `tailscale-only` | Direct remote access is limited to the tailnet. | Validator/live firewall and SSH audit |
 | `security.endpoint_management` | `ask`, `mdm`, `edr`, `mdm-and-edr`, `not-required` | Final mobile-device-management (MDM) and endpoint-detection-and-response (EDR) state; `ask` is draft-only. | Manual MDM/EDR evidence |
 | `resources.policy` | `measured-balanced` | Soft pressure plus emergency ceiling. | Live audit/load test |
-| `resources.os_memory_reserve_gib` | `8` | Minimum RAM the agent-work ceiling must leave outside it; the policy refuses shares that leave less. | Live policy/load test |
+| `resources.os_memory_reserve_percent` | `10` (optional, from 5 to 50) | Minimum share of RAM the agent-work ceiling must leave outside it; the policy refuses shares that leave less. | Live policy/load test |
+| `resources.os_memory_reserve_gib` | `8` (deprecated, optional) | Still validates for older profiles; no longer read. Use `os_memory_reserve_percent`. | Validator |
 | `resources.os_cpu_reserve_threads` | `2` | Capacity-planning headroom; not hard core pinning. | Capacity record; not enforced isolation |
 | `backup.target` | `ask`, approved target | Non-secret backup destination label; `ask` is draft-only. | Manual backup/restore evidence |
 | `backup.retention_days` | positive integer, for example `30` | Required retention period. | Validator/backup policy |
