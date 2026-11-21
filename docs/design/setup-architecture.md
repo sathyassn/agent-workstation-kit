@@ -167,13 +167,13 @@ What the code does today, and the problem each fact causes:
 | S3 `identity` | hostname, `/etc/hosts` block, accounts and groups | computer names; accounts created with a disabled password | root | yes (homes archived, from T4) |
 | G1 `access` | credential readiness: passwords, SSH keys, mesh VPN up, a second tailnet device holding a named user's key. No SSH reachability is required here | credential readiness: passwords, secure tokens, mesh VPN up (system extension approved), Remote Login and Screen Sharing enabled for named users only, a second tailnet device | human; conductor polls the non-root probes, root check once at the end | n/a |
 | S4 `services` | the `agentctl` helper and its sudoers rule (atomic), workloads | none | root | yes |
-| S5 `remote` | `firewall` and `ssh` are one engine transaction under one dead-man arming (no exit 4 between its steps): firewall rules, then the SSH change and the release of the SSH install guard, then the proof. Proof depends on the change: with remote access selected, a new SSH session over the mesh VPN from the second device; otherwise a local console confirmation, with no timer. `mesh-vpn`, `remote-desktop` and `vpn` follow, each depending on the group's disarm. Any other firewall-touching apply is refused while no proof is possible | `firewall` only checks the Application Firewall (pf is left alone); `ssh` limits SSH to named users under a launchd dead-man; `mesh-vpn` settings; `remote-desktop` is `skipped`, because Screen Sharing is enabled by hand-over at G1; the same connectivity proof | root | yes, under the timer |
+| S5 `remote` | `firewall` and `ssh` are one engine transaction under one dead-man arming (no exit 4 between its steps): firewall rules, then the SSH change and the release of the SSH install guard, then the proof. Proof depends on the change: with remote access selected, a new SSH session over the mesh VPN from the second device; otherwise a local console confirmation, with no timer. On a fresh install the mesh-VPN client is installed in S2 and enrolled at G1, and `mesh-vpn` runs before the group, so the proof path exists. `remote-desktop` and `vpn` follow, each waiting for the group's disarm; `next` returns `disarm` before any later root unit. Any other firewall-touching apply is refused while no proof is possible | `firewall` only checks the Application Firewall (pf is left alone); `ssh` limits SSH to named users under a launchd dead-man; `mesh-vpn` settings; `remote-desktop` is `skipped`, because Screen Sharing is enabled by hand-over at G1; the same connectivity proof | root | yes, under the timer |
 | G2 `session` | agent desktop or console session; the conductor's CLI signed in there | same, plus privacy prompts; FileVault verified | human; agent-account probe | n/a |
 | S6 `agent` | shell, git identity, runtimes (mise tools), agent CLIs, agent settings, MCP, tunnel hook | same, plus workloads (OrbStack needs the agent's GUI session) | agent account | yes |
 | G3 `sign-ins` | provider sign-ins | same | human; agent-account probe | revoke by hand-over |
 | S7 `resources` | resource limits (section 7a): reserve, one ceiling for agent work (user slice), early OOM handling, `/tmp` policy; snapshots where the filesystem supports them; deferrable | resource limits by priority and process limits (a recorded capability gap for memory ceilings); snapshots are `skipped`; deferrable | root | yes |
 | S8a `audit` | root checks, reboot acceptance | same | root | n/a |
-| S8b `audit-agent` | agent checks | same | agent account | n/a |
+| S8b `audit-agent` | the `audit-agent` unit runs the agent-account checks; `stable` is tagged only after its receipt is in the public export | same | agent account | n/a |
 
 - **Order.** Each scope's preflight reads the public export (section 11) and
   stops with the next step when an earlier stage is not verified.
@@ -252,8 +252,9 @@ units and keep their names.
   - its privilege: user or root scope;
   - the paths and state it owns (`--describe`).
 
-  `plan` resolves the dependency order and refuses a unit that is
-  unsupported on the target or conflicts with another.
+  `plan` resolves the dependency order. A unit that is unsupported on the
+  target is `skipped` with the reason; a unit that conflicts with another
+  is refused, naming both.
 - **Documented the same way.** Each unit has a page with what it does, why,
   the options, the safe default, the risks and the undo, plus how to run it
   standalone and how it composes.
@@ -953,19 +954,23 @@ preflight -> describe -> backup -> intent=applying -> apply (logged) -> verify -
   `manifest.json` is written and fsynced last, so a manifest exists only for a
   complete backup. A kill during the backup leaves no manifest, and the next
   start backs up again.
-- **Intent.** `status=applying`, with the run ID and the backup path, is
-  fsynced to the journal before the apply. On the next start, a phase that is
-  still `applying` blocks its own journal (the root journal, or that
+- **Intent, per operation.** Each operation writes its own record, naming
+  it, before it changes anything: `apply`, `revert` or `restore-only`. An
+  unfinished record blocks its own journal (the root journal, or that
   account's journal) with exit 4 until it is handled; other journals are
   not blocked. While the step's dead-man timer is armed, section 6 decides
-  instead: only `disarm` or the timer may change it. Otherwise:
-  - it is restored from its manifest, then reapplied. This is the one
-    rule wherever the crash happened, including after a passed verify and
-    before the receipt: a step without a receipt is always restored, then
-    reapplied. There is no verify-only shortcut, because a half-applied
+  instead: only `disarm` or the timer may change it. Otherwise, at the next
+  start (`wskit resume`):
+  - **an interrupted apply** is restored from its manifest, then reapplied,
+    wherever the crash happened, including after a passed verify and before
+    the receipt. There is no verify-only shortcut, because a half-applied
     state can pass verify;
-  - `wskit resume` does this, and is the command that clears
-    exit 4; `--restore-only` stops after the restore.
+  - **an interrupted revert** resumes at the first undo step it had not
+    completed, and never reapplies;
+  - **`resume --restore-only`** restores an interrupted apply and stops.
+
+  The state machines and the torn-state table for each operation are in the
+  P1 core spec, with tests that interrupt every undo step.
 - **Restore** writes `status=restoring` first. The manifest is replayed in
   reverse, then the validators run (`sshd -t`, `visudo -c`, `ufw status`).
   Restore is idempotent, and a `restoring` phase is always finished before
@@ -1240,14 +1245,20 @@ preflight -> describe -> backup -> intent=applying -> apply (logged) -> verify -
       recovery does on Linux; it restores when the deadline has passed and
       the step is not disarmed; otherwise it exits.
   - **Atomic transitions.** Arm, re-arm, disarm and restore are transitions
-    of one state machine, kept in the root journal and guarded by its own
-    dead-man lock, separate from the host lock so that a running apply can
-    never block a restore. Each transition writes the journal (with the
-    boot ID and the deadline) and fsyncs it before it changes the
-    scheduler. The restore takes the dead-man lock, so only one restore
-    runs at a time (this matters on macOS, where `StartInterval` can start
-    overlapping runs), and re-reads the journal immediately before it
-    changes anything. The exact transitions are in the P1 core spec.
+    of one state machine, kept in its own state file (separate from the
+    journal) and guarded by its own dead-man lock. Arm, re-arm and disarm
+    take only that lock, never the host or journal lock, so an executor
+    holding the host lock can wait for the arm acknowledgement without
+    deadlock. Each transition writes the state (with the boot ID and the
+    deadline) and fsyncs it before it changes the scheduler.
+  - **The restore claim.** A restore takes the dead-man lock, writes a claim
+    with a defined lifetime, stops the executor, releases the dead-man lock,
+    then takes the host lock, then the journal lock. Only one restore runs
+    at a time (this matters on macOS, where `StartInterval` can start
+    overlapping runs); a dead claimant's claim is taken over atomically, and
+    executors respect a live claim. The restore re-reads the state
+    immediately before it changes anything. The exact transitions are in the
+    P1 core spec.
   - **Deadlines.** The first arm, before apply, sets a 30-minute deadline
     to cover the apply. The re-arm after apply sets 10 minutes from that
     moment. Both are settable within fixed bounds.
@@ -1314,11 +1325,11 @@ preflight -> describe -> backup -> intent=applying -> apply (logged) -> verify -
     `CLAUDECODE`), so agent commands see a predictable environment. The
     shell unit's page documents the guard.
 
-### 7a. Resources (S7; built early, right after the tunnel)
+### 7a. Resources (S7; the first unit right after T2)
 
-The machine-wide part is built first among the units, right after the
-browser tunnel, on T1's minimal engine, because a pilot host kept
-thrashing; it moves onto T2 when T2 lands. A supervised pilot showed the
+The machine-wide part is the first unit built right after T2, which gives
+it the root baseline it needs; a pilot host kept thrashing, and it is
+covered meanwhile by the frozen script fix. A supervised pilot showed the
 failure this stage must prevent: one test
 suite grew to about a third of RAM, several sessions ran full gates in
 parallel, swap filled, and every agent session and the desktop stalled for
@@ -1534,6 +1545,10 @@ and Spotlight use CPU and memory for days.
     is `self-updating` (A1). The Homebrew cask is not used,
     because it runs the same `.pkg` with `sudo` and prompts. Approving the
     system extension is a G1 hand-over.
+  - **Before the S5 group.** The client is installed in S2 and enrolled at
+    G1, and `mesh-vpn` runs before `firewall` and `ssh`, so the proof path
+    exists when the group runs. `mesh-vpn` never waits for the group's
+    disarm. A fresh first install is tested end to end.
 - **Staging (T6).**
   - **Each release:** `wskit stage` copies a released binary and its data
     files to `/opt/agent-workstation-kit/releases/<version>/`, verifies
@@ -1998,9 +2013,9 @@ SPC-001's identical):
 | `accounts` | identity | identity | root | identity | root | machine-identity; machine-identity | EPC-014 | alpha |
 | `agentctl` | system | services | root | none | none | accounts; none | EPC-019 | alpha |
 | `workloads` | system | services | root | agent | agent | agentctl; accounts | EPC-019 | alpha |
-| `firewall` | network | remote | root | remote | root | packages; packages | EPC-015 | alpha |
-| `ssh` | remote | remote | root | remote | root | accounts, firewall; accounts, firewall | EPC-015 | alpha |
-| `mesh-vpn` | network | remote | root | remote | root | packages, ssh; packages, ssh | EPC-016 | alpha |
+| `firewall` | network | remote | root | remote | root | packages, mesh-vpn; packages, mesh-vpn | EPC-015 | alpha |
+| `ssh` | remote | remote | root | remote | root | accounts, firewall, mesh-vpn; accounts, firewall, mesh-vpn | EPC-015 | alpha |
+| `mesh-vpn` | network | remote | root | remote | root | packages; packages | EPC-016 | alpha |
 | `remote-desktop` | remote | remote | root | none | none | packages, ssh; none | EPC-017 | alpha |
 | `vpn` | network | remote | root | remote | root | packages, ssh; packages, ssh | EPC-007 | alpha |
 | `shell` | agent | agent | agent | agent | agent | accounts; accounts | EPC-008 | alpha |
@@ -2011,10 +2026,11 @@ SPC-001's identical):
 | `mcp` | agent | agent | agent | agent | agent | agent-settings; agent-settings | EPC-012 | alpha |
 | `browser-tunnel` | remote | agent | user | agent | user | none; none | EPC-006 | alpha |
 | `workspace` | workspace | agent | agent | agent | agent | tools, git-identity; tools, git-identity | EPC-021 | alpha |
-| `resource-limits` | ops | resources | root | resources | root | none; none | EPC-010 | alpha |
+| `resource-limits` | ops | resources | root | resources | root | baseline; baseline | EPC-010 | alpha |
 | `indexing` | system | none | none | resources | root | none; baseline | EPC-033 | alpha |
 | `snapshots` | data | resources | root | none | none | baseline; none | EPC-020 | alpha |
 | `doctor` | ops | audit | root | audit | root | none; none | EPC-022 | alpha |
+| `audit-agent` | ops | audit-agent | agent | audit-agent | agent | shell, tools, agent-settings, mcp; shell, tools, agent-settings, mcp | EPC-022 | alpha |
 <!-- catalog:units:end -->
 
 A dependency on `packages` is satisfied by the OS's own package units, so
@@ -2080,12 +2096,13 @@ D0 (this ADR, reviewed alone)
        T1c engine.Tx minimum: locks, durable intent and recovery, process supervision,
            receipts, staged binary check
        T1d terminal UI and plain or JSON front ends
- -> browser tunnel unit, then the machine-wide resources unit, both on T1
+ -> browser tunnel unit (user scope, no root baseline needed), the only unit before T2
  -> T2 engine: transaction layer, baseline, ledger, match digest, revert, restore points,
        logs, failure records, client mode; the tunnel moves onto it
  -> P2 unit waves, in parallel:
-       A: resources first (on T1, with the tunnel), then VPN, shell, agent settings,
-          tools (registry-driven), MCP catalog, macOS indexing
+       A: resources and macOS indexing first, right after T2 (pilot hosts are covered
+          meanwhile by the frozen script fix and the reference script), then VPN, shell,
+          agent settings, tools (registry-driven), MCP catalog
        B: packages and runtimes; identity and accounts, with the home archive (account
           removal refused until it ships); SSH and firewall, with the dead-man timer in
           the same epic (their apply and revert refused until it ships); mesh VPN;
