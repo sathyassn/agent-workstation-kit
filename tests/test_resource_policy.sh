@@ -344,12 +344,25 @@ assert agent_processes_outside_slice(root, 1001, sys.argv[2]) == []
 assert len(agent_processes_outside_slice(root, 1001, sys.argv[3])) == 3
 EOF
 
-# 9. The terminal wrapper runs the shell directly when the policy is absent.
-if [[ ! -e /etc/systemd/user/agent-work.slice ]]; then
-  [[ $(SHELL=/bin/echo "$repo_dir/scripts/agent-work-shell" hello) == '-l hello' ]] || fail 'agent-work-shell did not exec the shell'
-fi
-# shellcheck disable=SC2016 # the literal wrapper line, not an expansion
-grep -Fq 'exec systemd-run --user --scope --quiet --collect --slice=agent-work.slice -- "$shell" -l "$@"' \
-  "$repo_dir/scripts/agent-work-shell" || fail 'agent-work-shell lost its slice launch'
+# 9. The terminal wrapper runs the shell directly when the policy is absent,
+# and falls back to the plain shell with a warning when the scope fails.
+wrap_dir="$work/wrapper"
+mkdir -p "$wrap_dir/bin"
+printf 'x\n' >"$wrap_dir/agent-work.slice"
+printf '0::/user.slice/user-1001.slice/user@1001.service/app.slice/x.scope\n' >"$wrap_dir/cgroup"
+[[ $(AGENT_WORK_SLICE_FILE="$wrap_dir/absent" SHELL=/bin/echo "$repo_dir/scripts/agent-work-shell" hello) == '-l hello' ]] ||
+  fail 'agent-work-shell did not exec the shell without the policy'
+printf '#!/bin/sh\nexit 1\n' >"$wrap_dir/bin/systemd-run"
+chmod +x "$wrap_dir/bin/systemd-run"
+out=$(PATH="$wrap_dir/bin:$PATH" AGENT_WORK_SLICE_FILE="$wrap_dir/agent-work.slice" AGENT_WORK_CGROUP_FILE="$wrap_dir/cgroup" \
+  SHELL=/bin/echo "$repo_dir/scripts/agent-work-shell" hello 2>"$wrap_dir/err") || fail 'agent-work-shell failed when the scope failed'
+[[ "$out" == '-l hello' ]] || fail "agent-work-shell did not fall back to the shell: $out"
+grep -Fq 'runs outside the memory ceiling' "$wrap_dir/err" || fail 'agent-work-shell gave no warning on fallback'
+# With a working systemd-run, the wrapper launches the shell inside the scope.
+# shellcheck disable=SC2016 # the stub's own $1 and $@, not this script's
+printf '#!/bin/sh\nwhile [ "$1" != "--" ]; do shift; done; shift; exec "$@"\n' >"$wrap_dir/bin/systemd-run"
+out=$(PATH="$wrap_dir/bin:$PATH" AGENT_WORK_SLICE_FILE="$wrap_dir/agent-work.slice" AGENT_WORK_CGROUP_FILE="$wrap_dir/cgroup" \
+  SHELL=/bin/echo "$repo_dir/scripts/agent-work-shell" hello 2>"$wrap_dir/err") || fail 'agent-work-shell failed with a working scope'
+[[ "$out" == '-l hello' && ! -s "$wrap_dir/err" ]] || fail "agent-work-shell did not run in the scope: $out"
 
 printf 'Resource policy tests passed.\n'

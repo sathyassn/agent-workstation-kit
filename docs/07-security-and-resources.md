@@ -100,7 +100,10 @@ An agent manager such as Orca starts each terminal in its own pty slice,
 `systemd-run --user --scope --slice=agent-work.slice` around the account's
 login shell (`$SHELL -l`), so the terminal and every agent started in it move
 under the ceiling. It runs the shell directly when it is already inside the
-slice or the policy is not installed.
+slice or the policy is not installed. When it cannot start the scope (no user
+bus, or a scope error), it prints a one-line warning on standard error and
+runs the plain shell, so a terminal never closes immediately; `validate-host.sh`
+then reports that terminal's agents as outside the slice.
 
 Set it as the agent manager's terminal shell, in the agent account:
 
