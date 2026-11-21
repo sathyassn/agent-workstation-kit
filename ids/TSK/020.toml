@@ -1,0 +1,11 @@
+id = "TSK-020"
+uid = "fe5a1a1e-d570-4d4c-8262-eaa47e69073b"
+kind = "TSK"
+title = "Revert to a point, retention and stale dependants"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-21T09:42:23Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
