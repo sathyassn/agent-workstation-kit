@@ -1,0 +1,11 @@
+id = "EPC-009"
+uid = "ef833fb5-7761-45af-9fe7-a2976408cf25"
+kind = "EPC"
+title = "Agent settings unit"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-21T09:12:28Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
