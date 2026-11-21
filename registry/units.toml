@@ -99,7 +99,7 @@ id = "mesh-vpn"
 domain = "network"
 stage = { linux = "remote", macos = "remote" }
 privilege = { linux = "root", macos = "root" }
-depends = { linux = ["packages"], macos = ["packages"] }
+depends = { linux = ["packages", "ssh"], macos = ["packages", "ssh"] }
 epic = "EPC-016"
 milestone = "alpha"
 
@@ -108,7 +108,7 @@ id = "remote-desktop"
 domain = "remote"
 stage = { linux = "remote", macos = "-" }
 privilege = { linux = "root", macos = "-" }
-depends = { linux = ["firewall", "packages"], macos = [] }
+depends = { linux = ["packages", "ssh"], macos = [] }
 epic = "EPC-017"
 milestone = "alpha"
 
@@ -117,7 +117,7 @@ id = "vpn"
 domain = "network"
 stage = { linux = "remote", macos = "remote" }
 privilege = { linux = "root", macos = "root" }
-depends = { linux = ["packages"], macos = ["packages"] }
+depends = { linux = ["packages", "ssh"], macos = ["packages", "ssh"] }
 epic = "EPC-007"
 milestone = "alpha"
 
@@ -198,8 +198,17 @@ id = "resource-limits"
 domain = "ops"
 stage = { linux = "resources", macos = "resources" }
 privilege = { linux = "root", macos = "root" }
-depends = { linux = ["accounts"], macos = ["accounts"] }
+depends = { linux = [], macos = [] }
 epic = "EPC-010"
+milestone = "alpha"
+
+[[unit]]
+id = "indexing"
+domain = "system"
+stage = { linux = "-", macos = "resources" }
+privilege = { linux = "-", macos = "root" }
+depends = { linux = [], macos = ["baseline"] }
+epic = "EPC-033"
 milestone = "alpha"
 
 [[unit]]
