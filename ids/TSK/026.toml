@@ -1,0 +1,11 @@
+id = "TSK-026"
+uid = "3576fd53-5cae-4a97-9b7a-622441a95e1a"
+kind = "TSK"
+title = "Host entries and the workstation hook"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-21T10:08:38Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
