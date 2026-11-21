@@ -19,6 +19,7 @@ except ModuleNotFoundError:  # Python 3.9 and 3.10 have no tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 CATALOG = ROOT / "registry/units.toml"
+PRESETS = ROOT / "registry/presets.toml"
 TARGETS = (
     "docs/plan/roadmap.md",
     "docs/design/setup-architecture.md",
@@ -41,7 +42,11 @@ def problems(units: list[dict]) -> list[str]:
         found.append(f"duplicate unit id: {unit_id}")
     for os_name in OSES:
         present = {u["id"] for u in units if u["stage"][os_name] != "-"}
-        edges = {u["id"]: list(u["depends"][os_name]) for u in units if u["id"] in present}
+        edges = {
+            u["id"]: list(u["depends"][os_name])
+            + [d for cond in u.get("depends_if", {}).values() for d in cond.get(os_name, [])]
+            for u in units if u["id"] in present
+        }
         for unit_id, deps in edges.items():
             for dep in deps:
                 if dep not in present:
@@ -74,7 +79,15 @@ def table(units: list[dict]) -> str:
         "|---|---|---|---|---|---|---|---|---|",
     ]
     for u in units:
-        deps = "; ".join(", ".join(u["depends"][o]) or "none" for o in OSES)
+        def deps_for(o: str) -> str:
+            items = list(u["depends"][o])
+            for cond, per_os in u.get("depends_if", {}).items():
+                items += [f"{d} (if {cond})" for d in per_os.get(o, [])]
+            return ", ".join(items) or "none"
+
+        deps = "; ".join(deps_for(o) for o in OSES)
+        if u.get("waits_for"):
+            deps += "; waits for " + ", ".join(u["waits_for"])
         lines.append(
             f"| `{u['id']}` | {u['domain']} | {cell(u['stage']['linux'])} | {cell(u['privilege']['linux'])} "
             f"| {cell(u['stage']['macos'])} | {cell(u['privilege']['macos'])} | {deps} | {u['epic']} | {u['milestone']} |"
@@ -94,6 +107,15 @@ def main(argv: list[str]) -> int:
         return 0
     units = load()
     errors = problems(units)
+    if PRESETS.is_file():
+        known = {u["id"] for u in units}
+        with PRESETS.open("rb") as handle:
+            presets = tomllib.load(handle)
+        for group in ("tier", "purpose"):
+            for name, entry in presets.get(group, {}).items():
+                for unit_id in entry.get("units", []):
+                    if unit_id not in known:
+                        errors.append(f"presets: {group}.{name} names unknown unit {unit_id}")
     body = table(units)
     for name in TARGETS:
         path = ROOT / name

@@ -6,7 +6,7 @@ Each decision in ADR 0005 (`docs/design/setup-architecture.md`) maps to the
 epic that builds it, the tasks that deliver it, and the tests that prove it.
 Tasks are listed once their epic is planned; the P1 spec PR adds P1's.
 
-| ADR decision | Epic | Tasks | Proof |
+| ADR decision | Epic | Tasks (planned coverage; "per epic" until the epic is broken down) | Proof |
 |---|---|---|---|
 | Go, one binary, layout, pinned dependencies (2b) | EPC-001 | TSK-002 | build on both OSes; registry check |
 | CI, lint, vulnerability scan, coverage floors (2b, 12) | EPC-001 | TSK-003 | CI runs with planted failures |
@@ -30,7 +30,7 @@ Tasks are listed once their epic is planned; the P1 spec PR adds P1's.
 | Resources (7a), first right after T2 | EPC-010 | TSK-030 to TSK-032 | ceiling, early-OOM and default tests |
 | macOS indexing (7b) | EPC-033 | TSK-033 | apply and exact revert with fake tools |
 | Best-practice defaults (principle 13) | EPC-010, EPC-033, EPC-025 | per epic | default-when-unset and opt-out tests |
-| Schema, interview, input defaults (8) | EPC-003, EPC-004, EPC-025 | TSK-011, TSK-017 | parity and default tests |
+| Schema, interview, input defaults (8) | EPC-003, EPC-025 (questions, flags, parity); EPC-004 renders | TSK-011 (schema); EPC-025 tasks when planned; TSK-017 renders | parity and default tests |
 | Registry, bump flow, references, staging (9) | EPC-026, EPC-027 | per epic | CI rules; link-health job |
 | Agent settings and MCP (10) | EPC-009, EPC-012 | per epic | per-home tests |
 | Browser tunnel (10a) | EPC-006 | TSK-026 to TSK-029 (SPC-002) | threat and parity tests per item |
