@@ -1,0 +1,11 @@
+id = "EPC-005"
+uid = "fc035b9c-5345-4b36-b478-2cb92866eb27"
+kind = "EPC"
+title = "Transaction engine"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-21T09:10:39Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
