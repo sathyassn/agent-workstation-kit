@@ -1,0 +1,603 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codeflow.dev/schemas/test-config.schema.json",
+  "title": "CodeFlow Test Configuration",
+  "description": "Declarative test configuration for the CodeFlow generic testing engine.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "targets"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Path to this JSON schema for editor validation."
+    },
+    "schema_version": {
+      "type": "string",
+      "enum": [
+        "1.0"
+      ],
+      "description": "Schema version. '1.0' supported. Optional 'structural' and 'tags' fields added 2026-04 are non-breaking additions."
+    },
+    "execution": {
+      "type": "object",
+      "description": "Execution settings.",
+      "properties": {
+        "parallel": {
+          "type": "boolean",
+          "default": false,
+          "description": "Run targets in parallel."
+        },
+        "fail_fast": {
+          "type": "boolean",
+          "default": false,
+          "description": "Stop on first target failure."
+        },
+        "max_parallel": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum concurrent targets."
+        },
+        "run_everything": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Shared input globs that select all targets."
+        },
+        "host_jobs": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Jobs all heavy runs on this host share. Omitted uses the logical cores, lowered to available memory at 1 GiB per job. A run past capacity starts with its share instead of waiting."
+        },
+        "worker_budget": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Workers one run allocates across its concurrent heavy targets, capped at the host job budget. Omitted, a run uses the host budget."
+        },
+        "quick_default_class": {
+          "type": "string",
+          "enum": [
+            "light",
+            "heavy"
+          ],
+          "default": "light",
+          "description": "Default class of undeclared targets in a configured quick mode. The quick-to-essential fallback remains heavy unless a target declares heavy=false."
+        }
+      },
+      "additionalProperties": false
+    },
+    "defaults": {
+      "type": "object",
+      "description": "Default settings applied to all targets.",
+      "properties": {
+        "coverage": {
+          "type": "array",
+          "description": "Default coverage rules applied when targets omit them.",
+          "items": {
+            "$ref": "#/$defs/coverage_rule"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "targets": {
+      "type": "array",
+      "description": "Test targets. Can be empty for fresh projects.",
+      "items": {
+        "$ref": "#/$defs/target"
+      }
+    },
+    "_description": {
+      "type": "string",
+      "description": "Human-readable configuration purpose and structural-check labels."
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "target": {
+      "type": "object",
+      "required": [
+        "name",
+        "runner",
+        "modes"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Unique target identifier."
+        },
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Skip entirely when false."
+        },
+        "cwd": {
+          "type": "string",
+          "description": "Working directory for commands, relative to repo root. Default: repo root."
+        },
+        "env": {
+          "type": "object",
+          "description": "Environment variables merged with inherited env.",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "runner": {
+          "type": "string",
+          "enum": [
+            "cargo",
+            "pytest",
+            "jest",
+            "vitest",
+            "go",
+            "mocha",
+            "rspec",
+            "phpunit",
+            "custom"
+          ],
+          "description": "Test runner type."
+        },
+        "modes": {
+          "type": "object",
+          "minProperties": 1,
+          "description": "Mode-specific commands. The public modes are full (CLI default), essential (explicit lighter run), and quick (the push set). The pre-push hook runs exactly the targets that define quick, so keep it to fast format and lint checks and leave the test suite to full. A manual `codeflow test --mode quick` aliases quick to essential only when no target defines quick. At least one mode must be defined.",
+          "properties": {
+            "quick": {
+              "$ref": "#/$defs/mode_command"
+            },
+            "essential": {
+              "$ref": "#/$defs/mode_command"
+            },
+            "full": {
+              "$ref": "#/$defs/mode_command"
+            }
+          },
+          "additionalProperties": false
+        },
+        "report": {
+          "$ref": "#/$defs/report_config"
+        },
+        "coverage": {
+          "$ref": "#/$defs/coverage_config"
+        },
+        "structural": {
+          "$ref": "#/$defs/structural_config"
+        },
+        "tags": {
+          "type": "array",
+          "description": "Target-level tags applied to every test file in this target. Individual test files may override or augment via the 'test_files' array.",
+          "items": {
+            "$ref": "#/$defs/tag"
+          }
+        },
+        "test_files": {
+          "type": "array",
+          "description": "Explicit per-file test entries with optional tag metadata. Used by runners that enumerate test files directly (e.g. shell-scripts).",
+          "items": {
+            "$ref": "#/$defs/test_file_entry"
+          }
+        },
+        "ci_skip": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, the target is skipped only when the process environment has CI set to a non-empty value other than 'false' or '0'. Local runs ignore ci_skip."
+        },
+        "ci_skip_reason": {
+          "type": "string",
+          "description": "Human-readable justification for ci_skip."
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 600,
+          "description": "Base deadline in seconds (default 600). Heavy targets have a ceiling four times this base and a five-second bounded cleanup grace. Light targets retain a fixed deadline. A late-observed exit never passes.",
+          "maximum": 4611686018427386
+        },
+        "shell": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "sh",
+            "powershell",
+            "cmd"
+          ],
+          "default": "auto",
+          "description": "Shell for mode commands. auto uses sh on macOS/Linux/WSL2 and cmd.exe on native Windows so generated && command chains work without an extra dependency; choose an explicit shell only when the project requires it."
+        },
+        "requires": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Prerequisites that must finish green; includes closure."
+        },
+        "outputs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Produced repository-relative paths; target/ follows CARGO_TARGET_DIR."
+        },
+        "narrow": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Only select on matching inputs; empty always selects."
+        },
+        "exclusive": {
+          "type": "boolean",
+          "default": false,
+          "description": "Run with no other target of this run alongside it."
+        },
+        "host_exclusive": {
+          "type": "boolean",
+          "default": false,
+          "description": "Run alone on the host: no other target of this run and no other heavy run on the machine beside it. Only for a target that cannot share the host, such as a timing-sensitive one."
+        },
+        "input_class": {
+          "type": "string",
+          "enum": [
+            "content",
+            "history",
+            "remote",
+            "time",
+            "external"
+          ],
+          "description": "Only content targets with complete dependency evidence can be skipped; omitted or other classes always run."
+        },
+        "evidence": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tools",
+            "environment",
+            "environment_complete",
+            "membership"
+          ],
+          "properties": {
+            "tools": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string"
+                }
+              },
+              "description": "Tool identity probes as executable and arguments. Output is stored only as a digest."
+            },
+            "environment": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string",
+                "enum": [
+                  "audited_non_secret",
+                  "fingerprint",
+                  "sensitive",
+                  "unclassified"
+                ]
+              }
+            },
+            "environment_complete": {
+              "type": "boolean",
+              "description": "An audit confirms these are all relevant inherited and configured environment dependencies."
+            },
+            "membership": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Membership probe as executable and arguments, or an empty array when no test membership applies."
+            },
+            "covers_modes": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "quick",
+                  "essential"
+                ]
+              },
+              "description": "The full execution covers these modes only when the exact command and all dependency evidence match."
+            }
+          }
+        },
+        "heavy": {
+          "type": "boolean",
+          "description": "Heavy quick work takes a heavy-run slot and its job share; false declares light work. Omitted targets are heavy only in the quick-to-essential fallback."
+        },
+        "workers": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Workers needed before this heavy target starts; requires execution.worker_budget and cannot exceed it. When the run's budget is lowered below it, the target runs at the budget. Omitted targets share the available budget."
+        },
+        "stall_timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4611686018427386,
+          "default": 300,
+          "description": "Heavy target inactivity window in seconds with complete target-scoped CPU accounting. New output or increasing scoped CPU refreshes activity. Unsupported or uncertain accounting uses the absolute ceiling and reports why. Omitted: 300."
+        },
+        "cleanup_grace_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3600,
+          "default": 5,
+          "description": "Seconds allowed after a target stops for termination, reaping, watcher shutdown and pipe draining. On Unix a supervised process group still running at half this time is killed; on Windows the target's job is terminated when it stops. Cleanup that does not finish is a non-pass. Omitted: 5."
+        }
+      },
+      "additionalProperties": false
+    },
+    "mode_command": {
+      "type": "object",
+      "required": [
+        "command"
+      ],
+      "properties": {
+        "command": {
+          "type": "string",
+          "description": "Shell command to execute for this mode."
+        }
+      },
+      "additionalProperties": false
+    },
+    "report_config": {
+      "type": "object",
+      "required": [
+        "format",
+        "path"
+      ],
+      "properties": {
+        "format": {
+          "type": "string",
+          "enum": [
+            "junit",
+            "ctrf"
+          ],
+          "description": "Report format."
+        },
+        "path": {
+          "type": "string",
+          "description": "Path to the report file, relative to target cwd."
+        },
+        "derive_from": {
+          "type": "string",
+          "enum": [
+            "junit"
+          ],
+          "description": "When format is CTRF but emitted format is JUnit, triggers internal conversion."
+        }
+      },
+      "additionalProperties": false
+    },
+    "coverage_config": {
+      "type": "object",
+      "required": [
+        "format",
+        "path"
+      ],
+      "properties": {
+        "format": {
+          "type": "string",
+          "enum": [
+            "lcov",
+            "cobertura",
+            "istanbul-summary",
+            "go-cover"
+          ],
+          "description": "Coverage artifact format."
+        },
+        "path": {
+          "type": "string",
+          "description": "Path to the coverage artifact, relative to target cwd."
+        },
+        "transform": {
+          "type": "string",
+          "description": "Optional shell command to convert tool-native output to one of the four supported formats."
+        },
+        "rules": {
+          "type": "array",
+          "description": "Ordered coverage rule list. First-match-wins for file-level scopes.",
+          "items": {
+            "$ref": "#/$defs/coverage_rule"
+          }
+        },
+        "exceptions": {
+          "type": "array",
+          "description": "Per-file threshold exceptions.",
+          "items": {
+            "$ref": "#/$defs/coverage_exception"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "coverage_rule": {
+      "type": "object",
+      "required": [
+        "scope",
+        "minimum"
+      ],
+      "properties": {
+        "scope": {
+          "type": "string",
+          "enum": [
+            "per_file",
+            "per_package",
+            "per_module",
+            "global"
+          ],
+          "description": "Coverage evaluation scope."
+        },
+        "include": {
+          "type": "array",
+          "description": "Include glob patterns. Default: all files.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "exclude": {
+          "type": "array",
+          "description": "Exclude glob patterns.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "minimum": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Coverage threshold in percent."
+        }
+      },
+      "additionalProperties": false
+    },
+    "coverage_exception": {
+      "type": "object",
+      "required": [
+        "file",
+        "threshold",
+        "reason",
+        "remove_when"
+      ],
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "File path, repo-relative."
+        },
+        "threshold": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Lowered threshold for this file."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Justification for the exception."
+        },
+        "remove_when": {
+          "type": "string",
+          "description": "Condition under which the exception should be removed."
+        }
+      },
+      "additionalProperties": false
+    },
+    "tag": {
+      "type": "string",
+      "enum": [
+        "critical",
+        "high",
+        "medium",
+        "low"
+      ],
+      "description": "Optional test priority tag."
+    },
+    "test_file_entry": {
+      "type": "object",
+      "required": [
+        "path"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Path to the test file, relative to target cwd or repo root."
+        },
+        "tags": {
+          "type": "array",
+          "description": "Tags that apply to this file in addition to the target-level tags.",
+          "items": {
+            "$ref": "#/$defs/tag"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "structural_config": {
+      "type": "object",
+      "description": "Optional structural integrity check. When absent, the target skips the check.",
+      "properties": {
+        "source_glob": {
+          "type": "array",
+          "description": "Glob patterns identifying source files that must have a matching test.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "test_glob": {
+          "type": "array",
+          "description": "Glob patterns identifying test files that must map to a source.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "pattern_map": {
+          "type": "array",
+          "description": "Ordered regex rules mapping source paths to expected test paths.",
+          "items": {
+            "$ref": "#/$defs/pattern_map_entry"
+          }
+        },
+        "exclusions": {
+          "type": "object",
+          "description": "Optional exclusion rules.",
+          "properties": {
+            "no_test_required": {
+              "type": "array",
+              "description": "Source files/globs that do not require a test.",
+              "items": {
+                "$ref": "#/$defs/exclusion_entry"
+              }
+            },
+            "orphan_allowed": {
+              "type": "array",
+              "description": "Test files/globs permitted to have no matching source.",
+              "items": {
+                "$ref": "#/$defs/exclusion_entry"
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "pattern_map_entry": {
+      "type": "object",
+      "required": [
+        "source",
+        "test"
+      ],
+      "properties": {
+        "source": {
+          "type": "string",
+          "description": "Regex matching a source path. Capture groups are referenced by $1..$9 in the 'test' replacement."
+        },
+        "test": {
+          "type": "string",
+          "description": "Replacement template producing the expected test path."
+        }
+      },
+      "additionalProperties": false
+    },
+    "exclusion_entry": {
+      "type": "object",
+      "required": [
+        "pattern"
+      ],
+      "properties": {
+        "pattern": {
+          "type": "string",
+          "description": "Glob pattern matched against the repo-relative path."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Why this entry is excluded; surfaced in structural-check reports."
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

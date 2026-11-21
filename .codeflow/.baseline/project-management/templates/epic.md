@@ -1,0 +1,105 @@
+---
+id: EPC-{{NNN}}
+uid: {{UID}}              # hidden record identity, written once by `new`; never edit
+title: {{TITLE_YAML}}
+status: draft            # draft | planning | in_progress | blocked | complete | cancelled | archived
+work_type: feat          # feat | fix | docs | refactor | test | chore | ci | hotfix | plan | spike | experiment
+capabilities: []         # CAP-### ids this epic creates or changes
+adrs: []                 # ADR ids consumed or produced
+specs: []                # SPC-### inputs consumed by this epic
+external_refs: []        # opaque links/ids only; never mirror external status
+parent_line: null        # optional: another epic's line this epic lands on, exactly integration/EPC-NNN-<slug>; trusted only from the line's tip or the protected branch's records, never a pushed branch
+created: {{DATE}}
+---
+
+# EPC-{{NNN}}: {{TITLE}}
+
+## Summary
+
+<!-- One to three short sentences of context: the problem, who it serves,
+     and what done looks like.
+     Write it by the copy guide
+     (`cf-editorial-review/references/copy-guide.md`).
+     Research repository and authoritative-source facts first. Ask only when
+     the remaining ambiguity is a consequential operator-owned choice under
+     the cf-plan clarity gate. -->
+
+## Outcome
+
+<!-- One line saying the value this epic delivers once it lands, in the form
+     "after this merges, <who> can <do what>". `codeflow validate --docs`
+     refuses an open record created after the project adopted this section
+     when the line is missing (`outcome_present_uids` in
+     `.codeflow/project.toml`), and warns for an older open record. -->
+
+## Deliverables
+
+<!-- Each output this epic produces and its home, one line each as
+     `- <output>: <path>`: files or a folder, a decision record, a research
+     note, evidence, a record update or a human board, at its path in the
+     project's structure. Check each home against the project's structure
+     authority (the document that says where things live) where one exists.
+     Where a home is not known yet, give what is known, mark it provisional
+     and name what decides it. `codeflow validate --docs` warns about an open
+     epic created after adoption with no entry here. -->
+
+## Acceptance Criteria
+
+<!-- Testable statements, preferably in EARS ("When <trigger>, the system shall
+     <response>") or Given/When/Then form. Each criterion names concrete,
+     claim-matched evidence: automate where meaningful, otherwise name a
+     bounded observable or review. Do not invent a hard-coded or meaningless
+     test merely to make the record look verifiable. "Works correctly" is not
+     a criterion. An epic is one outcome: when its criteria describe two
+     outcomes, make it two epics on one integration line.
+     List each as `- AC-n <criterion>` with no checkbox; a task criterion
+     serves one with `(serves EPC-NNN AC-m)`. `codeflow epic status` closes
+     the epic only when every task is terminal and every criterion is
+     verified. -->
+
+- AC-1
+
+## Out of scope
+
+<!-- What this epic deliberately does not do. Check docs/product.md non-goals. -->
+
+## Affected surfaces and interfaces
+
+<!-- Name the capabilities, user journeys, and material native build, runtime,
+     release, data/trust, and shared-contract boundaries affected. This epic
+     owns the cross-area outcome, not a team or directory. Name the repository
+     homes its tasks write (folders or files in the project's structure), or
+     point to the project's structure authority, the document that says where
+     things live; each task's `## Deliverables` names its own. Omit details
+     already owned by architecture or a linked authoritative source. -->
+
+## Plan graph (when needed)
+
+<!-- Optional: link the TASK_GRAPH for a multi-task body when one exists; omit
+     it otherwise. Task frontmatter owns membership (`epic_id`) and direct
+     predecessors (`depends_on`); this is not a second task roster. -->
+
+<!-- Optional, only where the project adopted the estimation time-box
+     profile (`cf-estimate`); otherwise leave it out. An epic is one coherent
+     outcome built from meaningful Medium-to-Hard tasks, small enough that its
+     finished part reaches main within a few days through checkpoint PRs;
+     about 5 to 10 tasks is a reference point for that, not a rule.
+     `cf-plan` writes this section at breakdown; the expected mix is frozen
+     then. Copy it out of this comment as a `## Estimate` section here:
+
+     ## Estimate
+     - spec_pin: <SPC-NNN or source>@<commit>
+     - Expected mix (frozen): <n> tasks: <n> Easy, <n> Medium, <n> Hard
+     - Milestone scenario: <date or window> from the scenario forecast;
+       basis: <rate, seats, human gates, merge windows>
+     - Actual tasks: <TSK-NNN band, as each is planned or lands>
+     - At close: expected against actual mix, scenario rate against actual
+       rate, hit rate, misses and wait causes; outcome record
+       `<estimate root>/outcomes/<epic id>.md` -->
+
+## Planning notes
+
+<!-- Tracked nits, one line each with the event that revisits it, and hotspot
+     notes: files that two tasks restructure, one writer at a time. Recorded
+     nits are folded into the next breakdown or dropped with a reason at epic
+     close. -->

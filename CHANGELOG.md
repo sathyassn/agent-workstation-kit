@@ -11,6 +11,16 @@ step is in [docs/maintenance/releasing.md](docs/maintenance/releasing.md).
 
 ## [Unreleased]
 
+### Added
+
+- CodeFlow full tier: skills, project records (`project-management/`), product, capabilities and architecture pages, and the Go roadmap with its 32 epics (`docs/plan/roadmap.md`).
+- `.golangci.yml`, the lint configuration the Go code will be held to.
+
+### Changed
+
+- The branch policy allows the `codeflow/` prefix, so CodeFlow can publish its ID registry branch (`codeflow/registry`).
+- The repository scan allows two exact sandbox wildcards only inside CodeFlow's own folders, and skips link checks there. CodeFlow's model-evaluation skill is left out until its eval case IDs stop matching CodeFlow's own secret scan.
+
 ## [0.2.0-rc.7] - 2026-11-20
 
 ### Added

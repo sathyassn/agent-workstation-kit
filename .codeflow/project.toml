@@ -1,0 +1,13 @@
+areas = ["cli", "engine", "units", "platform", "data", "fleet", "ui", "legacy", "docs"]
+file_size_rule = "refuse"
+git_hooks = "wired"
+outcome_present_uids = []
+outcome_required_since = "6323db3c16cfa2dd507981b201a105ad1d61db97"
+permission_preset = "acceptEdits"
+policy_armed = true
+product_one_liner = "Set up and maintain Ubuntu and macOS machines where AI coding agents run"
+release_rules = 1
+scaffold_version = "4.0.0"
+schema_version = 1
+stack = "go"
+tier = "full"
