@@ -1,0 +1,11 @@
+id = "TSK-013"
+uid = "87610e22-56ed-49bc-9256-9eea9ac8e344"
+kind = "TSK"
+title = "Minimal engine with durable intent and supervision"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-21T09:39:24Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
