@@ -1,0 +1,11 @@
+id = "TSK-006"
+uid = "535645f5-5033-43f4-acd8-55d73d421b2f"
+kind = "TSK"
+title = "Day-zero bootstrap script"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-21T09:34:06Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
