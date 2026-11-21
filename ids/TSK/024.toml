@@ -1,0 +1,11 @@
+id = "TSK-024"
+uid = "5f552136-e866-4d31-b4c8-78ddc5929504"
+kind = "TSK"
+title = "Root approval, input staging and the staged binary"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-21T10:07:50Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
