@@ -1,0 +1,11 @@
+id = "SPC-002"
+uid = "85724b75-42c8-49e1-8b78-e121a810ad2d"
+kind = "SPC"
+title = "Browser tunnel protocol"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-21T10:10:13Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
