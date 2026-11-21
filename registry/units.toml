@@ -77,11 +77,13 @@ epic = "EPC-019"
 milestone = "alpha"
 
 [[unit]]
+# firewall and ssh depend on mesh-vpn only when remote access is selected;
+# the planner drops that edge when it is not.
 id = "firewall"
 domain = "network"
 stage = { linux = "remote", macos = "remote" }
 privilege = { linux = "root", macos = "root" }
-depends = { linux = ["packages"], macos = ["packages"] }
+depends = { linux = ["packages", "mesh-vpn"], macos = ["packages", "mesh-vpn"] }
 epic = "EPC-015"
 milestone = "alpha"
 
@@ -90,7 +92,7 @@ id = "ssh"
 domain = "remote"
 stage = { linux = "remote", macos = "remote" }
 privilege = { linux = "root", macos = "root" }
-depends = { linux = ["accounts", "firewall"], macos = ["accounts", "firewall"] }
+depends = { linux = ["accounts", "firewall", "mesh-vpn"], macos = ["accounts", "firewall", "mesh-vpn"] }
 epic = "EPC-015"
 milestone = "alpha"
 
@@ -99,7 +101,7 @@ id = "mesh-vpn"
 domain = "network"
 stage = { linux = "remote", macos = "remote" }
 privilege = { linux = "root", macos = "root" }
-depends = { linux = ["packages", "ssh"], macos = ["packages", "ssh"] }
+depends = { linux = ["packages"], macos = ["packages"] }
 epic = "EPC-016"
 milestone = "alpha"
 
@@ -198,7 +200,7 @@ id = "resource-limits"
 domain = "ops"
 stage = { linux = "resources", macos = "resources" }
 privilege = { linux = "root", macos = "root" }
-depends = { linux = [], macos = [] }
+depends = { linux = ["baseline"], macos = ["baseline"] }
 epic = "EPC-010"
 milestone = "alpha"
 
@@ -226,5 +228,14 @@ domain = "ops"
 stage = { linux = "audit", macos = "audit" }
 privilege = { linux = "root", macos = "root" }
 depends = { linux = [], macos = [] }
+epic = "EPC-022"
+milestone = "alpha"
+
+[[unit]]
+id = "audit-agent"
+domain = "ops"
+stage = { linux = "audit-agent", macos = "audit-agent" }
+privilege = { linux = "agent", macos = "agent" }
+depends = { linux = ["shell", "tools", "agent-settings", "mcp"], macos = ["shell", "tools", "agent-settings", "mcp"] }
 epic = "EPC-022"
 milestone = "alpha"

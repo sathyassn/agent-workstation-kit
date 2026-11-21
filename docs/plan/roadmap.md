@@ -23,7 +23,7 @@ P0 Foundation --> P1 Core --> P2 Units (waves A, B, C in parallel) --> P3 Compos
 |---|---|---|
 | P0 Foundation | The repository is ready for Go: CodeFlow full tier, layout, module, CI with lint, tests, vulnerability scan and a signed release build, code generation from the schema, and the day-zero `bootstrap.sh` | EPC-001, EPC-002 |
 | P1 Core | `wskit` runs: the CLI skeleton and contracts, the unit catalog and domains, schema-generated types, platforms, `plan`, `next --json`, the UI layer, and the transaction engine | EPC-003, EPC-004, EPC-005 |
-| P2 Units | Each part of the setup is a standalone unit with its own epic and PR series. Wave A starts with the tunnel (EPC-006), then resources (EPC-010), both on T1 before T2 | Wave A: EPC-006, EPC-010, EPC-007 to EPC-009, EPC-011, EPC-012, EPC-033; wave B: EPC-013 to EPC-018; wave C: EPC-019 to EPC-022 |
+| P2 Units | Each part of the setup is a standalone unit with its own epic and PR series. Only the user-scope tunnel (EPC-006) comes before T2; resources (EPC-010) and macOS indexing (EPC-033) are the first units right after T2 | Wave A: EPC-006 (before T2), then EPC-010 and EPC-033, then EPC-007 to EPC-009, EPC-011, EPC-012; wave B: EPC-013 to EPC-018; wave C: EPC-019 to EPC-022 |
 | P3 Composition | Stages and gates compose the units; lockout guarantees, one config and the interview, the registry and staging, the update watch and the conductor recipe | EPC-023 to EPC-028 |
 | P4 Acceptance | 1.0.0: a clean agent-driven run on Linux and macOS, with an interrupt and resume, and revert to baseline passing the match digest | EPC-030 |
 | P5 Cutover | `wskit` is the only tool for the kit and every fleet; the frozen Python and shell are deleted at parity, and the tree matches the documented layout | EPC-031, EPC-032 |
@@ -45,9 +45,9 @@ unit it owns, and an interrupted revert that resumes (ADR 0005 section 2c).
 | EPC-007 VPN unit | P2 A | every fleet reaches office-only services through one generic `wskit vpn` unit, with provider profiles and typed destination sources | EPC-005, EPC-015 | vpn |
 | EPC-008 Shell unit | P2 A | the shell baseline is a managed block that coexists with other tools, with a prompt option and an agent-shell guard | EPC-005 | shell |
 | EPC-009 Agent settings unit (T7) | P2 A | every agent config home gets the declared settings and narrow sandbox exceptions | EPC-005, EPC-011 | agent-settings |
-| EPC-010 Resources unit | P2 A, first after the tunnel | agent work runs under a machine-wide ceiling (shares of RAM), with early OOM handling, swap and zram sizing, a `/tmp` policy and free-space floors, all on by default | EPC-003 (EPC-005 to move onto the engine) | resource-limits |
+| EPC-010 Resources unit | P2 A, first right after T2 | agent work runs under a machine-wide ceiling (shares of RAM), with early OOM handling, swap and zram sizing, a `/tmp` policy and free-space floors, all on by default; pilot hosts are covered meanwhile by the frozen script fix | EPC-005 | resource-limits |
 | EPC-011 Registry-driven tools unit | P2 A | a CLI is added or removed with `wskit tools add|remove` from a reviewed registry entry, with no code | EPC-005 | tools |
-| EPC-033 macOS indexing unit | P2 A | development volumes on macOS are excluded from Spotlight and the FSEvents on-disk log by default, with an exact revert | EPC-003 (EPC-005 to move onto the engine) | indexing |
+| EPC-033 macOS indexing unit | P2 A | development volumes on macOS are excluded from Spotlight and the FSEvents on-disk log by default, with an exact revert; the pilot Mac is covered meanwhile by the reference script | EPC-005 | indexing |
 | EPC-012 MCP catalog unit | P2 A | an MCP server is added to every agent config home with `wskit mcp add`, with sign-in as a hand-over | EPC-009 | mcp |
 | EPC-013 Packages and runtimes units | P2 B | OS packages and runtimes install at exact pins, with the SSH and remote-desktop install guards | EPC-005 | packages-user, packages, runtimes |
 | EPC-014 Identity and accounts units | P2 B | hostnames, accounts, groups and git identity are set and revertible for both account topologies, with homes archived before removal | EPC-005 | machine-identity, accounts, git-identity |
@@ -58,7 +58,7 @@ unit it owns, and an interrupted revert that resumes (ADR 0005 section 2c).
 | EPC-019 Workloads and agentctl units | P2 C | workloads and the narrow `agentctl` helper are installed with an atomic sudoers rule | EPC-005, EPC-014 | agentctl, workloads |
 | EPC-020 Snapshots unit | P2 C | filesystem snapshots are taken at baseline and stable points where supported | EPC-005 | snapshots |
 | EPC-021 Workspace unit | P2 C | the agent workspace and its repositories are set up from config | EPC-011, EPC-014 | workspace |
-| EPC-022 Doctor (T8) | P2 C | a person or agent runs one read-only check of every unit, drift and end-of-support date | EPC-005 | doctor |
+| EPC-022 Doctor and audits (T8) | P2 C | a person or agent runs one read-only check of every unit, drift and end-of-support date; root and agent audits record the stable point | EPC-005 | doctor, audit-agent |
 | EPC-023 Stages and gates (T3) | P3 | the full setup runs as stages composing units, with gates, hand-overs and stable points | the P2 units it composes | all (composition) |
 | EPC-024 Lockout and convergence guarantees (T4) | P3 | no interruption leaves a locked-out or half-converged machine, proven across units | EPC-023 | all (checks) |
 | EPC-025 One config and the interview (T5) | P3 | a person or agent writes a machine config through the interview, with layered values, `[tools]` and `[mcp]` choices, and generated docs | EPC-003, EPC-011, EPC-012 | none |
@@ -105,9 +105,9 @@ TOML file, never this table. The same table appears in SPC-001 and in ADR
 | `accounts` | identity | identity | root | identity | root | machine-identity; machine-identity | EPC-014 | alpha |
 | `agentctl` | system | services | root | none | none | accounts; none | EPC-019 | alpha |
 | `workloads` | system | services | root | agent | agent | agentctl; accounts | EPC-019 | alpha |
-| `firewall` | network | remote | root | remote | root | packages; packages | EPC-015 | alpha |
-| `ssh` | remote | remote | root | remote | root | accounts, firewall; accounts, firewall | EPC-015 | alpha |
-| `mesh-vpn` | network | remote | root | remote | root | packages, ssh; packages, ssh | EPC-016 | alpha |
+| `firewall` | network | remote | root | remote | root | packages, mesh-vpn; packages, mesh-vpn | EPC-015 | alpha |
+| `ssh` | remote | remote | root | remote | root | accounts, firewall, mesh-vpn; accounts, firewall, mesh-vpn | EPC-015 | alpha |
+| `mesh-vpn` | network | remote | root | remote | root | packages; packages | EPC-016 | alpha |
 | `remote-desktop` | remote | remote | root | none | none | packages, ssh; none | EPC-017 | alpha |
 | `vpn` | network | remote | root | remote | root | packages, ssh; packages, ssh | EPC-007 | alpha |
 | `shell` | agent | agent | agent | agent | agent | accounts; accounts | EPC-008 | alpha |
@@ -118,10 +118,11 @@ TOML file, never this table. The same table appears in SPC-001 and in ADR
 | `mcp` | agent | agent | agent | agent | agent | agent-settings; agent-settings | EPC-012 | alpha |
 | `browser-tunnel` | remote | agent | user | agent | user | none; none | EPC-006 | alpha |
 | `workspace` | workspace | agent | agent | agent | agent | tools, git-identity; tools, git-identity | EPC-021 | alpha |
-| `resource-limits` | ops | resources | root | resources | root | none; none | EPC-010 | alpha |
+| `resource-limits` | ops | resources | root | resources | root | baseline; baseline | EPC-010 | alpha |
 | `indexing` | system | none | none | resources | root | none; baseline | EPC-033 | alpha |
 | `snapshots` | data | resources | root | none | none | baseline; none | EPC-020 | alpha |
 | `doctor` | ops | audit | root | audit | root | none; none | EPC-022 | alpha |
+| `audit-agent` | ops | audit-agent | agent | audit-agent | agent | shell, tools, agent-settings, mcp; shell, tools, agent-settings, mcp | EPC-022 | alpha |
 <!-- catalog:units:end -->
 
 ## Mappings
