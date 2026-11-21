@@ -1,0 +1,11 @@
+id = "ADR-0001"
+uid = "a696d490-56c1-4628-bfb1-4be1e895cd71"
+kind = "ADR"
+title = "stack choice for unset"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-21T08:50:28Z"
+target = "none"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
