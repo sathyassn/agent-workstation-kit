@@ -51,9 +51,12 @@ ceiling. It previews by default; `--apply` changes the machine and needs root.
         `-- user@UID.service        the agent's user manager
             |-- app.slice           desktop apps (not limited)
             |-- session.slice       desktop shell (not limited)
-            `-- agent-work.slice    MemoryHigh, MemoryMax, MemorySwapMax, oomd
-                |-- agent services  (Slice=agent-work.slice)
-                `-- agentctl tmux sessions
+            |-- orca_ptys_*.slice   agent-manager ptys (left by agent-work-shell)
+            `-- agent.slice         implied parent (see slice naming below)
+                `-- agent-work.slice  MemoryHigh, MemoryMax, MemorySwapMax, oomd
+                    |-- agent services   (Slice=agent-work.slice)
+                    |-- agentctl tmux sessions
+                    `-- agent-manager terminals (through agent-work-shell)
 ```
 
 **Where the ceiling applies, and why.** The policy is a user-level slice,
@@ -81,14 +84,54 @@ rests on systemd's documented behaviour:
 `validate-host.sh` and the phase verifier fail when an override for
 `agent-work.slice` exists. Start agent services with `Slice=agent-work.slice`.
 
+**Placement check.** `validate-host.sh` and the phase verifier fail when a
+process of the agent account runs outside `agent-work.slice` and is a `claude`,
+`codex` or `grok` process (by name or by its first two arguments, so a
+Node-launched CLI counts), or any process in an agent manager's pty slice
+(`orca_ptys_*.slice`). Desktop apps outside the slice are not flagged.
+
+### Agent-manager terminals
+
+An agent manager such as Orca starts each terminal in its own pty slice,
+`orca_ptys_<daemon scope>.slice`, directly under the user manager and outside
+`agent-work.slice`. Run its terminals through the wrapper
+`scripts/agent-work-shell`; staged, that is
+`/opt/agent-workstation-kit/scripts/agent-work-shell`. The wrapper runs
+`systemd-run --user --scope --slice=agent-work.slice` around the account's
+login shell (`$SHELL -l`), so the terminal and every agent started in it move
+under the ceiling. It runs the shell directly when it is already inside the
+slice or the policy is not installed.
+
+Set it as the agent manager's terminal shell, in the agent account:
+
+- Orca: set the default terminal shell to
+  `/opt/agent-workstation-kit/scripts/agent-work-shell`. Orca stores this as
+  the `terminalDefaultShell` setting; that key was read from the Orca
+  application's own code, and the label of the field in Orca's settings screen
+  was not confirmed. Check it on the host, then open a new terminal and confirm
+  with `cat /proc/self/cgroup` that the path contains `/agent-work.slice/`.
+- Another agent manager: set its terminal shell or shell command to the same
+  path, then make the same check.
+
+**Slice naming.** systemd places a slice in the tree by its name: each dash
+marks a level, so `foo-bar.slice` is a child of `foo.slice`
+([systemd.slice](https://www.freedesktop.org/software/systemd/man/latest/systemd.slice.html)).
+That is why `agent-work.slice` sits under an implied `agent.slice`, and why a
+slice named `agent-work-NAME.slice` would be a child of `agent-work.slice` and
+held by its ceiling. An agent manager that lets you name its pty slices can
+use that form instead of the wrapper. Orca cannot: its slice name is fixed in
+code as `orca_ptys_` plus its daemon scope name, with every other character
+replaced by `_`, so the wrapper is the supported route.
+
 **What apply changes.** Each item is shown in the preview first.
 
 | Change | Setting | Default | When it takes effect |
 |---|---|---|---|
 | Memory ceiling | `MemoryHigh` and `MemoryMax` as shares of total RAM read at run time | 70% and 80% | New and restarted work in the slice |
 | Swap for agent work | `MemorySwapMax` as a share of RAM | 10% | Same |
-| Headroom check | Refuse when RAM outside `MemoryMax` is below `resources.os_memory_reserve_gib` | 8 GiB | Preview |
-| systemd-oomd | Enabled; kills in the slice above the pressure limit | 60% | At once |
+| Headroom check | Refuse when the RAM outside `MemoryMax` is below the reserve share (`resources.os_memory_reserve_percent`) | 10% | Preview |
+| systemd-oomd | Enabled; kills in the slice above the pressure limit (states `enabled`, `enabled-runtime`, `static` and `alias` count as enabled) | 60% | At once |
+| oomd scope | Overrides each vendor oomd drop-in for `user@.service` and `-.slice` with `ManagedOOM...=auto`, so oomd acts only on `agent-work.slice` | | At once |
 | Swappiness | `vm.swappiness`: 100 with zram, 10 with disk swap only, unchanged with no swap | auto | At once |
 | zram | `/etc/systemd/zram-generator.conf` at a share of RAM; needs `systemd-zram-generator` | off (0) | Next boot |
 | `/tmp` | Masks the packaged `tmp.mount` when it makes `/tmp` a RAM-backed tmpfs | auto | Next boot |
@@ -96,12 +139,28 @@ rests on systemd's documented behaviour:
 | Lingering | `loginctl enable-linger` so the user manager runs at boot | | At once |
 
 Shares are flags with these defaults: `--memory-high-percent`,
-`--memory-max-percent`, `--swap-max-percent`, `--oomd-pressure-percent`,
+`--memory-max-percent`, `--swap-max-percent`, `--memory-reserve-percent`,
+`--oomd-pressure-percent`,
 `--swappiness auto|keep|N`, `--zram-percent N` and `--tmp auto|disk|keep`.
 The `resources` phase of a plan uses the defaults and the profile's
-`os_memory_reserve_gib`. `CPUWeight=90` is a contention preference, not a core
+`os_memory_reserve_percent` (default 10). The older `os_memory_reserve_gib`
+field and `--memory-reserve-gib` flag are deprecated: profiles that still carry
+the field validate, but the policy no longer reads it, and the script refuses
+the old flag. `CPUWeight=90` is a contention preference, not a core
 reservation, `os_cpu_reserve_threads` is capacity-planning headroom, not CPU
 pinning, and `TasksMax` scales from 4,096 to 16,384 with RAM.
+
+**oomd scope.** Ubuntu's `systemd-oomd` package can ship vendor drop-ins such
+as `user@.service.d/10-oomd-user-service-defaults.conf` and
+`-.slice.d/10-oomd-root-slice-defaults.conf`, which let oomd kill across every
+user manager, desktop included, or across the whole machine on swap use. The
+preview prints the current `ManagedOOM` lines from `systemctl cat` for the
+agent's user manager and `-.slice`, and the first lines of `oomctl dump`. Apply
+writes a drop-in with the same name in `/etc/systemd/system/`, which replaces
+the vendor file, setting `ManagedOOMMemoryPressure=auto` and
+`ManagedOOMSwap=auto`. Each override is in the receipt and reverted like every
+other change. This also turns those defaults off for human accounts' user
+managers.
 
 When systemd-oomd is not installed, the slice carries no `ManagedOOM` keys:
 `MemoryHigh` throttles agent work under pressure, and at `MemoryMax` the
@@ -134,7 +193,11 @@ sudo /bin/bash /opt/agent-workstation-kit/scripts/apply-resource-policy-linux.sh
 sudo /bin/bash /opt/agent-workstation-kit/scripts/apply-resource-policy-linux.sh --agent ACCOUNT --revert --apply
 ```
 
-Revert refuses, and changes nothing, when a managed file changed after apply.
+Apply records each step just before making it. If apply stops part way, it
+says so and names the revert command; revert accepts a step that was recorded
+but not made (a missing mask link, a file not yet written or not yet removed),
+so an interrupted apply never blocks the undo. Revert refuses, and changes
+nothing, when a managed file changed after apply.
 `--remove` is an alias of `--revert`. Disabling lingering stops the agent's
 user manager when the agent has no login session.
 

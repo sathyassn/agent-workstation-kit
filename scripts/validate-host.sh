@@ -212,6 +212,19 @@ if [[ $(uname -s) == Linux ]]; then
       else
         fail "$outside_slice of $process_count $agent_account processes are outside user-$uid.slice"
       fi
+      # Agent work must run under the ceiling: claude, codex, grok, and shells in
+      # an agent manager's pty slice belong in agent-work.slice.
+      if outside_ceiling=$(agent_processes_outside_slice /proc "$uid"); then
+        if [[ -z "$outside_ceiling" ]]; then
+          pass "no $agent_account agent process runs outside agent-work.slice"
+        else
+          while read -r pid name cgroup; do
+            fail "$agent_account agent process $name (PID $pid) is outside agent-work.slice: $cgroup"
+          done <<<"$outside_ceiling"
+        fi
+      else
+        fail "could not inspect $agent_account process placement"
+      fi
     fi
 
     if systemctl is-enabled --quiet apt-daily-upgrade.timer; then

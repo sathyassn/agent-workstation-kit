@@ -264,15 +264,17 @@ def ufw_allows_in(status, rule, interface):
     return False
 
 
-RESOURCE_DEFAULTS = {"--memory-high-percent": 70, "--memory-max-percent": 80, "--swap-max-percent": 10, "--oomd-pressure-percent": 60}
+RESOURCE_DEFAULTS = {"--memory-reserve-percent": 10, "--memory-high-percent": 70, "--memory-max-percent": 80, "--swap-max-percent": 10, "--oomd-pressure-percent": 60}
 AGENT_SLICE = Path("/etc/systemd/user/agent-work.slice")
 RESOURCE_RECEIPT = Path("/var/lib/agent-workstation-kit/resource-policy/receipt.tsv")
 OOMD_BINARIES = (Path("/usr/lib/systemd/systemd-oomd"), Path("/lib/systemd/systemd-oomd"))
 
 
-def resource_options(command=()):
+def resource_options(command=(), profile=None):
     """Return the share flags of a resources phase command, with the script defaults."""
     options = dict(RESOURCE_DEFAULTS)
+    if profile and "os_memory_reserve_percent" in profile.get("resources", {}):
+        options["--memory-reserve-percent"] = profile["resources"]["os_memory_reserve_percent"]
     args = list(command or ())
     for index, arg in enumerate(args[:-1]):
         if arg in options:
@@ -283,13 +285,24 @@ def resource_options(command=()):
 def resource_values(profile, total, command=()):
     """Mirror calculate_memory_shares in common.sh: shares of total RAM in KiB."""
     gib = 1024 * 1024
-    options = resource_options(command)
-    reserve = profile["resources"]["os_memory_reserve_gib"]
+    options = resource_options(command, profile)
+    reserve = options["--memory-reserve-percent"]
     high_pct, max_pct = options["--memory-high-percent"], options["--memory-max-percent"]
     high, maximum = total * high_pct // 100, total * max_pct // 100
-    if max_pct <= high_pct or high <= 0 or total - maximum < reserve * gib:
+    if max_pct <= high_pct or high <= 0 or total - maximum < total * reserve // 100:
         raise ValueError("the agent memory ceiling leaves less than the reviewed reserve")
     return {"CPUWeight": "90", "TasksMax": str(max(4096, min(16384, total // gib * 128))), "MemoryHigh": str(high) + "K", "MemoryMax": str(maximum) + "K", "MemorySwapMax": str(total * options["--swap-max-percent"] // 100) + "K", "ManagedOOMMemoryPressureLimit": str(options["--oomd-pressure-percent"]) + "%"}
+
+
+def agent_processes_outside_slice(root, uid, proc_root="/proc"):
+    """List "PID NAME CGROUP" for agent processes of uid outside agent-work.slice.
+
+    Uses the same shell predicate as validate-host.sh. Returns None when the
+    check cannot run, so a caller fails closed.
+    """
+    check = 'source "$1"; agent_processes_outside_slice "$2" "$3"'
+    result = probe(["bash", "-c", check, "verify", str(root / "scripts/lib/common.sh"), proc_root, str(uid)])
+    return result.stdout.splitlines() if result.returncode == 0 else None
 
 
 def agent_slice_text(agent, values, oomd):
@@ -379,6 +392,10 @@ def verify_phase(plan, name, root):
             expected = agent_slice_text(agent, resource_values(profile, total, command), oomd)
             ok = not path.is_symlink() and path.stat().st_uid == 0 and stat.S_IMODE(path.stat().st_mode) == 0o644 and path.read_text() == expected
             ok = ok and RESOURCE_RECEIPT.is_file() and Path("/var/lib/systemd/linger/" + agent).exists()
+            outside = agent_processes_outside_slice(root, pwd.getpwnam(agent).pw_uid)
+            for line in outside or []:
+                print("REASON resources: agent process outside agent-work.slice: " + line)
+            ok = ok and outside == []
             # The agent's own user configuration outranks /etc/systemd/user.
             config = Path(pwd.getpwnam(agent).pw_dir) / ".config/systemd"
             ok = ok and not any(item.exists() for item in (config / "user/agent-work.slice", config / "user/agent-work.slice.d", config / "user.control/agent-work.slice.d"))

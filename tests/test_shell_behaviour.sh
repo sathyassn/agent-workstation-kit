@@ -154,13 +154,13 @@ fi
 [[ $(calculate_tasks_max $((64 * 1024 * 1024))) == 8192 ]]
 [[ $(calculate_tasks_max $((256 * 1024 * 1024))) == 16384 ]]
 read -r memory_high memory_max swap_max < <(
-  calculate_memory_shares $((64 * 1024 * 1024)) 70 80 10 8
+  calculate_memory_shares $((64 * 1024 * 1024)) 70 80 10 10
 )
 ((memory_high == 64 * 1024 * 1024 * 70 / 100))
 ((memory_max == 64 * 1024 * 1024 * 80 / 100))
 ((swap_max == 64 * 1024 * 1024 * 10 / 100))
-if calculate_memory_shares $((16 * 1024 * 1024)) 70 80 10 8 >/dev/null; then
-  printf 'Expected an 80%% ceiling on 16 GiB to break the 8 GiB reserve.\n' >&2
+if calculate_memory_shares $((16 * 1024 * 1024)) 70 95 10 10 >/dev/null; then
+  printf 'Expected a 95%% ceiling to break the 10%% reserve.\n' >&2
   exit 1
 fi
 

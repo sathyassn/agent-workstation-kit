@@ -33,14 +33,14 @@ bash-check:
 	fi
 
 shell-check: bash-check
-	@for file in scripts/*.sh scripts/lib/*.sh agentctl/* .codeflow/git-hooks/*; do \
+	@for file in scripts/*.sh scripts/agent-work-shell scripts/lib/*.sh agentctl/* .codeflow/git-hooks/*; do \
 		[ -f "$$file" ] || continue; \
 		case "$$file" in *.md|*.yaml) continue ;; esac; \
 		"$(BASH_BIN)" -n "$$file"; \
 	done
 	@if command -v shellcheck >/dev/null 2>&1; then \
 		set --; \
-		for file in scripts/*.sh scripts/lib/*.sh agentctl/* .codeflow/git-hooks/*; do \
+		for file in scripts/*.sh scripts/agent-work-shell scripts/lib/*.sh agentctl/* .codeflow/git-hooks/*; do \
 			[ -f "$$file" ] || continue; \
 			set -- "$$@" "$$file"; \
 		done; \

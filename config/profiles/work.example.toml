@@ -73,7 +73,7 @@ endpoint_management = "ask"
 
 [resources]
 policy = "measured-balanced"
-os_memory_reserve_gib = 8
+os_memory_reserve_percent = 10
 os_cpu_reserve_threads = 2
 
 [backup]

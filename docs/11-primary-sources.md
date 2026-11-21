@@ -61,6 +61,8 @@ The GL.iNet remote-KVM product names and guides used in release candidate
 - [Ubuntu Secure Boot and DKMS/MOK signing](https://documentation.ubuntu.com/security/docs/security-features/platform-protections/secure-boot/)
 - [systemd resource control (MemoryHigh, MemoryMax, MemorySwapMax, ManagedOOM)](https://www.freedesktop.org/software/systemd/man/latest/systemd.resource-control.html)
 - [systemd unit search paths and ConditionUser](https://www.freedesktop.org/software/systemd/man/latest/systemd.unit.html)
+- [systemd slice naming](https://www.freedesktop.org/software/systemd/man/latest/systemd.slice.html)
+- [oomctl](https://www.freedesktop.org/software/systemd/man/latest/oomctl.html)
 - [systemd-oomd](https://www.freedesktop.org/software/systemd/man/latest/systemd-oomd.service.html)
 - [systemd cgroup delegation](https://systemd.io/CGROUP_DELEGATION/)
 - [zram-generator](https://github.com/systemd/zram-generator)
