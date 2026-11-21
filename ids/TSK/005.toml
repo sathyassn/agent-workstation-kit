@@ -1,0 +1,11 @@
+id = "TSK-005"
+uid = "db5ff0d9-1eb6-4b90-8acf-b069a2e96791"
+kind = "TSK"
+title = "Code generation from the schema and unit catalog"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-21T09:33:42Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
