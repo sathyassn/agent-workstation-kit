@@ -1,0 +1,11 @@
+id = "TSK-002"
+uid = "9f8dd5bd-3be3-444f-9353-0945e41ef500"
+kind = "TSK"
+title = "Go module, layout and pinned dependencies"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-21T09:32:32Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
