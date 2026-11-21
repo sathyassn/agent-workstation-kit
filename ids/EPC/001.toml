@@ -1,0 +1,11 @@
+id = "EPC-001"
+uid = "394220c6-4931-49b4-91f6-d2a3327daba5"
+kind = "EPC"
+title = "Foundation for the Go kit"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-21T09:08:25Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
