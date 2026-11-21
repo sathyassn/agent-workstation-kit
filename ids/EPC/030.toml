@@ -1,0 +1,11 @@
+id = "EPC-030"
+uid = "5eb92e0d-d9aa-4159-a124-39060a8e6ad9"
+kind = "EPC"
+title = "Acceptance for v0.2.0"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-21T09:24:13Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
