@@ -1,0 +1,11 @@
+id = "TSK-008"
+uid = "66437a5d-947a-4dee-b68f-36ff9faea89f"
+kind = "TSK"
+title = "Quiet findings, obfuscation checks and self-scan"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-21T09:34:51Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
