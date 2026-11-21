@@ -1,0 +1,11 @@
+id = "TSK-027"
+uid = "cdbb9a49-5066-43cf-8af8-f165ae6d307d"
+kind = "TSK"
+title = "Tunnel supervisor job and readiness"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-21T10:09:02Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
