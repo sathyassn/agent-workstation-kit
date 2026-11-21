@@ -1,0 +1,11 @@
+id = "TSK-030"
+uid = "e11000af-b6c7-44d3-9221-d2571b03566f"
+kind = "TSK"
+title = "Agent-work ceiling and early OOM"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-21T10:33:31Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
