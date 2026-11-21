@@ -1,0 +1,11 @@
+id = "TSK-018"
+uid = "546db4f3-35f7-421f-baf1-15f595638787"
+kind = "TSK"
+title = "Backup, manifest, intent and restore"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-21T09:41:36Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
