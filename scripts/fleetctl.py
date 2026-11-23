@@ -453,14 +453,15 @@ def validate_profile(profile: dict[str, Any], *, ready: bool) -> list[Issue]:
             issues.append(Issue(f"resources.{key}", f"must be an integer from {lower} through {upper}"))
     if "reserve_fixed_gib" in resources:
         value = resources["reserve_fixed_gib"]
-        if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
-            issues.append(Issue("resources.reserve_fixed_gib", "must be a positive number"))
+        # The same bound the resource script applies (up to six whole digits).
+        if type(value) not in (int, float) or not math.isfinite(value) or not 0 < value < 1_000_000:
+            issues.append(Issue("resources.reserve_fixed_gib", "must be a positive number below 1000000"))
         if "os_memory_reserve_percent" in resources:
             issues.append(Issue("resources.reserve_fixed_gib", "cannot be combined with resources.os_memory_reserve_percent"))
     if "reserve_cores" in resources:
         value = resources["reserve_cores"]
-        if type(value) is not int or value < 0:
-            issues.append(Issue("resources.reserve_cores", "must be an integer >= 0"))
+        if type(value) is not int or not 0 <= value <= 1024:
+            issues.append(Issue("resources.reserve_cores", "must be an integer from 0 through 1024"))
     if "cpu_weight" in resources:
         value = resources["cpu_weight"]
         if type(value) is not int or not 1 <= value <= 10000:

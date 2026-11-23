@@ -817,8 +817,8 @@ class FleetProfileTests(unittest.TestCase):
         self.assertIn("resources.reserve_fixed_gib", {i.path for i in fleetctl.validate_profile(conflict, ready=True)})
 
         for key, bad_values in (
-            ("reserve_fixed_gib", (0, -2, True, "8", float("inf"), float("nan"))),
-            ("reserve_cores", (-1, 1.5, True, "2")),
+            ("reserve_fixed_gib", (0, -2, True, "8", float("inf"), float("nan"), 1_000_000, 18446744073709551666)),
+            ("reserve_cores", (-1, 1.5, True, "2", 1025, 18446744073709551666)),
             ("cpu_weight", (0, 10001, -5, 50.5, False, "50")),
         ):
             for bad in bad_values:
