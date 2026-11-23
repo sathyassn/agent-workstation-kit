@@ -123,6 +123,7 @@ Architecture decision records explain why the current design was selected:
 - [Tailscale, NoMachine, and staged remote KVM](decisions/0002-network-and-remote-access.md)
 - [Named humans plus a shared agent workspace](decisions/0003-shared-agent-account.md)
 - [mise first; reproducibility and backup remain separate](decisions/0004-reproducibility-and-backup.md)
+- [Setup architecture: one apply path, transactions, restore points and a conductor agent (proposed)](design/setup-architecture.md)
 
 Current automated checks and outstanding live-host proof are maintained in the
 [production and public-release checklist](13-public-release-checklist.md).
