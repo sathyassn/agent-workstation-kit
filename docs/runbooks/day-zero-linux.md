@@ -393,23 +393,32 @@ never overlay a new version. A power loss or `SIGKILL` can still leave a hidden
 `/opt/.agent-workstation-stage.*` directory, which is not executable input and
 must be reviewed before a clean retry.
 
-The setup agent previews from the `bootstrap-admin` checkout. It then displays
-the matching staged command. A human opens a separate trusted terminal, types
-the apply command and immediately invalidates cached sudo authorization:
+The setup agent exports the execution plan and previews from the
+`bootstrap-admin` checkout. It then displays the matching staged executor
+command (see [automated and resumable setup](resumable-setup.md)). A human
+stages the reviewed execution plan under `/opt/agent-workstation-fleet/plans/`,
+opens a separate trusted terminal, previews and applies the scope, and
+immediately invalidates cached sudo authorization:
 
 ```bash
 PROFILE='machines/acme-ws-001.toml'
 
 cd "$HOME/setup/agent-workstation-kit"
-./scripts/fleetctl.py \
+./scripts/setup-workstation.sh plan \
   --fleet-root "$HOME/setup/acme-agent-workstation-fleet" \
-  run "$PROFILE" base
+  --profile "$PROFILE" \
+  --export-plan /PRIVATE/EVIDENCE/execution-plan.json
+./scripts/setup-workstation.sh run \
+  --plan-file /PRIVATE/EVIDENCE/execution-plan.json --scope packages
 
+# After staging the reviewed plan to /opt/agent-workstation-fleet/plans/:
 cd /opt/agent-workstation-kit
 
-sudo /usr/bin/python3 -I -B /opt/agent-workstation-kit/scripts/fleetctl.py \
-  --fleet-root /opt/agent-workstation-fleet \
-  run "$PROFILE" base --apply
+sudo /bin/bash /opt/agent-workstation-kit/scripts/setup-workstation.sh run \
+  --plan-file /opt/agent-workstation-fleet/plans/execution-plan.json \
+  --scope packages --apply --approve-plan REVIEWED_EXECUTION_PLAN_ID \
+  --confirm-target acme-ws-001 --execution-context host \
+  --confirm-recovery-tested --journal /PRIVATE/ROOT_OWNED_DIRECTORY/setup.json
 sudo -K
 ```
 

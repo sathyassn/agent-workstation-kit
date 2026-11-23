@@ -1,0 +1,26 @@
+schema_version = 1
+
+[[tool]]
+id = "lib"
+kind = "go-library"
+module = "example.com/lib"
+version = "v1.2.3"
+sum = "h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+source = "https://example.com/lib"
+licence = "MIT"
+last_review = "2026-11-23"
+next_review = "2027-05-23"
+purpose = "Fixture library"
+
+[[tool]]
+id = "lint"
+kind = "go-tool"
+module = "example.com/tools"
+tool_path = "example.com/tools/cmd/lint"
+version = "v0.4.0"
+sum = "h1:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB="
+source = "https://example.com/tools"
+licence = "MIT"
+last_review = "2026-11-23"
+next_review = "2027-05-23"
+purpose = "Fixture tool"

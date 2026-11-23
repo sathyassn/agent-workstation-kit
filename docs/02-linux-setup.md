@@ -48,7 +48,7 @@ against the staged fleet input. Keep ordinary development and proposed updates
 in separate user-owned checkouts; promote replacements only after their checks
 and review pass.
 
-Use `fleetctl.py plan` to render profile-specific commands. The direct script commands below remain useful for inspection and troubleshooting; normal onboarding should run them through `fleetctl.py` one phase at a time.
+Use `fleetctl.py plan` to render profile-specific commands and `fleetctl.py run` for single-phase preview or read-only `audit`. Apply phases only through `scripts/setup-workstation.sh` ([resumable setup](runbooks/resumable-setup.md)); direct script commands remain useful for inspection and troubleshooting.
 
 For a node created with an earlier profile/schema, follow the
 [v1-to-v2 migration runbook](runbooks/migrate-v1-to-v2.md); do not delete legacy
@@ -87,49 +87,68 @@ old mapping remains; it does not rewrite an organization-managed hosts file.
 Keep console or KVM access open, then verify `hostnamectl`, local hostname
 resolution, `sudo`, and the identity audit before continuing.
 
-Apply only after recovery is open and tested:
+Apply only after recovery is open and tested, by exporting the execution plan
+with `--connection-context` and applying the staged `machine` scope through
+`scripts/setup-workstation.sh`:
 
 ```bash
-cd /opt/agent-workstation-kit
 PROFILE='machines/acme-ws-001.toml'
-sudo /usr/bin/python3 -I -B /opt/agent-workstation-kit/scripts/fleetctl.py --fleet-root /opt/agent-workstation-fleet \
-  run "$PROFILE" identity \
-  --apply --confirm-recovery-tested --connection-context local-console
+scripts/setup-workstation.sh plan \
+  --fleet-root "$HOME/setup/acme-agent-workstation-fleet" --profile "$PROFILE" \
+  --confirm-recovery-tested --connection-context local-console \
+  --export-plan /PRIVATE/EVIDENCE/execution-plan.json
+
+# Stage the reviewed plan to /opt/agent-workstation-fleet/plans/execution-plan.json,
+# preview without --apply first, then apply as root:
+cd /opt/agent-workstation-kit
+sudo /bin/bash /opt/agent-workstation-kit/scripts/setup-workstation.sh run \
+  --plan-file /opt/agent-workstation-fleet/plans/execution-plan.json \
+  --scope machine --apply --approve-plan REVIEWED_EXECUTION_PLAN_ID \
+  --confirm-target acme-ws-001 --execution-context host \
+  --confirm-recovery-tested --journal /PRIVATE/ROOT_OWNED_DIRECTORY/setup.json
 sudo -K
 ```
 
-When applying through a named-user Tailscale SSH session, use
-`--connection-context tailscale-ssh --ssh-source-ip "$ssh_peer"` as shown for
-remote hardening below. The explicit context prevents a privileged identity
-change from being applied without recording a tested recovery path. The
-local-console form checks both the SSH environment and the full process ancestry
-for SSH, Tailscale SSH, and Mosh; it fails closed if ancestry cannot be inspected,
-including after `sudo` strips the SSH environment.
+When applying through a named-user Tailscale SSH session, pass
+`--connection-context tailscale-ssh --ssh-source-ip "$ssh_peer"` when exporting
+the plan, as shown for remote hardening below. The explicit context prevents a
+privileged identity change from being applied without recording a tested
+recovery path. The local-console form checks both the SSH environment and the
+full process ancestry for SSH, Tailscale SSH, and Mosh; it fails closed if
+ancestry cannot be inspected, including after `sudo` strips the SSH environment.
 
 ## Phase 4: accounts and access
 
 Run the account script with explicit names, first without and then with `--apply`. Set passwords or SSH keys through the organization-approved process; do not put them on the command line or in a profile. The script never changes an existing password and leaves a newly created account without one.
 
 Provision public keys for every named SSH user. Install and test Tailscale from
-the console, then preview the profile's `remote-hardening` phase. Apply only
-with open, tested recovery and an explicit connection context:
+the console, then preview the profile's `remote-hardening` phase. Export the
+plan with open, tested recovery and an explicit connection context, stage it,
+preview the `machine` scope, and apply through `scripts/setup-workstation.sh`:
 
 ```bash
-cd /opt/agent-workstation-kit
 PROFILE='machines/acme-ws-001.toml'
+FLEET_ROOT="$HOME/setup/acme-agent-workstation-fleet"
 
 # At a physical console or independently tested KVM:
-sudo /usr/bin/python3 -I -B /opt/agent-workstation-kit/scripts/fleetctl.py --fleet-root /opt/agent-workstation-fleet \
-  run "$PROFILE" remote-hardening --apply \
-  --confirm-recovery-tested --connection-context local-console
-sudo -K
+scripts/setup-workstation.sh plan --fleet-root "$FLEET_ROOT" --profile "$PROFILE" \
+  --confirm-recovery-tested --connection-context local-console \
+  --export-plan /PRIVATE/EVIDENCE/execution-plan.json
 
-# In a named-user SSH shell reached through Tailscale, capture before sudo:
+# Or in a named-user SSH shell reached through Tailscale, capture before sudo:
 ssh_peer=${SSH_CONNECTION%% *}
-sudo /usr/bin/python3 -I -B /opt/agent-workstation-kit/scripts/fleetctl.py --fleet-root /opt/agent-workstation-fleet \
-  run "$PROFILE" remote-hardening --apply \
+scripts/setup-workstation.sh plan --fleet-root "$FLEET_ROOT" --profile "$PROFILE" \
   --confirm-recovery-tested --connection-context tailscale-ssh \
-  --ssh-source-ip "$ssh_peer"
+  --ssh-source-ip "$ssh_peer" \
+  --export-plan /PRIVATE/EVIDENCE/execution-plan.json
+
+# After staging the reviewed plan, preview without --apply, then apply as root:
+cd /opt/agent-workstation-kit
+sudo /bin/bash /opt/agent-workstation-kit/scripts/setup-workstation.sh run \
+  --plan-file /opt/agent-workstation-fleet/plans/execution-plan.json \
+  --scope machine --apply --approve-plan REVIEWED_EXECUTION_PLAN_ID \
+  --confirm-target acme-ws-001 --execution-context host \
+  --confirm-recovery-tested --journal /PRIVATE/ROOT_OWNED_DIRECTORY/setup.json
 sudo -K
 ```
 

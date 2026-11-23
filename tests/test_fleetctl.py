@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import copy
 import importlib.util
+import io
 import os
 import stat
 import subprocess
@@ -856,6 +857,211 @@ class FleetProfileTests(unittest.TestCase):
         renamed["resources"].pop("os_memory_reserve_gib", None)
         renamed["resources"]["os_memory_reserve_percent"] = 15
         self.assertEqual([], migration.check_migration(old, renamed))
+
+    def test_run_apply_exits_2_and_prints_executor_commands(self) -> None:
+        import shlex
+
+        def parse_printed_commands(output: str) -> tuple[list[list[str]], list[list[str]]]:
+            plan_cmds: list[list[str]] = []
+            run_cmds: list[list[str]] = []
+            for raw_line in output.splitlines():
+                stripped = raw_line.strip()
+                if stripped.startswith("scripts/setup-workstation.sh plan "):
+                    plan_cmds.append(shlex.split(stripped))
+                elif stripped.startswith((
+                    "scripts/setup-workstation.sh run ",
+                    "sudo /bin/bash /opt/agent-workstation-kit/scripts/setup-workstation.sh run ",
+                )):
+                    run_cmds.append(shlex.split(stripped))
+            return plan_cmds, run_cmds
+
+        def parse_plan_flags(argv: list[str]) -> argparse.Namespace:
+            self.assertEqual(["scripts/setup-workstation.sh", "plan"], argv[:2])
+            parser = argparse.ArgumentParser()
+            parser.add_argument("--fleet-root", required=True)
+            parser.add_argument("--profile", required=True)
+            parser.add_argument("--export-plan", required=True)
+            parser.add_argument("--confirm-recovery-tested", action="store_true")
+            parser.add_argument("--connection-context", choices=("local-console", "tailscale-ssh"))
+            parser.add_argument("--ssh-source-ip")
+            return parser.parse_args(argv[2:])
+
+        def parse_run_flags(argv: list[str]) -> tuple[bool, argparse.Namespace]:
+            if argv[:4] == [
+                "sudo", "/bin/bash",
+                "/opt/agent-workstation-kit/scripts/setup-workstation.sh", "run",
+            ]:
+                is_root = True
+                rest = argv[4:]
+            else:
+                self.assertEqual(["scripts/setup-workstation.sh", "run"], argv[:2])
+                is_root = False
+                rest = argv[2:]
+            parser = argparse.ArgumentParser()
+            parser.add_argument("--plan-file", required=True)
+            parser.add_argument("--scope", choices=("packages", "machine", "agent", "resources", "audit"), required=True)
+            parser.add_argument("--apply", action="store_true")
+            parser.add_argument("--approve-plan")
+            parser.add_argument("--confirm-target")
+            parser.add_argument("--confirm-recovery-tested", action="store_true")
+            parser.add_argument("--execution-context", choices=("host", "sandbox", "unknown"))
+            parser.add_argument("--journal")
+            return is_root, parser.parse_args(rest)
+
+        with tempfile.TemporaryDirectory() as directory:
+            fleet = Path(directory)
+            (fleet / "machines").mkdir()
+            (fleet / "kit.lock").write_text(fleetctl.VERSION + "\n", encoding="utf-8")
+            linux_profile_path = fleet / "machines/ac-ws-001.toml"
+            macos_profile_path = fleet / "machines/ac-mac-001.toml"
+            linux_profile_path.write_text(
+                (ROOT / "config/profiles/work.example.toml").read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            macos_profile_path.write_text(
+                (ROOT / "config/profiles/macos-work.example.toml").read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            linux_profile = fleetctl.load_profile(linux_profile_path)
+            macos_profile = fleetctl.load_profile(macos_profile_path)
+
+            cases = (
+                ("linux", linux_profile_path, linux_profile, "base", [], "packages", True),
+                ("linux", linux_profile_path, linux_profile, "accounts", [], "machine", True),
+                (
+                    "linux", linux_profile_path, linux_profile, "identity",
+                    ["--confirm-recovery-tested", "--connection-context", "local-console"],
+                    "machine", True,
+                ),
+                (
+                    "linux", linux_profile_path, linux_profile, "remote-hardening",
+                    ["--confirm-recovery-tested", "--connection-context", "tailscale-ssh"],
+                    "machine", True,
+                ),
+                (
+                    "linux", linux_profile_path, linux_profile, "remote-hardening",
+                    ["--confirm-recovery-tested", "--connection-context", "tailscale-ssh", "--ssh-source-ip", "100.64.0.10"],
+                    "machine", True,
+                ),
+                ("linux", linux_profile_path, linux_profile, "agentctl", [], "machine", True),
+                ("linux", linux_profile_path, linux_profile, "workloads", [], "machine", True),
+                ("linux", linux_profile_path, linux_profile, "shell", [], "agent", False),
+                ("linux", linux_profile_path, linux_profile, "audit", [], "audit", True),
+                ("macos", macos_profile_path, macos_profile, "base", [], "packages", False),
+                ("macos", macos_profile_path, macos_profile, "identity", [], "machine", True),
+                ("macos", macos_profile_path, macos_profile, "workloads", [], "agent", False),
+            )
+            for platform, profile_path, profile, phase_name, extra, expected_scope, expected_root in cases:
+                with self.subTest(platform=platform, phase=phase_name, extra=extra):
+                    result = subprocess.run(
+                        [
+                            sys.executable, str(ROOT / "scripts/fleetctl.py"),
+                            "--fleet-root", str(fleet),
+                            "run", str(profile_path.relative_to(fleet)), phase_name, "--apply", *extra,
+                        ],
+                        capture_output=True, text=True, check=False,
+                    )
+                    self.assertEqual(2, result.returncode, result.stdout + result.stderr)
+                    plan_cmds, run_cmds = parse_printed_commands(result.stderr)
+                    self.assertGreaterEqual(len(plan_cmds), 1, result.stderr)
+                    parsed_plans = [parse_plan_flags(cmd) for cmd in plan_cmds]
+                    for parsed_plan in parsed_plans:
+                        self.assertEqual(str(fleet), parsed_plan.fleet_root)
+                        self.assertEqual(str(profile_path.relative_to(fleet)), parsed_plan.profile)
+                        self.assertTrue(parsed_plan.confirm_recovery_tested)
+                        self.assertIn(parsed_plan.connection_context, ("local-console", "tailscale-ssh"))
+                        # Verify the parsed plan flags generate valid apply arguments for identity/remote-hardening.
+                        id_phase = fleetctl.phase_for(
+                            profile, "identity", apply=True,
+                            recovery=parsed_plan.confirm_recovery_tested,
+                            connection_context=parsed_plan.connection_context,
+                            ssh_source_ip=parsed_plan.ssh_source_ip,
+                        )
+                        assert id_phase.command
+                        self.assertIn("--confirm-recovery-tested", id_phase.command)
+                        self.assertIn("--connection-context", id_phase.command)
+                        self.assertEqual(
+                            parsed_plan.connection_context,
+                            id_phase.command[id_phase.command.index("--connection-context") + 1],
+                        )
+                        if parsed_plan.connection_context == "tailscale-ssh":
+                            self.assertTrue(parsed_plan.ssh_source_ip)
+                            self.assertIn("--ssh-source-ip", id_phase.command)
+                            self.assertEqual(
+                                parsed_plan.ssh_source_ip,
+                                id_phase.command[id_phase.command.index("--ssh-source-ip") + 1],
+                            )
+                            if platform == "linux":
+                                rem_phase = fleetctl.phase_for(
+                                    profile, "remote-hardening", apply=True,
+                                    recovery=parsed_plan.confirm_recovery_tested,
+                                    connection_context=parsed_plan.connection_context,
+                                    ssh_source_ip=parsed_plan.ssh_source_ip,
+                                )
+                                assert rem_phase.command
+                                self.assertIn("--confirm-recovery-tested", rem_phase.command)
+                                self.assertEqual(
+                                    parsed_plan.ssh_source_ip,
+                                    rem_phase.command[rem_phase.command.index("--ssh-source-ip") + 1],
+                                )
+                    if "--connection-context" not in extra:
+                        contexts = {p.connection_context for p in parsed_plans}
+                        self.assertEqual({"local-console", "tailscale-ssh"}, contexts)
+                    elif "tailscale-ssh" in extra:
+                        self.assertEqual(["tailscale-ssh"], [p.connection_context for p in parsed_plans])
+                        expected_peer = "100.64.0.10" if "--ssh-source-ip" in extra else "SSH_SOURCE_IP"
+                        self.assertEqual(expected_peer, parsed_plans[0].ssh_source_ip)
+
+                    self.assertEqual(2, len(run_cmds), result.stderr)
+                    preview_is_root, preview_args = parse_run_flags(run_cmds[0])
+                    apply_is_root, apply_args = parse_run_flags(run_cmds[1])
+                    self.assertEqual(expected_root, preview_is_root)
+                    self.assertEqual(expected_root, apply_is_root)
+                    self.assertFalse(preview_args.apply)
+                    self.assertTrue(apply_args.apply)
+                    self.assertEqual(expected_scope, preview_args.scope)
+                    self.assertEqual(expected_scope, apply_args.scope)
+                    self.assertEqual(profile["machine"]["hostname"], apply_args.confirm_target)
+                    self.assertEqual("host", apply_args.execution_context)
+                    self.assertTrue(apply_args.approve_plan)
+                    self.assertTrue(apply_args.journal)
+                    if expected_root:
+                        self.assertEqual("/opt/agent-workstation-fleet/plans/execution-plan.json", preview_args.plan_file)
+                        self.assertEqual("/opt/agent-workstation-fleet/plans/execution-plan.json", apply_args.plan_file)
+                        self.assertTrue(apply_args.confirm_recovery_tested)
+                    else:
+                        self.assertFalse(apply_args.confirm_recovery_tested)
+
+            # macOS agentctl is Linux-only: print the Linux-only error and no apply command.
+            mac_agentctl = subprocess.run(
+                [
+                    sys.executable, str(ROOT / "scripts/fleetctl.py"),
+                    "--fleet-root", str(fleet),
+                    "run", str(macos_profile_path.relative_to(fleet)), "agentctl", "--apply",
+                ],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(2, mac_agentctl.returncode)
+            self.assertIn("agentctl is Linux-only", mac_agentctl.stderr)
+            self.assertNotIn("setup-workstation.sh", mac_agentctl.stderr)
+            self.assertNotIn("--apply", mac_agentctl.stderr)
+
+    def test_run_read_only_audit_still_runs_without_apply(self) -> None:
+        profile = self.make_ready(self.load_work())
+        argv = ["fleetctl.py", "run", "ignored.toml", "audit"]
+        completed = subprocess.CompletedProcess([], 0)
+        with mock.patch.object(sys, "argv", argv), \
+             mock.patch.object(fleetctl, "load_profile", return_value=profile), \
+             mock.patch.object(fleetctl, "actual_platform", return_value="linux"), \
+             mock.patch.object(fleetctl, "audit_machine_identity", return_value=0) as id_audit, \
+             mock.patch.object(fleetctl, "audit_declared_accounts", return_value=0) as acct_audit, \
+             mock.patch.object(fleetctl.subprocess, "run", return_value=completed) as run, \
+             mock.patch("sys.stdout", new=io.StringIO()):
+            self.assertEqual(0, fleetctl.main())
+            id_audit.assert_called_once_with(profile)
+            acct_audit.assert_called_once_with(profile)
+            run.assert_called_once()
+            self.assertNotIn("--apply", run.call_args.args[0])
 
 
 if __name__ == "__main__":

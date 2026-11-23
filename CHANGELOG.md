@@ -13,6 +13,7 @@ step is in [docs/maintenance/releasing.md](docs/maintenance/releasing.md).
 
 ### Added
 
+- Go module (`go.mod`, `go.sum`), package layout under `cmd/` and `internal/`, root data embedding (`assets.go`), stub `wskit` and `agentctl` binaries that print their build version, `registry/tools.toml` pinning each direct Go library and build tool to its version and `go.sum` hash (checked by `internal/registry`, which refuses `replace` and `exclude`), and a `make go-check` target that tests and builds for Linux and macOS without cgo.
 - CodeFlow full tier, on the released CodeFlow 3.1.1 with its digests pinned: skills, project records (`project-management/`), product, capabilities and architecture pages, and the Go roadmap with its 32 epics (`docs/plan/roadmap.md`).
 - `.golangci.yml`, the lint configuration the Go code will be held to.
 - The unit catalog, `registry/units.toml`, with a check that keeps the shared tables in the roadmap, the core spec and ADR 0005 current, and that finds cycles and dangling edges per OS.
@@ -29,6 +30,9 @@ step is in [docs/maintenance/releasing.md](docs/maintenance/releasing.md).
 
 ### Fixed
 
+- `fleetctl.py run ... --apply` now exits 2 and prints platform-accurate `setup-workstation.sh` executor commands (with recovery/connection-context flags and staged root apply) or the Linux-only error for `agentctl` on macOS, so changes never bypass locks, receipts, source digests or staged-root checks; preview and read-only `audit` stay, docs now show the executor path, and `tests/check_repository.py` fails if a doc shows `fleetctl run ... --apply` again.
+- On macOS, `execute-setup.py` now places the privileged host lock under `/Library/Application Support/agent-workstation-kit/run/` (top folder `0755`, run folder created and required at root-owned `0700` on both OSes, checked with `secure_root_path`; a Linux run folder an earlier executor left at `0755` is tightened to `0700` in place on the same inode, any other loose mode is refused) instead of group-writable `/var/run`, with a macOS CI job verifying real root lock contention.
+- `install-local-deb-linux.sh` now refuses to install NoMachine `.deb` packages unless the UFW firewall is active with `DEFAULT_INPUT_POLICY=DROP` and `DEFAULT_FORWARD_POLICY=DROP`.
 - `agent-work-shell` falls back to the plain shell, with a warning, when it cannot start a scope in `agent-work.slice`, so a terminal never closes immediately.
 - The Linux resource policy now caps agent work in a dedicated `agent-work.slice` under the agent's user manager, with memory shares of RAM, systemd-oomd, swap, zram and `/tmp` policy, a receipt and an exact `--revert`; `agentctl start` runs sessions inside it.
 - `scripts/agent-work-shell` runs an agent manager's terminals inside `agent-work.slice`; the host audit and phase verifier fail when a claude, codex, grok or agent-manager pty process runs outside it.

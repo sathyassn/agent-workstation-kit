@@ -166,16 +166,67 @@ def journal_lock(path, label="this account's journal"):
         os.close(descriptor)
 
 
+MACOS_LOCK_ROOT = Path("/Library/Application Support")
+LINUX_LOCK_ROOT = Path("/run")
+
+
+def _ensure_root_directory(path, mode=0o755, *, require_exact_mode=False):
+    try:
+        path.mkdir(mode=mode)
+    except FileExistsError:
+        pass
+    else:
+        os.chmod(path, mode)
+    info = path.lstat()
+    if path.is_symlink() or not stat.S_ISDIR(info.st_mode):
+        raise ValueError("privileged lock directory must be a regular directory: " + str(path))
+    secure_root_path(path)
+    if require_exact_mode and stat.S_IMODE(info.st_mode) == LEGACY_LOCK_DIRECTORY_MODE and mode == 0o700:
+        _tighten_legacy_directory(path, info, mode)
+        info = path.lstat()
+    if require_exact_mode and stat.S_IMODE(info.st_mode) != mode:
+        raise ValueError("privileged lock directory must have mode " + format(mode, "04o") + ": " + str(path))
+
+
+# Earlier executors created the Linux lock directory as 0755. Tighten exactly
+# that mode in place, on the same root-owned inode, so an upgraded host keeps
+# its lock file and contention behaviour. Any other mode is still refused.
+LEGACY_LOCK_DIRECTORY_MODE = 0o755
+
+
+def _tighten_legacy_directory(path, info, mode):
+    descriptor = os.open(str(path), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        opened = os.fstat(descriptor)
+        if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino) or opened.st_uid != 0 \
+                or stat.S_IMODE(opened.st_mode) != LEGACY_LOCK_DIRECTORY_MODE:
+            raise ValueError("privileged lock directory changed during migration: " + str(path))
+        os.fchmod(descriptor, mode)
+    finally:
+        os.close(descriptor)
+
+
+def host_lock_directory():
+    if sys.platform == "darwin":
+        secure_root_path(MACOS_LOCK_ROOT)
+        top = MACOS_LOCK_ROOT / "agent-workstation-kit"
+        _ensure_root_directory(top, 0o755)
+        directory = top / "run"
+        _ensure_root_directory(directory, 0o700, require_exact_mode=True)
+        return directory
+    runtime = LINUX_LOCK_ROOT.resolve()
+    secure_root_path(runtime)
+    directory = runtime / "agent-workstation-kit"
+    _ensure_root_directory(directory, 0o700, require_exact_mode=True)
+    return directory
+
+
 @contextmanager
 def host_apply_lock():
     if os.geteuid() != 0:
         yield
         return
-    runtime = Path("/var/run" if sys.platform == "darwin" else "/run").resolve()
-    secure_root_path(runtime)
-    directory = runtime / "agent-workstation-kit"
-    directory.mkdir(mode=0o755, exist_ok=True)
-    secure_root_path(directory)
+    directory = host_lock_directory()
     # A host-level lock serializes root scopes even if different human operators
     # choose separate journal files. flock releases it automatically on exit.
     with journal_lock(directory / "privileged-setup", label="the host's privileged setup lock"):
