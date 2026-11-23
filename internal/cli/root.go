@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 
 	"charm.land/fang/v2"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/sathyassn/agent-workstation-kit/internal/contract"
 	"github.com/sathyassn/agent-workstation-kit/internal/units/catalog"
@@ -100,22 +102,54 @@ type sharedFlags struct {
 }
 
 // outputFlagsFor reads --json and --plain from args the way cobra parses
-// them, on a throwaway copy of the tree, because the front end (fang styling
-// or none) is chosen before the command runs. A flag's value is consumed as
-// cobra consumes it, so `--config --json` does not select JSON. Unknown
-// flags are skipped, so a typo does not hide --json; the real run reports
-// every parse error.
+// them, because the front end (fang styling or none) is chosen before the
+// command runs. It parses args against a copy of the command's flags in
+// which every value is a plain string, so a value is consumed as cobra
+// consumes it (`--config --json` does not select JSON) but never fails
+// validation: `--unit bogus --json` still selects JSON. Unknown flags are
+// skipped, so a typo does not hide --json; the real run reports every parse
+// error.
 func outputFlagsFor(opts Options, args []string) outputFlags {
 	probe := NewRootCommand(opts)
 	c, rest, err := probe.Find(args)
 	if err != nil {
 		c, rest = probe, args
 	}
-	c.FParseErrWhitelist.UnknownFlags = true
-	_ = c.ParseFlags(rest) // the real run reports parse errors
-	jsonOn, _ := c.Flags().GetBool(flagJSON)
-	plainOn, _ := c.Flags().GetBool(flagPlain)
-	return outputFlags{json: jsonOn, plain: plainOn}
+	c.InitDefaultHelpFlag()
+	fs := pflag.NewFlagSet(programName, pflag.ContinueOnError)
+	fs.ParseErrorsAllowlist.UnknownFlags = true
+	fs.SetOutput(io.Discard)
+	fs.Usage = func() {}
+	// c.Flags() holds the local flags; the inherited ones are added by
+	// InheritedFlags, which cobra fills from the parents.
+	mirror := func(f *pflag.Flag) {
+		if fs.Lookup(f.Name) != nil {
+			return
+		}
+		m := fs.VarPF(&probeValue{}, f.Name, f.Shorthand, "")
+		m.NoOptDefVal = f.NoOptDefVal
+	}
+	c.LocalFlags().VisitAll(mirror)
+	c.InheritedFlags().VisitAll(mirror)
+	_ = fs.Parse(rest) // the real run reports parse errors
+	return outputFlags{json: probeBool(fs, flagJSON), plain: probeBool(fs, flagPlain)}
+}
+
+// probeValue is a flag value that accepts any string, for outputFlagsFor.
+type probeValue struct{ s string }
+
+func (v *probeValue) String() string     { return v.s }
+func (v *probeValue) Set(s string) error { v.s = s; return nil }
+func (*probeValue) Type() string         { return "string" }
+
+// probeBool reports whether the boolean flag name was set to true.
+func probeBool(fs *pflag.FlagSet, name string) bool {
+	f := fs.Lookup(name)
+	if f == nil || !f.Changed {
+		return false
+	}
+	on, err := strconv.ParseBool(f.Value.String())
+	return err == nil && on
 }
 
 // Execute runs the CLI with args (without the program name) and returns the

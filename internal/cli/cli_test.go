@@ -413,6 +413,10 @@ func TestOutputFlagsFollowCobraParsing(t *testing.T) {
 		{args: []string{"explain", "--", "--json"}, want: outputFlags{}},
 		{args: []string{"bogus", "--json"}, want: outputFlags{json: true}},
 		{args: []string{"plan", "--bogus", "--json"}, want: outputFlags{json: true}},
+		{args: []string{"plan", "--unit", "bogus", "--json"}, want: outputFlags{json: true}},
+		{args: []string{"plan", "--unit=bogus", "--plain"}, want: outputFlags{plain: true}},
+		{args: []string{"--stage", "bogus", "status", "--json"}, want: outputFlags{json: true}},
+		{args: []string{"setup", "--unit", "bogus", "--json=false", "--plain"}, want: outputFlags{plain: true}},
 	}
 	for _, tc := range cases {
 		if got := outputFlagsFor(Options{Version: testVersion}, tc.args); got != tc.want {
@@ -428,6 +432,38 @@ func TestFlagValueDoesNotSelectJSON(t *testing.T) {
 	r := execute(t, contract.VerbPlan.String(), "--config", "--json")
 	if r.stdout != "" || !strings.HasPrefix(r.stderr, programName+": ") {
 		t.Fatalf("wskit plan --config --json: stdout=%q stderr=%q, want a plain error line", r.stdout, r.stderr)
+	}
+}
+
+// TestInvalidFlagValueKeepsOutputMode checks that a flag value that fails
+// validation does not hide a later --json or --plain: the usage error comes
+// out in the mode asked for.
+func TestInvalidFlagValueKeepsOutputMode(t *testing.T) {
+	t.Parallel()
+	schema := compileSchema(t, "error")
+	cases := [][]string{
+		{contract.VerbPlan.String(), "--" + flagUnit, "bogus", "--" + flagJSON},
+		{"--" + flagStage, "bogus", contract.VerbStatus.String(), "--" + flagJSON},
+	}
+	for _, args := range cases {
+		r := execute(t, args...)
+		if ExitCodeFor(r.err) != contract.ExitRefused || r.stderr != "" {
+			t.Fatalf("wskit %v: err=%v stderr=%q, want exit 2 and nothing on standard error", args, r.err, r.stderr)
+		}
+		validateJSON(t, schema, []byte(r.stdout))
+		var got contract.CLIError
+		if err := json.Unmarshal([]byte(r.stdout), &got); err != nil {
+			t.Fatalf("wskit %v: decode CLI error: %v", args, err)
+		}
+		if got.Class != string(ClassUsage) {
+			t.Fatalf("wskit %v: CLI error = %+v, want class usage", args, got)
+		}
+	}
+
+	r := execute(t, contract.VerbPlan.String(), "--"+flagUnit, "bogus", "--"+flagPlain)
+	if ExitCodeFor(r.err) != contract.ExitRefused || r.stdout != "" ||
+		!strings.HasPrefix(r.stderr, programName+": ") || strings.Count(r.stderr, "\n") != 1 {
+		t.Fatalf("wskit plan --unit bogus --plain: stdout=%q stderr=%q, want one plain error line", r.stdout, r.stderr)
 	}
 }
 
