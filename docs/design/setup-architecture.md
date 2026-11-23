@@ -1194,6 +1194,11 @@ revert and restore-only have their own records and recovery (below, and the P1 c
 - **One hand-over object** for every gate, root step, revert and proposed
   change: `machine`, `account`, `step`, `command`, `why`, `verify`, `undo`,
   `probe`. The text form extends `AGENTS.md` section 6 with `Why` and `Undo`.
+- **Hand-over commands (from the pilot hosts, 2026-11-23).** A redirection
+  in a root hand-over runs inside the root shell
+  (`sudo bash -c '... > FILE'`), never after `sudo` in the person's shell.
+  The result goes to a file the supervising agent can read. A staged
+  checksum manifest never lists itself (EPC-023 AC-6).
 - **Switching to an admin account on Linux.** Ubuntu 26.04 ships `sudo-rs`,
   which needs a terminal to authenticate, and util-linux `su -c` runs its
   command without a controlling terminal. So `su - ADMIN -c "sudo ..."` fails
@@ -1533,6 +1538,12 @@ builds `registry/capabilities.toml` from it.
 | Secrets | `secret-tool` and gnome-keyring | Keychain | agy over SSH uses a file store on both | sign in from the context the agents use; the doctor checks auth there |
 | Codex trust, agent modes, MCP | same per config home; agent-manager homes under `~/.config/orca` | same per config home; agent-manager homes under `~/Library/Application Support/orca` | none | none |
 | Upkeep | at triggers, no timers | at triggers, no timers | none | none |
+| Audit and doctor logs | full report in `/var/log/agent-workstation-kit/<run-id>/`; summary and `--json` in the public export | full report in `/Library/Logs/agent-workstation-kit/<run-id>/`; summary and `--json` in the public export | none | none (EPC-022 AC-7) |
+| Remote-desktop recognition | NoMachine processes under its service | Screen Sharing or NoMachine | none | none (EPC-022 AC-8) |
+| Processes outside the agent-work ceiling | counted per session or scope, with a restart hint | QoS check per agent terminal | no slice on macOS | QoS check (EPC-022 AC-8) |
+| mDNS | `mdns` setting: UFW 5353/udp on named interfaces, avahi `allow-interfaces`, `publish-workstation=no` | mDNSResponder stays on | mDNSResponder cannot be turned off without breaking the system | Application Firewall stealth mode and blocked incoming connections for Bonjour-advertising services (EPC-015 AC-11) |
+| Agent terminal shell | `agent-work-shell`, set in the agent manager by hand-over | the agent-work wrapper, set the same way | the agent manager has no settings CLI on either OS | hand-over, a doctor check, and a recorded request for a CLI (EPC-010 AC-11, EPC-022 AC-9) |
+| Long-uptime swap | swapped-out desktop processes reported with a reboot-window hint | no per-process swap figure | macOS reports no per-process swap | uptime with the memory-pressure history (EPC-022 AC-10) |
 
 Open on macOS, and where each stands:
 
@@ -1768,6 +1779,12 @@ What revert cannot undo, listed in every revert preview:
     the user-level agent mode, repositories untrusted in a Codex home,
     Claude Code sandbox placeholders, agent CLI auth checked from the
     context the agents use, and `secret-tool` on Linux;
+  - from learnings batch 3 (EPC-022 AC-7 to AC-10): the full report in
+    the root log folder with a summary and `--json` in the public export;
+    checks that follow the declared topology, remote-desktop service,
+    grants and firewall choices; processes outside the ceiling counted per
+    session or scope; new agent terminals inside the ceiling; and long
+    uptime with swapped-out desktop processes;
   - the earlier doctor items.
 
   `--admin` runs the root-only checks from the staged root and writes their
@@ -1777,7 +1794,8 @@ What revert cannot undo, listed in every revert preview:
   settings are kept current at triggers only: kit setup and clone steps
   run the Codex trust sync, the doctor reports what has drifted, and the
   installed agent guidance names the triggers. No unit installs a timer
-  for this upkeep (EPC-009).
+  for this upkeep (EPC-009). The only scheduled items are the vendors' own,
+  such as security updates.
 
 ### 10a. Browser sign-in tunnel (first unit, after T1)
 
