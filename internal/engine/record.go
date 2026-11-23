@@ -6,10 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/sathyassn/agent-workstation-kit/internal/contract"
 	"github.com/sathyassn/agent-workstation-kit/internal/platform"
@@ -166,26 +167,34 @@ func readJSON(path string, v any) (bool, error) {
 	return true, nil
 }
 
-// prepareJournal creates the journal folders and removes temporary files a
-// kill left while writing a journal file (SPC-001 "Torn states", first row).
-// Call it under the journal lock.
+// prepareJournal creates the journal folders durably and removes temporary
+// files a kill left while writing a journal file (SPC-001 "Torn states",
+// first row). Call it under the journal lock.
 func (e *Engine) prepareJournal() error {
 	for _, d := range []string{e.opts.JournalDir, filepath.Join(e.opts.JournalDir, receiptsDir), filepath.Join(e.opts.JournalDir, backupsDir)} {
-		if err := os.MkdirAll(d, privateMode); err != nil {
-			return fmt.Errorf("create journal folder %q: %w", d, err)
+		if err := e.mkdirDurable(d); err != nil {
+			return err
 		}
 	}
 	for _, d := range []string{e.opts.JournalDir, filepath.Join(e.opts.JournalDir, receiptsDir)} {
-		entries, err := os.ReadDir(d)
+		dir, err := openDir(d)
 		if err != nil {
-			return fmt.Errorf("list journal folder %q: %w", d, err)
+			return err
 		}
-		for _, ent := range entries {
-			if strings.Contains(ent.Name(), tempMarker) {
-				if err := os.Remove(filepath.Join(d, ent.Name())); err != nil && !errors.Is(err, fs.ErrNotExist) {
-					return fmt.Errorf("remove stale journal temp: %w", err)
+		names, err := listDir(dir)
+		if err == nil {
+			for _, n := range names {
+				if strings.Contains(n, tempMarker) {
+					if rmErr := unix.Unlinkat(int(dir.Fd()), n, 0); rmErr != nil && !errors.Is(rmErr, unix.ENOENT) {
+						err = fmt.Errorf("remove stale journal temp %q: %w", n, rmErr)
+						break
+					}
 				}
 			}
+		}
+		_ = dir.Close()
+		if err != nil {
+			return err
 		}
 	}
 	return nil

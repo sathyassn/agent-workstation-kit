@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -66,8 +65,8 @@ func digest(data []byte) contract.Digest {
 // backup folder, then writes the manifest.
 func (e *Engine) backup(ctx context.Context, runID contract.RunID, desc contract.Description) (*Manifest, error) {
 	dir := e.backupDir(runID)
-	if err := os.MkdirAll(dir, privateMode); err != nil {
-		return nil, fmt.Errorf("create backup folder: %w", err)
+	if err := e.mkdirDurable(dir); err != nil {
+		return nil, err
 	}
 	paths, err := declaredPaths(desc)
 	if err != nil {

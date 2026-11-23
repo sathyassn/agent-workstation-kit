@@ -66,6 +66,8 @@ type Containment struct {
 	AckTimeout time.Duration
 	// PollInterval is how often the job state is read. Zero means 25ms.
 	PollInterval time.Duration
+	// syncFn fsyncs a file or folder; tests replace it to observe order.
+	syncFn func(*os.File) error
 }
 
 // NameFor returns the launchd label for the seq-th command of a run.
@@ -99,7 +101,7 @@ func (c *Containment) Run(ctx context.Context, spec platform.LaunchSpec, onAck f
 	if err != nil {
 		return contract.CommandResult{}, err
 	}
-	if err := writePrivate(files.plist, plist); err != nil {
+	if err := c.writeDurable(files.plist, plist); err != nil {
 		return contract.CommandResult{}, err
 	}
 	sel := platform.ScopeSelector{User: spec.Scope != contract.ScopeRoot}
@@ -287,9 +289,14 @@ func (c *Containment) target(name string, sel platform.ScopeSelector) string {
 	return c.domain(sel) + "/" + name
 }
 
-// writePrivate creates path with mode 0600 and refuses to follow or replace
-// anything already there.
-func writePrivate(path string, data []byte) error {
+// writeDurable creates path with mode 0600, refusing to follow or replace
+// anything already there, then fsyncs the file and its folder, so launchd
+// never loads a definition that power loss could take back.
+func (c *Containment) writeDurable(path string, data []byte) error {
+	sync := c.syncFn
+	if sync == nil {
+		sync = (*os.File).Sync
+	}
 	// #nosec G304 -- path is inside the checked private folder.
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, plistMode)
 	if err != nil {
@@ -299,8 +306,21 @@ func writePrivate(path string, data []byte) error {
 		_ = f.Close()
 		return fmt.Errorf("write %q: %w", path, err)
 	}
+	if err := sync(f); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("fsync %q: %w", path, err)
+	}
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("close %q: %w", path, err)
+	}
+	// #nosec G304 -- the checked private folder.
+	d, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return fmt.Errorf("open folder of %q: %w", path, err)
+	}
+	defer func() { _ = d.Close() }()
+	if err := sync(d); err != nil {
+		return fmt.Errorf("fsync folder of %q: %w", path, err)
 	}
 	return nil
 }

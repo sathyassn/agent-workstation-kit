@@ -212,3 +212,31 @@ func TestPrintFailsClosed(t *testing.T) {
 		}
 	}
 }
+
+// TestPlistIsDurableBeforeBootstrap is finding 6 on macOS: the job
+// definition and its folder are fsynced before launchd is asked to load it.
+func TestPlistIsDurableBeforeBootstrap(t *testing.T) {
+	var events []string
+	l := &launchd{runFor: 1}
+	inner := l.runner()
+	r := platformtest.NewRunner(func(argv []string) (platform.ExecResult, error) {
+		events = append(events, "run "+argv[1])
+		res, err := inner.Run(context.Background(), platform.ExecSpec{Argv: argv})
+		return res, err
+	})
+	dir := privateDir(t)
+	c := &Containment{Runner: r, Inspector: fixedIdentity{}, PlistDir: dir, PollInterval: time.Millisecond}
+	c.syncFn = func(f *os.File) error {
+		events = append(events, "sync "+filepath.Base(f.Name()))
+		return f.Sync()
+	}
+	if _, err := c.Run(context.Background(), platform.LaunchSpec{Name: label, Scope: contract.ScopeRoot, Argv: []string{"/usr/bin/true"}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	boot := slices.Index(events, "run bootstrap")
+	file := slices.Index(events, "sync "+label+".plist")
+	folder := slices.Index(events, "sync "+filepath.Base(dir))
+	if boot < 0 || file < 0 || folder < 0 || file > boot || folder > boot {
+		t.Fatalf("events = %q, want the plist and its folder fsynced before bootstrap", events)
+	}
+}

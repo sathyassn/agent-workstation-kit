@@ -147,6 +147,33 @@ func listDir(dir *os.File) ([]string, error) {
 	return names, nil
 }
 
+// mkdirDurable creates the folder path if it is missing and fsyncs its
+// parent, so the new entry survives power loss. An existing entry must be a
+// real folder, not a link.
+func (e *Engine) mkdirDurable(path string) error {
+	p, err := openParent(path)
+	if err != nil {
+		return err
+	}
+	defer p.close()
+	err = unix.Mkdirat(p.fd(), p.name, privateMode)
+	switch {
+	case err == nil:
+		e.trace(traceEntry, p.dir.Name(), p.name)
+	case errors.Is(err, unix.EEXIST):
+		st, statErr := p.lstat()
+		if statErr != nil {
+			return statErr
+		}
+		if st.Mode&unix.S_IFMT != unix.S_IFDIR {
+			return fmt.Errorf("%w: %q is not a folder", ErrPathLink, path)
+		}
+	default:
+		return fmt.Errorf("create folder %q: %w", path, err)
+	}
+	return e.syncDir(p)
+}
+
 func chownFile(f *os.File, o contract.Owner) error {
 	info, err := f.Stat()
 	if err != nil {
