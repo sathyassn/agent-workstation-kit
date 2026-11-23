@@ -154,14 +154,16 @@ func CheckGoModules(goMod, goSum, tools []byte) []error {
 			add("tool %s has no go-tool entry in registry/tools.toml", t.Path)
 			continue
 		}
-		if !strings.HasPrefix(t.Path, e.Module) {
-			add("tool %s is not inside its registry module %s", t.Path, e.Module)
-		}
-		ver, ok := all[e.Module]
+		owner, ok := owningModule(t.Path, all)
 		if !ok {
-			add("tool %s module %s is not required in go.mod", t.Path, e.Module)
+			add("tool %s is not inside any module required in go.mod", t.Path)
 			continue
 		}
+		if e.Module != owner {
+			add("tool %s belongs to module %s, but its registry entry names %s", t.Path, owner, e.Module)
+			continue
+		}
+		ver := all[owner]
 		errs = append(errs, checkPin(e, ver, sums)...)
 	}
 	for p := range toolsByPath {
@@ -170,6 +172,18 @@ func CheckGoModules(goMod, goSum, tools []byte) []error {
 		}
 	}
 	return errs
+}
+
+// owningModule returns the longest required module path that equals the
+// package path or is a whole-element prefix of it, as Go resolves packages.
+func owningModule(pkg string, required map[string]string) (string, bool) {
+	best := ""
+	for mod := range required {
+		if (pkg == mod || strings.HasPrefix(pkg, mod+"/")) && len(mod) > len(best) {
+			best = mod
+		}
+	}
+	return best, best != ""
 }
 
 func checkEntry(e Entry, ids map[string]bool) []error {

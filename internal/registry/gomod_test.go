@@ -128,6 +128,23 @@ func TestCheckGoModulesRejects(t *testing.T) {
 			want: "tool example.com/tools/cmd/other has no go-tool entry",
 		},
 		{
+			name: "tool path only shares a string prefix with its module",
+			mutate: func(t *testing.T, f *fixture) {
+				f.goMod = replaceOnce(t, f.goMod, "tool example.com/tools/cmd/lint", "tool example.com/toolsevil/cmd/lint")
+				f.tools = replaceOnce(t, f.tools, `tool_path = "example.com/tools/cmd/lint"`, `tool_path = "example.com/toolsevil/cmd/lint"`)
+			},
+			want: "tool example.com/toolsevil/cmd/lint is not inside any module required in go.mod",
+		},
+		{
+			name: "a longer require owns the tool",
+			mutate: func(t *testing.T, f *fixture) {
+				f.goMod = replaceOnce(t, f.goMod, "require example.com/tools v0.4.0 // indirect",
+					"require (\n\texample.com/tools v0.4.0 // indirect\n\texample.com/tools/cmd v0.5.0 // indirect\n)")
+				f.goSum += "example.com/tools/cmd v0.5.0 " + otherSum + "\n"
+			},
+			want: "tool example.com/tools/cmd/lint belongs to module example.com/tools/cmd, but its registry entry names example.com/tools",
+		},
+		{
 			name: "unknown kind",
 			mutate: func(t *testing.T, f *fixture) {
 				f.tools = replaceOnce(t, f.tools, `kind = "go-library"`, `kind = "binary"`)
