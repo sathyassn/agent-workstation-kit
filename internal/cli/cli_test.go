@@ -395,7 +395,10 @@ func TestResolveOutputMode(t *testing.T) {
 	}
 }
 
-func TestPeekOutputFlags(t *testing.T) {
+// TestOutputFlagsFollowCobraParsing checks that the output mode is read the
+// way cobra parses the command line, so a flag value that looks like --json
+// or --plain does not change the mode.
+func TestOutputFlagsFollowCobraParsing(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		args []string
@@ -404,13 +407,92 @@ func TestPeekOutputFlags(t *testing.T) {
 		{args: []string{"plan", "--json"}, want: outputFlags{json: true}},
 		{args: []string{"--plain", "status"}, want: outputFlags{plain: true}},
 		{args: []string{"--json=false", "--plain=true"}, want: outputFlags{plain: true}},
-		{args: []string{"--json=bogus"}, want: outputFlags{}},
+		{args: []string{"version", "--config", "--json"}, want: outputFlags{}},
+		{args: []string{"--config", "--plain", "plan"}, want: outputFlags{}},
+		{args: []string{"revert", "--to", "--json"}, want: outputFlags{}},
 		{args: []string{"explain", "--", "--json"}, want: outputFlags{}},
-		{args: []string{"-json"}, want: outputFlags{}},
+		{args: []string{"bogus", "--json"}, want: outputFlags{json: true}},
+		{args: []string{"plan", "--bogus", "--json"}, want: outputFlags{json: true}},
 	}
 	for _, tc := range cases {
-		if got := peekOutputFlags(tc.args); got != tc.want {
-			t.Errorf("peekOutputFlags(%v) = %+v, want %+v", tc.args, got, tc.want)
+		if got := outputFlagsFor(Options{Version: testVersion}, tc.args); got != tc.want {
+			t.Errorf("outputFlagsFor(%v) = %+v, want %+v", tc.args, got, tc.want)
+		}
+	}
+}
+
+// TestFlagValueDoesNotSelectJSON runs a failing command whose --config
+// value is "--json": the error is a plain line on standard error, not JSON.
+func TestFlagValueDoesNotSelectJSON(t *testing.T) {
+	t.Parallel()
+	r := execute(t, contract.VerbPlan.String(), "--config", "--json")
+	if r.stdout != "" || !strings.HasPrefix(r.stderr, programName+": ") {
+		t.Fatalf("wskit plan --config --json: stdout=%q stderr=%q, want a plain error line", r.stdout, r.stderr)
+	}
+}
+
+// TestCompletionRefusesJSON checks that completion, like version, refuses
+// --json with a schema-conforming error for every shell.
+func TestCompletionRefusesJSON(t *testing.T) {
+	t.Parallel()
+	schema := compileSchema(t, "error")
+	for _, sh := range AllShells() {
+		t.Run(string(sh), func(t *testing.T) {
+			t.Parallel()
+			r := execute(t, cmdCompletion, string(sh), "--json")
+			var e *Error
+			if !errors.As(r.err, &e) || e.Class != ClassUsage || ExitCodeFor(r.err) != contract.ExitRefused {
+				t.Fatalf("completion %s --json: err=%v, want a usage error with exit code 2", sh, r.err)
+			}
+			validateJSON(t, schema, []byte(r.stdout))
+		})
+	}
+}
+
+// TestDeclaredFlags checks the per-command flags SPC-001 and ADR 0005
+// declare, and that each reaches its command's not-implemented path.
+func TestDeclaredFlags(t *testing.T) {
+	t.Parallel()
+	root := NewRootCommand(Options{Version: testVersion})
+	declared := map[string][]string{
+		contract.CmdSetup.String():   {"all", "unit"},
+		contract.VerbPlan.String():   {"unit"},
+		contract.VerbResume.String(): {"restore-only"},
+		contract.VerbRevert.String(): {"to"},
+		contract.VerbDisarm.String(): {"run"},
+	}
+	for name, flags := range declared {
+		c := findChild(root, name)
+		if c == nil {
+			t.Errorf("no %s command", name)
+			continue
+		}
+		for _, f := range flags {
+			if c.LocalFlags().Lookup(f) == nil {
+				t.Errorf("%s has no --%s flag", name, f)
+			}
+		}
+	}
+
+	cases := []struct {
+		args  []string
+		class Class
+	}{
+		{args: []string{"setup", "--all"}, class: ClassNotImplemented},
+		{args: []string{"setup", "--unit", "shell,vpn"}, class: ClassNotImplemented},
+		{args: []string{"plan", "--unit", "shell", "--unit", "vpn"}, class: ClassNotImplemented},
+		{args: []string{"resume", "--restore-only"}, class: ClassNotImplemented},
+		{args: []string{"revert", "--to", "baseline"}, class: ClassNotImplemented},
+		{args: []string{"disarm", "--run", "run-1"}, class: ClassNotImplemented},
+		{args: []string{"setup", "--unit", "bogus"}, class: ClassUsage},
+		{args: []string{"setup", "--all", "--stage", "packages"}, class: ClassUsage},
+		{args: []string{"setup", "--all", "--unit", "shell"}, class: ClassUsage},
+	}
+	for _, tc := range cases {
+		r := execute(t, tc.args...)
+		var e *Error
+		if !errors.As(r.err, &e) || e.Class != tc.class {
+			t.Errorf("wskit %v: err=%v, want class %s", tc.args, r.err, tc.class)
 		}
 	}
 }

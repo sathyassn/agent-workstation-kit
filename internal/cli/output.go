@@ -3,8 +3,6 @@ package cli
 import (
 	"io"
 	"os"
-	"strconv"
-	"strings"
 )
 
 // OutputMode is the front end a run uses (SPC-001 "Output").
@@ -44,37 +42,6 @@ func resolveOutputMode(f outputFlags, getenv func(string) string, outTTY, errTTY
 	default:
 		return ModePlain
 	}
-}
-
-// peekOutputFlags reads --json and --plain from args before cobra parses
-// them, because the front end (fang styling or none) is chosen before the
-// command runs. Parsing stops at "--", as pflag's does.
-func peekOutputFlags(args []string) outputFlags {
-	var f outputFlags
-	for _, a := range args {
-		if a == "--" {
-			break
-		}
-		if !strings.HasPrefix(a, "--") {
-			continue
-		}
-		name, value, hasValue := strings.Cut(strings.TrimPrefix(a, "--"), "=")
-		on := true
-		if hasValue {
-			b, err := strconv.ParseBool(value)
-			if err != nil {
-				continue // pflag reports the bad value as a usage error
-			}
-			on = b
-		}
-		switch name {
-		case flagJSON:
-			f.json = on
-		case flagPlain:
-			f.plain = on
-		}
-	}
-	return f
 }
 
 // isTerminal reports whether w is an *os.File attached to a terminal.

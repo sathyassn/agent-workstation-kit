@@ -4,7 +4,9 @@ Usage:
   wskit setup [flags]
 
 Flags:
-  -h, --help   help for setup
+      --all          run every stage in order
+  -h, --help         help for setup
+      --unit units   select units by ID, comma separated or repeated
 
 Global Flags:
       --apply           make the changes; without it, commands only preview

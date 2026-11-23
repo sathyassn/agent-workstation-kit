@@ -29,6 +29,10 @@ const (
 	flagConfig  = "config"
 	flagStage   = "stage"
 	flagTo      = "to"
+	flagAll     = "all"
+	flagUnit    = "unit"
+	flagRestore = "restore-only"
+	flagRun     = "run"
 
 	cmdVersion    = "version"
 	cmdCompletion = "completion"
@@ -95,6 +99,25 @@ type sharedFlags struct {
 	stage   stageValue
 }
 
+// outputFlagsFor reads --json and --plain from args the way cobra parses
+// them, on a throwaway copy of the tree, because the front end (fang styling
+// or none) is chosen before the command runs. A flag's value is consumed as
+// cobra consumes it, so `--config --json` does not select JSON. Unknown
+// flags are skipped, so a typo does not hide --json; the real run reports
+// every parse error.
+func outputFlagsFor(opts Options, args []string) outputFlags {
+	probe := NewRootCommand(opts)
+	c, rest, err := probe.Find(args)
+	if err != nil {
+		c, rest = probe, args
+	}
+	c.FParseErrWhitelist.UnknownFlags = true
+	_ = c.ParseFlags(rest) // the real run reports parse errors
+	jsonOn, _ := c.Flags().GetBool(flagJSON)
+	plainOn, _ := c.Flags().GetBool(flagPlain)
+	return outputFlags{json: jsonOn, plain: plainOn}
+}
+
 // Execute runs the CLI with args (without the program name) and returns the
 // error that decides the exit code; map it with ExitCodeFor. It writes the
 // error itself in the selected output mode and never exits.
@@ -103,7 +126,7 @@ func Execute(ctx context.Context, args []string, opts Options) error {
 	root := NewRootCommand(opts)
 	root.SetArgs(args)
 
-	mode := resolveOutputMode(peekOutputFlags(args), opts.Getenv, isTerminal(opts.Stdout), isTerminal(opts.Stderr))
+	mode := resolveOutputMode(outputFlagsFor(opts, args), opts.Getenv, isTerminal(opts.Stdout), isTerminal(opts.Stderr))
 	var err error
 	if mode == ModeTUI {
 		// fang styles help and errors and prints the error itself. Signals
@@ -171,8 +194,11 @@ func NewRootCommand(opts Options) *cobra.Command {
 		}
 		root.AddCommand(c)
 	}
+	// ADR 0005: setup [--all | --stage S | --unit U]. Marked once setup has
+	// a parent, because --stage is inherited from the root.
+	findChild(root, contract.CmdSetup.String()).MarkFlagsMutuallyExclusive(flagAll, flagStage, flagUnit)
 	addUnitCommands(root)
-	root.AddCommand(newVersionCommand(opts.Version, flags), newCompletionCommand())
+	root.AddCommand(newVersionCommand(opts.Version, flags), newCompletionCommand(flags))
 	return root
 }
 
@@ -192,8 +218,24 @@ func addSharedFlags(root *cobra.Command, f *sharedFlags) {
 
 // matrixCommands returns the top-level commands of SPC-001's command matrix.
 func matrixCommands() []*cobra.Command {
+	// Per-command flags from SPC-001 and ADR 0005 section 2b. They are
+	// declared now so the tree is complete; each command reads them when it
+	// is built.
+	plan := newStubCommand(contract.VerbPlan.String(), "Show the resolved setup plan")
+	addUnitFlag(plan)
+
+	setup := newStubCommand(contract.CmdSetup.String(), "Run setup by stage (previews unless --apply is given)")
+	setup.Flags().Bool(flagAll, false, "run every stage in order")
+	addUnitFlag(setup)
+
+	resume := newStubCommand(contract.VerbResume.String(), "Resume an interrupted run")
+	resume.Flags().Bool(flagRestore, false, "finish restoring the interrupted step without reapplying it")
+
 	revert := newStubCommand(contract.VerbRevert.String(), "Revert to a restore point or to the baseline")
 	revert.Flags().String(flagTo, "", "the restore point or baseline to revert to")
+
+	disarm := newStubCommand(contract.VerbDisarm.String(), "Disarm an armed dead-man timer")
+	disarm.Flags().String(flagRun, "", "the run ID whose timer to disarm")
 
 	config := newGroupCommand(contract.CmdConfig.String(), "Show, change and check layered configuration")
 	config.GroupID = groupConfig
@@ -209,15 +251,15 @@ func matrixCommands() []*cobra.Command {
 	)
 
 	return []*cobra.Command{
-		newStubCommand(contract.VerbPlan.String(), "Show the resolved setup plan"),
+		plan,
 		newStubCommand(contract.VerbExplain.String(), "Explain a unit or a configuration field"),
 		newStubCommand(contract.VerbStatus.String(), "Show the recorded status of every unit"),
 		newStubCommand(contract.VerbNext.String(), "Show the next action for the conductor"),
 		newStubCommand(contract.VerbDoctor.String(), "Check the machine's health"),
-		newStubCommand(contract.CmdSetup.String(), "Run setup by stage (previews unless --apply is given)"),
-		newStubCommand(contract.VerbResume.String(), "Resume an interrupted run"),
+		setup,
+		resume,
 		revert,
-		newStubCommand(contract.VerbDisarm.String(), "Disarm an armed dead-man timer"),
+		disarm,
 		newStubCommand(contract.VerbAdopt.String(), "Adopt existing machine state into a unit"),
 		newStubCommand(contract.VerbUnmanage.String(), "Stop managing a unit and keep its files"),
 		config,
@@ -266,8 +308,8 @@ func newVersionCommand(ver string, flags *sharedFlags) *cobra.Command {
 		Short: "Print the wskit version",
 		Args:  cobra.NoArgs,
 		RunE: runE(func(cmd *cobra.Command, _ []string) error {
-			if flags.json {
-				return &Error{Class: ClassUsage, Err: fmt.Errorf("%w: %s has no JSON form yet", ErrUsage, cmdVersion)}
+			if err := refuseJSON(flags, cmd); err != nil {
+				return err
 			}
 			if _, err := io.WriteString(cmd.OutOrStdout(), ver+"\n"); err != nil {
 				return fmt.Errorf("write version: %w", err)
@@ -277,7 +319,16 @@ func newVersionCommand(ver string, flags *sharedFlags) *cobra.Command {
 	}
 }
 
-func newCompletionCommand() *cobra.Command {
+// refuseJSON refuses --json for a command whose output has no JSON schema
+// yet, so standard output stays JSON in JSON mode.
+func refuseJSON(flags *sharedFlags, cmd *cobra.Command) error {
+	if !flags.json {
+		return nil
+	}
+	return &Error{Class: ClassUsage, Err: fmt.Errorf("%w: %s has no JSON form yet", ErrUsage, cmd.CommandPath())}
+}
+
+func newCompletionCommand(flags *sharedFlags) *cobra.Command {
 	completion := newGroupCommand(cmdCompletion, "Print a shell completion script")
 	for _, sh := range AllShells() {
 		completion.AddCommand(&cobra.Command{
@@ -285,6 +336,9 @@ func newCompletionCommand() *cobra.Command {
 			Short: fmt.Sprintf("Print the %s completion script", sh),
 			Args:  cobra.NoArgs,
 			RunE: runE(func(cmd *cobra.Command, _ []string) error {
+				if err := refuseJSON(flags, cmd); err != nil {
+					return err
+				}
 				return writeCompletion(cmd.Root(), sh, cmd.OutOrStdout())
 			}),
 		})
@@ -292,6 +346,11 @@ func newCompletionCommand() *cobra.Command {
 	return completion
 }
 
+// writeCompletion prints sh's completion script. The man page ADR 0005
+// section 2b asks for alongside completions is deferred: no task owns it yet
+// (EPC-025 holds the generated docs), and its generator, mango-cobra or
+// cobra/doc with go-md2man, needs a registry entry before it can be a
+// direct dependency.
 func writeCompletion(root *cobra.Command, sh Shell, w io.Writer) error {
 	var err error
 	switch sh {
