@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"strings"
 	"syscall"
 	"time"
 
@@ -38,6 +39,9 @@ var (
 	// adapter cannot interpret, so it cannot tell whether a containment is
 	// empty. Callers treat it as not empty.
 	ErrSupervisorState = errors.New("supervisor state unknown")
+	// ErrForbiddenEnv reports a tool variable that would steer the dynamic
+	// loader or the supervisor itself: LD_*, DYLD_* or SYSTEMD_*.
+	ErrForbiddenEnv = errors.New("environment variable not allowed for a tool")
 	// ErrUnsafeDir reports a private folder that is missing, not a folder,
 	// or writable by others.
 	ErrUnsafeDir = errors.New("folder is not private")
@@ -134,4 +138,26 @@ type EmptyOptions struct {
 	// CallTimeout bounds every single inspection and signal. Zero is ten
 	// seconds.
 	CallTimeout time.Duration
+}
+
+// ForbiddenEnvKey reports whether a tool variable could steer the dynamic
+// loader or the supervisor that starts the tool: LD_*, DYLD_* or SYSTEMD_*.
+func ForbiddenEnvKey(key string) bool {
+	for _, p := range []string{"LD_", "DYLD_", "SYSTEMD_"} {
+		if strings.HasPrefix(key, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// CheckToolEnv refuses a tool environment holding a forbidden key.
+func CheckToolEnv(env []string) error {
+	for _, kv := range env {
+		k, _, _ := strings.Cut(kv, "=")
+		if ForbiddenEnvKey(k) {
+			return fmt.Errorf("%w: %s (LD_*, DYLD_* and SYSTEMD_* are refused)", ErrForbiddenEnv, k)
+		}
+	}
+	return nil
 }

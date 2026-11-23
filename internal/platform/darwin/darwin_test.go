@@ -324,3 +324,35 @@ func TestLaunchctlIgnoresHostilePathAndEnvironment(t *testing.T) {
 		}
 	}
 }
+
+// TestPlistIsPrivateAtBootstrap: when launchd is asked to load the job, its
+// definition is mode 0600 and owned by this process's user (root, for a
+// root scope), in a private folder; the tool's variables live only there.
+func TestPlistIsPrivateAtBootstrap(t *testing.T) {
+	dir := privateDir(t)
+	plist := filepath.Join(dir, label+".plist")
+	inner := (&launchd{runFor: 1}).runner()
+	checked := false
+	r := platformtest.NewRunner(func(argv []string) (platform.ExecResult, error) {
+		if argv[1] == "bootstrap" {
+			info, err := os.Lstat(plist)
+			if err != nil {
+				t.Errorf("plist missing at bootstrap: %v", err)
+			} else {
+				st, _ := info.Sys().(*syscall.Stat_t)
+				if info.Mode().Perm() != 0o600 || st == nil || int(st.Uid) != os.Geteuid() {
+					t.Errorf("plist mode %v uid %v at bootstrap, want 0600 owned by uid %d", info.Mode().Perm(), st, os.Geteuid())
+				}
+			}
+			checked = true
+		}
+		return inner.Run(context.Background(), platform.ExecSpec{Argv: argv})
+	})
+	c := &Containment{Runner: r, Inspector: fixedIdentity{}, PlistDir: dir, PollInterval: time.Millisecond}
+	if _, err := c.Run(context.Background(), platform.LaunchSpec{Name: label, Scope: contract.ScopeRoot, Argv: []string{"/usr/bin/true"}, Env: []string{"WSKIT_TOKEN=x"}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !checked {
+		t.Fatal("bootstrap never ran")
+	}
+}

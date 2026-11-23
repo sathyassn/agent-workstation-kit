@@ -262,6 +262,9 @@ func (t *tx) Run(ctx context.Context, c contract.Command) (contract.CommandResul
 		if !t.env[k] {
 			return contract.CommandResult{}, &contract.UndeclaredTargetError{Kind: contract.TargetEnvKey, Target: k}
 		}
+		if platform.ForbiddenEnvKey(k) {
+			return contract.CommandResult{}, fmt.Errorf("%w: declared key %s (LD_*, DYLD_* and SYSTEMD_* are refused)", platform.ErrForbiddenEnv, k)
+		}
 	}
 	if len(c.Argv) == 0 {
 		return contract.CommandResult{}, platform.ErrCommandEmpty

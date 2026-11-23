@@ -357,3 +357,32 @@ func TestEnsureBlockRefusesSymlink(t *testing.T) {
 		t.Fatalf("link = %q, %v", got, err)
 	}
 }
+
+// TestRunRefusesLoaderVariables is decision d at the engine: a unit that
+// declares a loader or systemd variable is refused with exit 2, before any
+// launch.
+func TestRunRefusesLoaderVariables(t *testing.T) {
+	w := newWorld(t)
+	e, _ := w.engine(t, func(o *engine.Options) {
+		o.LookupEnv = func(string) (string, bool) { return "/tmp/x.so", true }
+	})
+	u := &loaderUnit{refusalUnit: refusalUnit{testUnit: testUnit{root: w.root}, op: func(ctx context.Context, tx contract.Tx) error {
+		_, err := tx.Run(ctx, contract.Command{Argv: []string{"tool"}, EnvKeys: []string{"LD_PRELOAD"}})
+		return err
+	}}}
+	err := e.Apply(context.Background(), u, testPlan())
+	if !errors.Is(err, platform.ErrForbiddenEnv) || engine.ExitCode(err) != contract.ExitRefused {
+		t.Fatalf("err = %v (exit %d), want ErrForbiddenEnv and exit 2", err, engine.ExitCode(err))
+	}
+	if len(w.cont.Launched()) != 0 {
+		t.Fatal("a command launched with a loader variable")
+	}
+}
+
+type loaderUnit struct{ refusalUnit }
+
+func (u *loaderUnit) Describe(ctx context.Context) (contract.Description, error) {
+	d, err := u.refusalUnit.Describe(ctx)
+	d.DeclaredEnv = []string{"LD_PRELOAD"}
+	return d, err
+}

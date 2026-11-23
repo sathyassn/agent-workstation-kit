@@ -104,6 +104,9 @@ func (c *Containment) Run(ctx context.Context, spec platform.LaunchSpec, onSuper
 	if !validLabel.MatchString(spec.Name) {
 		return contract.CommandResult{}, fmt.Errorf("%w: %q", platform.ErrInvalidContainmentName, spec.Name)
 	}
+	if err := platform.CheckToolEnv(spec.Env); err != nil {
+		return contract.CommandResult{}, fmt.Errorf("launchd job %q: %w", spec.Name, err)
+	}
 	if err := platform.CheckPrivateDir(c.PlistDir); err != nil {
 		return contract.CommandResult{}, fmt.Errorf("launchd job folder: %w", err)
 	}

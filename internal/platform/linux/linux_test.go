@@ -249,26 +249,74 @@ func TestSupervisorIgnoresHostilePath(t *testing.T) {
 	}
 }
 
-// TestSupervisorGetsMinimalEnvironment is finding 2: systemd-run gets a
-// fixed minimal environment and the tool's variables only through
-// --setenv; a user manager is found at /run/user/<uid>, never through the
-// caller's XDG_RUNTIME_DIR.
-func TestSupervisorGetsMinimalEnvironment(t *testing.T) {
-	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
-	r := platformtest.NewRunner(func([]string) (platform.ExecResult, error) { return platform.ExecResult{}, nil })
-	c := &linux.Containment{Runner: r, Inspector: &linux.ProcessInspector{ProcRoot: procFixture(t, "b", map[int]string{4242: "9"})}}
-	spec := platform.LaunchSpec{Name: scope, Scope: contract.ScopeRoot, Argv: []string{"/usr/bin/true"}, Env: []string{"WSKIT_TOKEN=s3cret", "PATH=/usr/bin"}}
-	if _, err := c.Run(context.Background(), spec, nil); err != nil {
+// TestToolVariablesNeverInSupervisorArgv is decision d: /proc/<pid>/cmdline
+// is readable by every local user, so no declared value may appear in
+// systemd-run's argv, for a root or a user scope. systemd-run --scope execs
+// the tool itself, so the declared variables travel in systemd-run's own
+// environment: the fixed base plus the tool's variables and nothing else.
+func TestToolVariablesNeverInSupervisorArgv(t *testing.T) {
+	uid := os.Getuid()
+	root, err := os.MkdirTemp("", "ru") // short: a socket path has a length limit
+	if err != nil {
 		t.Fatal(err)
 	}
-	argv, env := r.Calls()[0], r.Envs()[0]
-	for _, kv := range env {
-		if strings.HasPrefix(kv, "WSKIT_TOKEN=") || strings.HasPrefix(kv, "XDG_RUNTIME_DIR=") {
-			t.Fatalf("supervisor environment %q holds %s", env, kv)
-		}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	dir := filepath.Join(root, strconv.Itoa(uid))
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
 	}
-	if !slices.Contains(argv, "--setenv=WSKIT_TOKEN=s3cret") {
-		t.Fatalf("argv %q does not pass the tool variable with --setenv", argv)
+	ln, err := net.Listen("unix", filepath.Join(dir, "bus"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	t.Setenv("WSKIT_CALLER_ONLY", "leak")
+	const secret = "s3cret-value"
+	for _, sc := range []contract.Scope{contract.ScopeRoot, contract.ScopeUser} {
+		t.Run(string(sc), func(t *testing.T) {
+			r := platformtest.NewRunner(func([]string) (platform.ExecResult, error) { return platform.ExecResult{}, nil })
+			c := &linux.Containment{Runner: r, Inspector: &linux.ProcessInspector{ProcRoot: procFixture(t, "b", map[int]string{4242: "9"})}, UID: uid, RunUserRoot: root}
+			spec := platform.LaunchSpec{Name: scope, Scope: sc, Argv: []string{"/usr/bin/true"}, Env: []string{"WSKIT_TOKEN=" + secret, "PATH=/usr/bin"}}
+			if _, err := c.Run(context.Background(), spec, nil); err != nil {
+				t.Fatal(err)
+			}
+			argv, env := r.Calls()[0], r.Envs()[0]
+			for _, a := range argv {
+				if strings.Contains(a, secret) || strings.HasPrefix(a, "--setenv") {
+					t.Fatalf("argv %q carries a tool variable", argv)
+				}
+			}
+			if !slices.Contains(env, "WSKIT_TOKEN="+secret) {
+				t.Fatalf("supervisor env %q lacks the declared variable", env)
+			}
+			for _, kv := range env {
+				k, _, _ := strings.Cut(kv, "=")
+				switch k {
+				case "PATH", "LANG", "WSKIT_TOKEN":
+				case "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS":
+					if sc == contract.ScopeRoot || !strings.Contains(kv, dir) {
+						t.Fatalf("supervisor env holds %s", kv)
+					}
+				default:
+					t.Fatalf("supervisor env holds %s, outside the base and the declared keys", kv)
+				}
+			}
+		})
+	}
+}
+
+// TestRefusesLoaderAndSystemdVariables is decision d: a variable that would
+// steer the dynamic loader or systemd-run itself is refused before
+// anything runs.
+func TestRefusesLoaderAndSystemdVariables(t *testing.T) {
+	for _, kv := range []string{"LD_PRELOAD=/tmp/x.so", "LD_LIBRARY_PATH=/tmp", "DYLD_INSERT_LIBRARIES=/tmp/x", "SYSTEMD_LOG_LEVEL=debug"} {
+		r := platformtest.NewRunner(func([]string) (platform.ExecResult, error) { return platform.ExecResult{}, nil })
+		c := &linux.Containment{Runner: r, UserManager: func(context.Context) bool { return true }}
+		_, err := c.Run(context.Background(), platform.LaunchSpec{Name: scope, Scope: contract.ScopeRoot, Argv: []string{"/usr/bin/true"}, Env: []string{kv}}, nil)
+		if !errors.Is(err, platform.ErrForbiddenEnv) || len(r.Calls()) != 0 {
+			t.Errorf("%s: err = %v, calls = %d; want ErrForbiddenEnv and nothing run", kv, err, len(r.Calls()))
+		}
 	}
 }
 

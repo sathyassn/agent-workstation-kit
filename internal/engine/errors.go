@@ -79,7 +79,7 @@ func ExitCode(err error) contract.ExitCode {
 		errors.Is(err, platform.ErrContainmentNotEmpty),
 		errors.Is(err, platform.ErrSupervisorState):
 		return contract.ExitRecoveryBlocks
-	case errors.Is(err, contract.ErrUndeclaredTarget):
+	case errors.Is(err, contract.ErrUndeclaredTarget), errors.Is(err, platform.ErrForbiddenEnv):
 		return contract.ExitRefused
 	default:
 		return contract.ExitFailed

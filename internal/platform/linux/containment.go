@@ -140,13 +140,16 @@ func (c *Containment) Run(ctx context.Context, spec platform.LaunchSpec, onSuper
 	if !validScopeName.MatchString(spec.Name) {
 		return contract.CommandResult{}, fmt.Errorf("%w: %q", platform.ErrInvalidContainmentName, spec.Name)
 	}
+	if err := platform.CheckToolEnv(spec.Env); err != nil {
+		return contract.CommandResult{}, fmt.Errorf("scope %q: %w", spec.Name, err)
+	}
 	user := spec.Scope != contract.ScopeRoot
 	if user && !c.hasUserManager(ctx) {
 		return contract.CommandResult{}, platform.ErrNoUserManager
 	}
 	res, err := c.Runner.Run(ctx, platform.ExecSpec{
-		Argv:      SystemdRunArgv(c.bin().SystemdRun, spec.Name, user, spec.Env, spec.Argv),
-		Env:       c.supervisorEnv(user),
+		Argv:      SystemdRunArgv(c.bin().SystemdRun, spec.Name, user, spec.Argv),
+		Env:       c.launchEnv(user, spec.Env),
 		Dir:       spec.Dir,
 		Stdout:    spec.Output,
 		Stderr:    spec.Output,
@@ -234,6 +237,37 @@ func (c *Containment) Signal(ctx context.Context, name string, sel platform.Scop
 	return nil
 }
 
+// launchEnv is systemd-run's whole environment for a launch. With --scope,
+// systemd-run execs the tool itself, so the tool inherits this environment:
+// the supervisor base plus the tool's variables, and nothing from this
+// process. The base's user-manager variables always win, so a tool variable
+// can never point systemd-run at another bus.
+func (c *Containment) launchEnv(user bool, tool []string) []string {
+	base := c.supervisorEnv(user)
+	pinned := map[string]bool{}
+	for _, kv := range base {
+		k, _, _ := strings.Cut(kv, "=")
+		pinned[k] = user && (k == "XDG_RUNTIME_DIR" || k == "DBUS_SESSION_BUS_ADDRESS")
+	}
+	env := make([]string, 0, len(base)+len(tool))
+	seen := map[string]bool{}
+	for _, kv := range tool {
+		k, _, _ := strings.Cut(kv, "=")
+		if pinned[k] || seen[k] {
+			continue
+		}
+		seen[k] = true
+		env = append(env, kv)
+	}
+	for _, kv := range base {
+		k, _, _ := strings.Cut(kv, "=")
+		if !seen[k] {
+			env = append(env, kv)
+		}
+	}
+	return env
+}
+
 // hasUserManager checks for the user manager's bus in /run/user/<uid>: the
 // folder and the socket must be owned by that uid and the folder must not be
 // writable by others. The caller's XDG_RUNTIME_DIR is never trusted.
@@ -262,20 +296,16 @@ func (c *Containment) hasUserManager(ctx context.Context) bool {
 }
 
 // SystemdRunArgv is the systemd-run command line that starts command in the
-// named transient scope. The tool's variables go in as --setenv, so the
-// supervisor's own environment stays minimal.
-func SystemdRunArgv(bin, name string, user bool, env, command []string) []string {
+// named transient scope. It never carries a tool variable: argv is readable
+// by every local user through /proc/<pid>/cmdline.
+func SystemdRunArgv(bin, name string, user bool, command []string) []string {
 	argv := []string{bin}
 	if user {
 		argv = append(argv, flagUser)
 	}
 	// No --collect: a failed scope stays loaded, so its state is never
 	// mistaken for a scope that never registered.
-	argv = append(argv, "--scope", "--quiet", "--unit="+name)
-	for _, kv := range env {
-		argv = append(argv, "--setenv="+kv)
-	}
-	argv = append(argv, "--")
+	argv = append(argv, "--scope", "--quiet", "--unit="+name, "--")
 	return append(argv, command...)
 }
 
