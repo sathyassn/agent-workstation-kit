@@ -23,6 +23,10 @@ var (
 	// its grace period. The intent record is left for the next start.
 	// Exit 130.
 	ErrCancelled = errors.New("cancelled")
+	// ErrEmptinessUnknown reports a containment that could not be proven
+	// empty. Nothing is restored over processes that may still run: the
+	// record stays unfinished for the next start. Exit 4.
+	ErrEmptinessUnknown = errors.New("containment not proven empty")
 	// ErrApplyFailed reports an apply that failed and was restored; a
 	// failed receipt records it. Exit 1.
 	ErrApplyFailed = errors.New("apply failed and was restored")
@@ -71,6 +75,7 @@ func ExitCode(err error) contract.ExitCode {
 	case errors.Is(err, ErrActiveExecutor),
 		errors.Is(err, ErrRecoveryClaimed),
 		errors.Is(err, ErrRecoveryPending),
+		errors.Is(err, ErrEmptinessUnknown),
 		errors.Is(err, platform.ErrContainmentNotEmpty),
 		errors.Is(err, platform.ErrSupervisorState):
 		return contract.ExitRecoveryBlocks

@@ -270,6 +270,7 @@ func (t *tx) Run(ctx context.Context, c contract.Command) (contract.CommandResul
 	}
 	t.e.fault(PointLaunch)
 
+	var sup platform.ProcessIdentity
 	runCtx, cancel := ctx, context.CancelFunc(func() {})
 	switch {
 	case c.PackageTransaction:
@@ -283,19 +284,28 @@ func (t *tx) Run(ctx context.Context, c contract.Command) (contract.CommandResul
 	res, err := t.e.opts.Containment.Run(runCtx, platform.LaunchSpec{
 		Name: name, Scope: t.e.opts.Scope, Argv: c.Argv, Env: t.toolEnv(c.EnvKeys), Dir: c.Dir,
 		PackageTransaction: c.PackageTransaction, Output: t.e.opts.ToolLog,
-	}, func(ack platform.LaunchAck) {
-		if ackErr := t.setCommand(bk, &CommandRecord{Name: name, PackageTransaction: c.PackageTransaction, Tool: ack.Tool}); ackErr != nil {
-			t.fail(ackErr)
-		}
+	}, func(ack platform.LaunchAck) error {
+		// The supervisor waits at its gate until this is durable.
+		sup = ack.Supervisor
+		return t.setCommand(bk, &CommandRecord{Name: name, PackageTransaction: c.PackageTransaction, Supervisor: sup})
 	})
 	t.e.fault(PointCommandDone)
 	if err != nil {
 		err = fmt.Errorf("run %s: %w", c.Argv[0], err)
 	}
-	if (err != nil || runCtx.Err() != nil) && !c.PackageTransaction {
-		// The tool may have left processes; empty its containment now.
-		err = errors.Join(err, t.e.opts.Containment.Empty(bk, name, t.e.emptyOptions(false, 0)))
+	// Prove the containment empty before the unit moves on, whether the
+	// tool succeeded, failed or was cancelled: a tool can leave descendants.
+	// A package transaction's containment is only waited for.
+	if emptyErr := t.e.empty(bk, name, sup, c.PackageTransaction, 0); emptyErr != nil {
+		blocked := fmt.Errorf("%w: command %s: %w", ErrEmptinessUnknown, c.Argv[0], emptyErr)
+		t.fail(blocked)
+		return res, errors.Join(err, blocked)
 	}
+	if markErr := t.setCommand(bk, &CommandRecord{Name: name, PackageTransaction: c.PackageTransaction, Supervisor: sup, Finished: true}); markErr != nil {
+		t.fail(markErr)
+		return res, errors.Join(err, markErr)
+	}
+	t.e.fault(PointCommandEmptied)
 	if err == nil && runCtx.Err() != nil {
 		err = fmt.Errorf("run %s: %w", c.Argv[0], runCtx.Err())
 	}

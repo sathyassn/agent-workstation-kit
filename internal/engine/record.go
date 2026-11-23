@@ -61,11 +61,15 @@ func (s Status) valid() bool {
 }
 
 // CommandRecord names the containment of the command a run started last.
-// It is written before the launch, so a restart can always empty it.
+// It is written before the launch, so a restart can always empty it. The
+// supervisor's identity is written before the launch gate opens, so a
+// command with no supervisor recorded never ran. Finished is written only
+// once the containment is proven empty.
 type CommandRecord struct {
 	Name               string                   `json:"name"`
 	PackageTransaction bool                     `json:"package_transaction"`
-	Tool               platform.ProcessIdentity `json:"tool"`
+	Supervisor         platform.ProcessIdentity `json:"supervisor"`
+	Finished           bool                     `json:"finished"`
 }
 
 // Claim is a recovery claim: only its claimant may empty the containment

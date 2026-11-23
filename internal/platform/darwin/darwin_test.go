@@ -9,7 +9,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync/atomic"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -25,6 +26,12 @@ type fixedIdentity struct{}
 func (fixedIdentity) Identity(_ context.Context, pid int) (platform.ProcessIdentity, error) {
 	return platform.ProcessIdentity{BootID: "b", PID: pid, StartTime: "1.2"}, nil
 }
+func (fixedIdentity) Alive(context.Context, platform.ProcessIdentity) (bool, error) {
+	return false, nil
+}
+func (fixedIdentity) Signal(context.Context, platform.ProcessIdentity, syscall.Signal) error {
+	return nil
+}
 
 func TestParsePrint(t *testing.T) {
 	tests := []struct {
@@ -33,9 +40,11 @@ func TestParsePrint(t *testing.T) {
 		want jobState
 		ok   bool
 	}{
-		{"running", "\tstate = running\n\tpid = 321\n", jobState{running: true, pid: 321}, true},
-		{"exited", "\tstate = not running\n\tlast exit code = 3\n", jobState{exited: true, exitCode: 3}, true},
-		{"never exited", "\tstate = not running\n\tlast exit code = (never exited)\n", jobState{}, true},
+		{"running", "\tstate = running\n\tpid = 321\n", jobState{state: platform.StateActive, loaded: true, pid: 321}, true},
+		{"exited", "\tstate = not running\n\tlast exit code = 3\n", jobState{state: platform.StateGone, loaded: true, exited: true, exitCode: 3}, true},
+		{"never exited is pending", "\tstate = not running\n\tlast exit code = (never exited)\n", jobState{state: platform.StatePending, loaded: true}, true},
+		{"spawn scheduled is pending", "\tstate = spawn scheduled\n", jobState{state: platform.StatePending, loaded: true}, true},
+		{"unknown state", "\tstate = exiting\n", jobState{}, false},
 		{"no state", "garbage", jobState{}, false},
 	}
 	for _, tc := range tests {
@@ -62,31 +71,63 @@ func TestRenderPlistEscapes(t *testing.T) {
 	}
 }
 
-// launchd fakes launchctl: a job runs for a few prints after bootstrap and
-// exits with code 3; kill ends it unless it is unkillable.
+// launchd fakes launchctl with a loaded job's life: bootstrap loads it as
+// pending; it runs for runFor prints and exits with code 3; kill ends a
+// running job unless unkillable; bootout unloads it (and ends it); print
+// of an unloaded job exits 113.
 type launchd struct {
-	prints     atomic.Int32
-	runFor     int32
-	killed     atomic.Bool
+	mu         sync.Mutex
+	loaded     bool
+	started    bool
+	ended      bool
+	prints     int
+	runFor     int
+	pendingFor int
 	unkillable bool
+	bootoutRC  int
 }
 
 func (l *launchd) runner() *platformtest.Runner {
 	return platformtest.NewRunner(func(argv []string) (platform.ExecResult, error) {
+		l.mu.Lock()
+		defer l.mu.Unlock()
 		switch argv[1] {
-		case "bootstrap", "bootout":
+		case "bootstrap":
+			l.loaded = true
+			return platform.ExecResult{}, nil
+		case "bootout":
+			if l.bootoutRC != 0 {
+				return platform.ExecResult{ExitCode: l.bootoutRC}, nil
+			}
+			if !l.loaded {
+				return platform.ExecResult{ExitCode: launchctlNotFound}, nil
+			}
+			l.loaded, l.ended = false, true
 			return platform.ExecResult{}, nil
 		case "kill":
-			if !l.unkillable {
-				l.killed.Store(true)
+			if l.started && !l.ended && !l.unkillable {
+				l.ended = true
 			}
 			return platform.ExecResult{}, nil
 		case "print":
-			n := l.prints.Add(1)
-			if l.killed.Load() || (l.runFor > 0 && n > l.runFor) {
-				return platform.ExecResult{Stdout: "\tstate = not running\n\tlast exit code = 3\n"}, nil
+			if !l.loaded {
+				return platform.ExecResult{ExitCode: launchctlNotFound}, nil
 			}
-			return platform.ExecResult{Stdout: "\tstate = running\n\tpid = 321\n"}, nil
+			l.prints++
+			if !l.started && l.prints > l.pendingFor {
+				l.started = true
+			}
+			if l.started && !l.ended && l.runFor > 0 && l.prints > l.pendingFor+l.runFor {
+				l.ended = true
+			}
+			switch {
+			case !l.started:
+				return platform.ExecResult{Stdout: "\tstate = not running\n\tlast exit code = (never exited)\n"}, nil
+			case l.ended:
+				return platform.ExecResult{Stdout: "\tstate = not running\n\tlast exit code = 3\n"}, nil
+			default:
+				return platform.ExecResult{Stdout: "\tstate = running\n\tpid = 321\n"}, nil
+			}
 		}
 		return platform.ExecResult{ExitCode: 1}, nil
 	})
@@ -102,24 +143,27 @@ func privateDir(t *testing.T) string {
 }
 
 func TestRunReadsExitCodeAfterJobEnds(t *testing.T) {
-	l := &launchd{runFor: 3}
+	l := &launchd{runFor: 3, pendingFor: 1}
 	r := l.runner()
 	dir := privateDir(t)
 	c := &Containment{Runner: r, Inspector: fixedIdentity{}, PlistDir: dir, UID: 501, PollInterval: time.Millisecond}
 	var ack platform.LaunchAck
-	res, err := c.Run(context.Background(), platform.LaunchSpec{Name: label, Scope: contract.ScopeUser, Argv: []string{"/usr/bin/true"}}, func(a platform.LaunchAck) { ack = a })
+	res, err := c.Run(context.Background(), platform.LaunchSpec{Name: label, Scope: contract.ScopeUser, Argv: []string{"/usr/bin/true"}}, func(a platform.LaunchAck) error { ack = a; return nil })
 	if err != nil || res.ExitCode != 3 {
 		t.Fatalf("Run = %+v, %v; want exit code 3 from the ended job", res, err)
 	}
-	if ack.Tool.PID != 321 {
-		t.Fatalf("ack = %+v", ack)
+	if ack.Supervisor.PID != 4242 {
+		t.Fatalf("ack = %+v, want the gated bootstrap as supervisor", ack)
 	}
-	calls := r.Calls()
-	if !slices.Equal(calls[0][:3], []string{"/bin/launchctl", "bootstrap", "gui/501"}) {
-		t.Fatalf("first call = %q", calls[0])
+	if !slices.Equal(r.Calls()[0][:3], []string{"/bin/launchctl", "bootstrap", "gui/501"}) {
+		t.Fatalf("first call = %q", r.Calls()[0])
 	}
-	if last := calls[len(calls)-1]; last[1] != "bootout" {
-		t.Fatalf("job not unloaded: %q", last)
+	// Run leaves the ended job for Empty, which unloads it and verifies.
+	if err := c.Empty(context.Background(), label, platform.EmptyOptions{Scope: contract.ScopeUser}); err != nil {
+		t.Fatal(err)
+	}
+	if l.loaded {
+		t.Fatal("job still loaded after Empty")
 	}
 	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
 		t.Fatalf("job files left: %v", entries)
@@ -141,36 +185,47 @@ func TestRunRefusesSharedFolder(t *testing.T) {
 	}
 }
 
-// TestEmptyJob covers AC-2 and AC-3 on macOS: an ordinary job is signalled
-// within its bound; a package transaction is never signalled or unloaded
-// while it runs.
+// TestEmptyJob covers findings 1 and AC-2/AC-3 on macOS: each launchd state
+// is handled. A running job is signalled; a pending one is booted out before
+// it can start; an ended one is booted out with an acknowledgement and
+// verified gone; a bootout launchd does not acknowledge leaves it blocked. A
+// package transaction is never signalled or unloaded while it runs or may
+// start.
 func TestEmptyJob(t *testing.T) {
 	opts := platform.EmptyOptions{Scope: contract.ScopeRoot, Grace: 2 * time.Millisecond, KillWait: 4 * time.Millisecond, PollInterval: time.Millisecond}
 	pkg := opts
 	pkg.PackageTransaction = true
+	running := func() *launchd { return &launchd{loaded: true, started: true} }
 	tests := []struct {
-		name       string
-		unkillable bool
-		opts       platform.EmptyOptions
-		signalled  bool
-		wantErr    error
+		name      string
+		job       *launchd
+		opts      platform.EmptyOptions
+		signalled bool
+		wantErr   error
 	}{
-		{"signalled until empty", false, opts, true, nil},
-		{"cannot be emptied", true, opts, true, platform.ErrContainmentNotEmpty},
-		{"package transaction never signalled", false, pkg, false, platform.ErrContainmentNotEmpty},
+		{"not loaded", &launchd{}, opts, false, nil},
+		{"ended, booted out and verified", &launchd{loaded: true, started: true, ended: true}, opts, false, nil},
+		{"bootout not acknowledged", &launchd{loaded: true, started: true, ended: true, bootoutRC: 5}, opts, false, platform.ErrSupervisorState},
+		{"running, signalled until empty", running(), opts, true, nil},
+		{"pending, removed before it starts", &launchd{loaded: true, pendingFor: 1000}, opts, true, nil},
+		{"cannot be emptied", &launchd{loaded: true, started: true, unkillable: true, bootoutRC: 5}, opts, true, platform.ErrContainmentNotEmpty},
+		{"package transaction running, never signalled", running(), pkg, false, platform.ErrContainmentNotEmpty},
+		{"package transaction pending, never removed", &launchd{loaded: true, pendingFor: 1000}, pkg, false, platform.ErrContainmentNotEmpty},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			r := (&launchd{unkillable: tc.unkillable}).runner()
+			r := tc.job.runner()
 			c := &Containment{Runner: r, PlistDir: privateDir(t)}
 			err := c.Empty(context.Background(), label, tc.opts)
 			if !errors.Is(err, tc.wantErr) || (tc.wantErr == nil && err != nil) {
 				t.Fatalf("err = %v, want %v", err, tc.wantErr)
 			}
-			var signalled, bootout bool
+			var signalled bool
 			for _, call := range r.Calls() {
 				signalled = signalled || call[1] == "kill"
-				bootout = bootout || call[1] == "bootout"
+				if tc.opts.PackageTransaction && call[1] == "bootout" {
+					t.Fatalf("package transaction job booted out: %q", r.Calls())
+				}
 				if strings.HasPrefix(call[len(call)-1], "gui/") {
 					t.Fatalf("root job addressed in a gui domain: %q", call)
 				}
@@ -178,37 +233,30 @@ func TestEmptyJob(t *testing.T) {
 			if signalled != tc.signalled {
 				t.Fatalf("signalled = %v, want %v (calls %q)", signalled, tc.signalled, r.Calls())
 			}
-			if tc.wantErr != nil && bootout {
-				t.Fatal("a running job was unloaded")
+			if tc.wantErr == nil && tc.job.loaded {
+				t.Fatal("job still loaded after a successful Empty")
 			}
 		})
 	}
 }
 
 func TestPrintFailsClosed(t *testing.T) {
-	for name, res := range map[string]platform.ExecResult{
-		"not loaded":  {ExitCode: launchctlNotFound},
-		"other error": {ExitCode: 5},
-		"unparseable": {Stdout: "???"},
-		"running pid": {Stdout: "state = running\npid = 9\n"},
-		"not running": {Stdout: "state = not running\n"},
+	for name, tc := range map[string]struct {
+		res  platform.ExecResult
+		want platform.ContainmentState
+		ok   bool
+	}{
+		"not loaded":  {platform.ExecResult{ExitCode: launchctlNotFound}, platform.StateGone, true},
+		"other error": {platform.ExecResult{ExitCode: 5}, 0, false},
+		"unparseable": {platform.ExecResult{Stdout: "???"}, 0, false},
+		"running pid": {platform.ExecResult{Stdout: "state = running\npid = 9\n"}, platform.StateActive, true},
+		"pending":     {platform.ExecResult{Stdout: "state = not running\n"}, platform.StatePending, true},
 	} {
-		r := platformtest.NewRunner(func([]string) (platform.ExecResult, error) { return res, nil })
+		r := platformtest.NewRunner(func([]string) (platform.ExecResult, error) { return tc.res, nil })
 		c := &Containment{Runner: r}
-		active, err := c.Active(context.Background(), label, platform.ScopeSelector{})
-		switch name {
-		case "not loaded", "not running":
-			if err != nil || active {
-				t.Errorf("%s: Active = %v, %v; want empty", name, active, err)
-			}
-		case "running pid":
-			if err != nil || !active {
-				t.Errorf("%s: Active = %v, %v; want active", name, active, err)
-			}
-		default:
-			if err == nil {
-				t.Errorf("%s: Active = %v with no error", name, active)
-			}
+		got, err := c.State(context.Background(), label, platform.ScopeSelector{})
+		if (err == nil) != tc.ok || got != tc.want {
+			t.Errorf("%s: State = %v, %v; want %v ok=%v", name, got, err, tc.want, tc.ok)
 		}
 	}
 }
@@ -274,11 +322,5 @@ func TestLaunchctlIgnoresHostilePathAndEnvironment(t *testing.T) {
 		if len(r.Envs()[i]) == 0 {
 			t.Fatalf("call %d has an empty environment, want a fixed PATH", i)
 		}
-	}
-}
-
-func TestNewContainmentChecksBinaries(t *testing.T) {
-	if _, err := NewContainment(privateDir(t)); err != nil {
-		t.Fatalf("NewContainment on this host: %v", err)
 	}
 }

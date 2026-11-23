@@ -19,7 +19,9 @@ import (
 // (platform/linux, platform/darwin).
 type Containment interface {
 	NameFor(runID contract.RunID, seq int) (string, error)
-	Run(ctx context.Context, spec platform.LaunchSpec, onAck func(platform.LaunchAck)) (contract.CommandResult, error)
+	// Run holds the supervisor at a gate until onSupervisor has returned
+	// nil, so its identity is durable before anything runs.
+	Run(ctx context.Context, spec platform.LaunchSpec, onSupervisor func(platform.LaunchAck) error) (contract.CommandResult, error)
 	Empty(ctx context.Context, name string, opts platform.EmptyOptions) error
 }
 
@@ -31,11 +33,12 @@ type ProcessInspector interface {
 
 // Defaults for the bounds in Options.
 const (
-	DefaultGrace      = 10 * time.Second
-	DefaultKillWait   = 10 * time.Second
-	DefaultClaimTTL   = 5 * time.Minute
-	DefaultClaimRenew = time.Minute
-	DefaultLockPoll   = 50 * time.Millisecond
+	DefaultGrace       = 10 * time.Second
+	DefaultKillWait    = 10 * time.Second
+	DefaultClaimTTL    = 5 * time.Minute
+	DefaultClaimRenew  = time.Minute
+	DefaultLockPoll    = 50 * time.Millisecond
+	DefaultCallTimeout = 10 * time.Second
 )
 
 // Options configure an Engine. JournalDir, HostLock, Containment and
@@ -73,6 +76,8 @@ type Options struct {
 	ClaimRenew time.Duration
 	// LockPoll is how often a blocked lock is retried.
 	LockPoll time.Duration
+	// CallTimeout bounds each supervisor inspection and signal.
+	CallTimeout time.Duration
 	// Fault is called at every Point. Nil uses the build's default, which
 	// is no hook unless the binary is built with the faultinject tag.
 	Fault FaultFunc
@@ -127,6 +132,7 @@ func New(opts Options) (*Engine, error) {
 	setDefault(&opts.ClaimTTL, DefaultClaimTTL)
 	setDefault(&opts.ClaimRenew, DefaultClaimRenew)
 	setDefault(&opts.LockPoll, DefaultLockPoll)
+	setDefault(&opts.CallTimeout, DefaultCallTimeout)
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
@@ -158,8 +164,25 @@ func (e *Engine) real(path string) string {
 	return filepath.Join(e.opts.Root, path)
 }
 
-func (e *Engine) emptyOptions(pkg bool, grace time.Duration) platform.EmptyOptions {
-	return platform.EmptyOptions{Scope: e.opts.Scope, Grace: grace, KillWait: e.opts.KillWait, PackageTransaction: pkg}
+// empty proves a command's containment empty within its bound: wait for
+// grace, terminate, kill. A package transaction is only waited for, for the
+// grace period plus the kill wait, and never signalled. The whole call has
+// a deadline, and each inspection and signal its own.
+func (e *Engine) empty(ctx context.Context, name string, sup platform.ProcessIdentity, pkg bool, grace time.Duration) error {
+	opts := platform.EmptyOptions{
+		Scope: e.opts.Scope, Grace: grace, KillWait: e.opts.KillWait, PackageTransaction: pkg,
+		Supervisor: sup, CallTimeout: e.opts.CallTimeout,
+	}
+	if pkg {
+		opts.Grace = e.opts.Grace
+	}
+	bound := opts.Grace + opts.KillWait + 4*e.opts.CallTimeout
+	cctx, cancel := context.WithTimeout(ctx, bound)
+	defer cancel()
+	if err := e.opts.Containment.Empty(cctx, name, opts); err != nil {
+		return fmt.Errorf("empty %s: %w", name, err)
+	}
+	return nil
 }
 
 // Apply runs one unit's apply as a transaction: back up every declared path,
@@ -242,6 +265,11 @@ func (e *Engine) runApply(ctx context.Context, l *locks, self platform.ProcessId
 	step, stop := e.withGrace(ctx)
 	defer stop()
 	stepErr := e.step(step, t, u, p)
+	if errors.Is(stepErr, ErrEmptinessUnknown) {
+		// Restoring over processes that may still run could be undone by
+		// them; leave the record for a start that can empty the containment.
+		return stepErr
+	}
 	if stepErr != nil && errors.Is(context.Cause(step), ErrCancelled) {
 		// Leave the record: the next start empties, restores and reapplies.
 		return fmt.Errorf("%w: run %s stopped after the grace period: %w", ErrCancelled, runID, stepErr)

@@ -2,10 +2,12 @@ package darwin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"golang.org/x/sys/unix"
 
@@ -74,6 +76,19 @@ func (p ProcessInspector) Alive(ctx context.Context, id platform.ProcessIdentity
 		return false, err
 	}
 	return start == id.StartTime, nil
+}
+
+// Signal sends sig to the process id names, after checking it is still that
+// process. A process that has already exited is not an error.
+func (p ProcessInspector) Signal(ctx context.Context, id platform.ProcessIdentity, sig syscall.Signal) error {
+	alive, err := p.Alive(ctx, id)
+	if err != nil || !alive {
+		return err
+	}
+	if err := syscall.Kill(id.PID, sig); err != nil && !errors.Is(err, syscall.ESRCH) {
+		return fmt.Errorf("signal pid %d: %w", id.PID, err)
+	}
+	return nil
 }
 
 // startTime returns the process start time as seconds.microseconds. An

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/sathyassn/agent-workstation-kit/internal/contract"
@@ -19,11 +20,13 @@ var ErrInspect = errors.New("fake inspection failure")
 
 // ProcessTable is a fake set of live processes on one boot.
 type ProcessTable struct {
-	mu      sync.Mutex
-	boot    string
-	alive   map[platform.ProcessIdentity]bool
-	next    int
-	failErr error
+	mu         sync.Mutex
+	boot       string
+	alive      map[platform.ProcessIdentity]bool
+	next       int
+	failErr    error
+	unkillable map[platform.ProcessIdentity]bool
+	signalled  []platform.ProcessIdentity
 }
 
 // NewProcessTable returns an empty table on boot.
@@ -60,6 +63,58 @@ func (t *ProcessTable) FailInspection(err error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.failErr = err
+}
+
+// Identity returns the live process with this PID.
+func (t *ProcessTable) Identity(_ context.Context, pid int) (platform.ProcessIdentity, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for id := range t.alive {
+		if id.PID == pid {
+			return id, nil
+		}
+	}
+	return platform.ProcessIdentity{}, fmt.Errorf("%w: no process %d", platform.ErrInvalidProcessIdentity, pid)
+}
+
+// Alive reports whether id is a live process on the table's boot.
+func (t *ProcessTable) Alive(ctx context.Context, id platform.ProcessIdentity) (bool, error) {
+	return t.Inspector(platform.ProcessIdentity{}).Alive(ctx, id)
+}
+
+// isAlive reports whether id is alive, ignoring FailInspection.
+func (t *ProcessTable) isAlive(id platform.ProcessIdentity) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.alive[id]
+}
+
+// SetUnkillable makes signals to id have no effect.
+func (t *ProcessTable) SetUnkillable(id platform.ProcessIdentity) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.unkillable == nil {
+		t.unkillable = map[platform.ProcessIdentity]bool{}
+	}
+	t.unkillable[id] = true
+}
+
+// Signal kills id unless it is unkillable. A dead process is not an error.
+func (t *ProcessTable) Signal(_ context.Context, id platform.ProcessIdentity, _ syscall.Signal) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.signalled = append(t.signalled, id)
+	if !t.unkillable[id] {
+		delete(t.alive, id)
+	}
+	return nil
+}
+
+// Signalled returns every identity signalled so far.
+func (t *ProcessTable) Signalled() []platform.ProcessIdentity {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return append([]platform.ProcessIdentity(nil), t.signalled...)
 }
 
 // Inspector returns an inspector whose own identity is self.
@@ -195,9 +250,9 @@ func (c *Containment) NameFor(runID contract.RunID, seq int) (string, error) {
 	return "fake-" + string(runID) + "-" + strconv.Itoa(seq), nil
 }
 
-// Run marks the name busy, acknowledges a new tool identity and runs the
-// fake tool.
-func (c *Containment) Run(ctx context.Context, spec platform.LaunchSpec, onAck func(platform.LaunchAck)) (contract.CommandResult, error) {
+// Run starts a supervisor identity, hands it to onSupervisor and runs the
+// fake tool only if that succeeds, as the launch gate does.
+func (c *Containment) Run(ctx context.Context, spec platform.LaunchSpec, onSupervisor func(platform.LaunchAck) error) (contract.CommandResult, error) {
 	if len(spec.Argv) == 0 {
 		return contract.CommandResult{}, platform.ErrCommandEmpty
 	}
@@ -207,8 +262,12 @@ func (c *Containment) Run(ctx context.Context, spec platform.LaunchSpec, onAck f
 	run := c.run
 	c.mu.Unlock()
 	tool := c.table.Spawn()
-	if onAck != nil {
-		onAck(platform.LaunchAck{Name: spec.Name, Tool: tool})
+	if onSupervisor != nil {
+		if err := onSupervisor(platform.LaunchAck{Name: spec.Name, Supervisor: tool}); err != nil {
+			c.table.Kill(tool)
+			c.SetBusy(spec.Name, false)
+			return contract.CommandResult{}, fmt.Errorf("%w: %w", platform.ErrGateClosed, err)
+		}
 	}
 	res := contract.CommandResult{}
 	var err error
@@ -271,13 +330,19 @@ func NewRunner(respond func(argv []string) (platform.ExecResult, error)) *Runner
 	return &Runner{respond: respond}
 }
 
-// Run records spec.Argv, calls OnStart with a fixed PID and answers.
+// Run records spec.Argv, opens a gate or calls OnStart with PID 4242,
+// and answers.
 func (r *Runner) Run(_ context.Context, spec platform.ExecSpec) (platform.ExecResult, error) {
 	r.mu.Lock()
 	r.calls = append(r.calls, append([]string(nil), spec.Argv...))
 	r.envs = append(r.envs, append([]string(nil), spec.Env...))
 	respond := r.respond
 	r.mu.Unlock()
+	if spec.Gate != nil {
+		if err := spec.Gate(4242); err != nil {
+			return platform.ExecResult{ExitCode: 125}, fmt.Errorf("%w: %w", platform.ErrGateClosed, err)
+		}
+	}
 	if spec.OnStart != nil {
 		spec.OnStart(4242)
 	}

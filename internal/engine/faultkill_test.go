@@ -177,7 +177,7 @@ func TestKillAtEveryApplyBoundaryRecovers(t *testing.T) {
 	}
 	for _, p := range []engine.Point{
 		engine.PointAtomicTemp, engine.PointAtomicRenamed, engine.PointBackupEntry, engine.PointIntent,
-		engine.PointMutation, engine.PointLaunch, engine.PointCommandDone, engine.PointApplied,
+		engine.PointMutation, engine.PointLaunch, engine.PointCommandDone, engine.PointCommandEmptied, engine.PointApplied,
 		engine.PointVerified, engine.PointReceipt, engine.PointIdle,
 	} {
 		if !seen[p] {

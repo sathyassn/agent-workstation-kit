@@ -32,6 +32,7 @@ const (
 	defaultPollInterval = 25 * time.Millisecond
 	defaultAckTimeout   = 10 * time.Second
 	plistMode           = 0o600
+	stateNotRunning     = "not running"
 )
 
 // ErrInvalidEnv reports an environment entry without a name. It is a
@@ -50,10 +51,11 @@ var (
 	printLastRun = regexp.MustCompile(`(?m)^\s*last exit code = ([0-9]+)\s*$`)
 )
 
-// identityReader reads a started tool's identity for the launch
-// acknowledgement.
-type identityReader interface {
+// processControl reads a supervisor's identity and inspects and signals it
+// by identity; ProcessInspector provides it.
+type processControl interface {
 	Identity(ctx context.Context, pid int) (platform.ProcessIdentity, error)
+	platform.ProcessControl
 }
 
 // Containment runs each command as its own launchd job, in the system domain
@@ -61,7 +63,7 @@ type identityReader interface {
 // outlives the engine and is emptied by label on the next start.
 type Containment struct {
 	Runner    platform.CommandRunner
-	Inspector identityReader
+	Inspector processControl
 	// PlistDir holds the job definitions and output files. It must be a
 	// private folder (platform.CheckPrivateDir); Run refuses anything else.
 	PlistDir string
@@ -72,6 +74,8 @@ type Containment struct {
 	AckTimeout time.Duration
 	// PollInterval is how often the job state is read. Zero means 25ms.
 	PollInterval time.Duration
+	// CallTimeout bounds each launchctl call. Zero means ten seconds.
+	CallTimeout time.Duration
 	// syncFn fsyncs a file or folder; tests replace it to observe order.
 	syncFn func(*os.File) error
 }
@@ -88,10 +92,12 @@ func (c *Containment) NameFor(runID contract.RunID, seq int) (string, error) {
 	return name, nil
 }
 
-// Run loads spec as a launchd job, waits for launchd to start it, then for
-// it to end, and returns its exit code. If ctx ends first, Run returns the
-// context error and leaves the job for Empty.
-func (c *Containment) Run(ctx context.Context, spec platform.LaunchSpec, onAck func(platform.LaunchAck)) (contract.CommandResult, error) {
+// Run loads spec as a launchd job and waits for it to end. The launchctl
+// bootstrap is held at a gate until onSupervisor has made its identity
+// durable, so a restart can always tell whether a bootstrap may still be
+// registering the job. Run never unloads the job: Empty proves it quiet and
+// unloads it.
+func (c *Containment) Run(ctx context.Context, spec platform.LaunchSpec, onSupervisor func(platform.LaunchAck) error) (contract.CommandResult, error) {
 	if len(spec.Argv) == 0 {
 		return contract.CommandResult{}, platform.ErrCommandEmpty
 	}
@@ -112,28 +118,32 @@ func (c *Containment) Run(ctx context.Context, spec platform.LaunchSpec, onAck f
 	}
 	sel := platform.ScopeSelector{User: spec.Scope != contract.ScopeRoot}
 	target := c.target(spec.Name, sel)
-	res, err := c.Runner.Run(ctx, platform.ExecSpec{Argv: []string{launchctlBin, "bootstrap", c.domain(sel), files.plist}, Env: launchctlEnv()})
+	res, err := c.Runner.Run(ctx, platform.ExecSpec{
+		Argv:      []string{launchctlBin, "bootstrap", c.domain(sel), files.plist},
+		Env:       launchctlEnv(),
+		GateShell: shellBin,
+		Gate: func(pid int) error {
+			id, err := c.Inspector.Identity(ctx, pid)
+			if err != nil {
+				return fmt.Errorf("supervisor identity: %w", err)
+			}
+			if onSupervisor == nil {
+				return nil
+			}
+			return onSupervisor(platform.LaunchAck{Name: spec.Name, Supervisor: id})
+		},
+	})
 	if err != nil {
 		return contract.CommandResult{}, fmt.Errorf("launchctl bootstrap %s: %w", target, err)
 	}
 	if res.ExitCode != 0 {
 		return contract.CommandResult{}, fmt.Errorf("%w: launchctl bootstrap %s exited %d", platform.ErrLaunchNotAcknowledged, target, res.ExitCode)
 	}
-
 	st, err := c.waitStarted(ctx, target)
 	if err != nil {
 		return contract.CommandResult{}, err
 	}
-	ack := platform.LaunchAck{Name: spec.Name}
-	if st.pid > 0 {
-		if id, idErr := c.Inspector.Identity(ctx, st.pid); idErr == nil {
-			ack.Tool = id
-		}
-	}
-	if onAck != nil {
-		onAck(ack)
-	}
-	for st.running {
+	for st.state == platform.StateActive {
 		if err := c.sleep(ctx); err != nil {
 			return contract.CommandResult{}, fmt.Errorf("wait for job %s: %w", target, err)
 		}
@@ -145,60 +155,111 @@ func (c *Containment) Run(ctx context.Context, spec platform.LaunchSpec, onAck f
 		return contract.CommandResult{}, fmt.Errorf("%w: job %s ended without an exit code", platform.ErrSupervisorState, target)
 	}
 	copyOutput(files.out, spec.Output)
-	c.unload(ctx, target, files)
 	return contract.CommandResult{ExitCode: st.exitCode, Duration: time.Since(start)}, nil
 }
 
 // Empty empties the job within its bound (platform.EmptyBounded), then
-// unloads its definition. A package-manager transaction is waited for and
-// never signalled or unloaded while it runs.
+// unloads it and verifies launchd no longer knows it. A package-manager
+// transaction is waited for and never signalled or unloaded while it runs.
 func (c *Containment) Empty(ctx context.Context, name string, opts platform.EmptyOptions) error {
 	if !validLabel.MatchString(name) {
 		return fmt.Errorf("%w: %q", platform.ErrInvalidContainmentName, name)
 	}
 	sel := platform.ScopeSelector{User: opts.Scope != contract.ScopeRoot}
-	if err := platform.EmptyBounded(ctx, c, name, sel, opts); err != nil {
+	if err := platform.EmptyBounded(ctx, c, c.Inspector, name, sel, opts); err != nil {
 		return fmt.Errorf("empty launchd job: %w", err)
 	}
-	c.unload(ctx, c.target(name, sel), c.jobFiles(name))
-	return nil
+	return c.unload(ctx, name, sel)
 }
 
-// Active reports whether the job has a running process. A job that is not
-// loaded is empty; output it cannot read is an error.
-func (c *Containment) Active(ctx context.Context, name string, sel platform.ScopeSelector) (bool, error) {
+// State reads the job: not loaded, or loaded and ended, is gone; loaded and
+// not yet started is pending; running is active.
+func (c *Containment) State(ctx context.Context, name string, sel platform.ScopeSelector) (platform.ContainmentState, error) {
 	st, err := c.print(ctx, c.target(name, sel))
 	if err != nil {
-		return false, err
+		return 0, err
 	}
-	return st.running, nil
+	return st.state, nil
 }
 
-// Signal sends sig to the job's process through launchd.
+// Signal sends sig to the job's process through launchd. SIGKILL also
+// unloads the job, which removes a pending job before it can start.
 func (c *Containment) Signal(ctx context.Context, name string, sel platform.ScopeSelector, sig syscall.Signal) error {
-	argv := []string{launchctlBin, "kill", strconv.Itoa(int(sig)), c.target(name, sel)}
-	if _, err := c.Runner.Run(ctx, platform.ExecSpec{Argv: argv, Env: launchctlEnv()}); err != nil {
-		return fmt.Errorf("launchctl kill %s: %w", name, err)
+	target := c.target(name, sel)
+	if _, err := c.launchctl(ctx, "kill", strconv.Itoa(int(sig)), target); err != nil {
+		return err
+	}
+	if sig == syscall.SIGKILL {
+		if _, err := c.launchctl(ctx, "bootout", target); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+// unload boots the ended job out, requires launchd to acknowledge it, and
+// then verifies the job is no longer loaded before removing its files.
+func (c *Containment) unload(ctx context.Context, name string, sel platform.ScopeSelector) error {
+	target := c.target(name, sel)
+	st, err := c.print(ctx, target)
+	if err != nil {
+		return err
+	}
+	if st.loaded {
+		if st.state != platform.StateGone {
+			return fmt.Errorf("%w: job %s is not quiet", platform.ErrContainmentNotEmpty, target)
+		}
+		res, err := c.launchctl(ctx, "bootout", target)
+		if err != nil {
+			return err
+		}
+		if res.ExitCode != 0 && res.ExitCode != launchctlNotFound {
+			return fmt.Errorf("%w: launchctl bootout %s exited %d", platform.ErrSupervisorState, target, res.ExitCode)
+		}
+		if st, err = c.print(ctx, target); err != nil {
+			return err
+		}
+		if st.loaded {
+			return fmt.Errorf("%w: job %s still loaded after bootout", platform.ErrSupervisorState, target)
+		}
+	}
+	f := c.jobFiles(name)
+	_ = os.Remove(f.plist)
+	_ = os.Remove(f.out)
+	return nil
+}
+
+func (c *Containment) launchctl(ctx context.Context, args ...string) (platform.ExecResult, error) {
+	d := c.CallTimeout
+	if d <= 0 {
+		d = defaultAckTimeout
+	}
+	cctx, cancel := context.WithTimeout(ctx, d)
+	defer cancel()
+	res, err := c.Runner.Run(cctx, platform.ExecSpec{Argv: append([]string{launchctlBin}, args...), Env: launchctlEnv()})
+	if err != nil {
+		return res, fmt.Errorf("launchctl %s: %w", args[0], err)
+	}
+	return res, nil
 }
 
 type jobState struct {
-	running  bool
+	state    platform.ContainmentState
+	loaded   bool
 	exited   bool
 	exitCode int
 	pid      int
 }
 
-// print reads the job's state with launchctl print. A job that is not loaded
-// reads as ended.
+// print reads the job's state with launchctl print. A job that is not
+// loaded is gone.
 func (c *Containment) print(ctx context.Context, target string) (jobState, error) {
-	res, err := c.Runner.Run(ctx, platform.ExecSpec{Argv: []string{launchctlBin, "print", target}, Env: launchctlEnv()})
+	res, err := c.launchctl(ctx, "print", target)
 	if err != nil {
-		return jobState{}, fmt.Errorf("launchctl print %s: %w", target, err)
+		return jobState{}, err
 	}
 	if res.ExitCode == launchctlNotFound {
-		return jobState{}, nil
+		return jobState{state: platform.StateGone}, nil
 	}
 	if res.ExitCode != 0 {
 		return jobState{}, fmt.Errorf("%w: launchctl print %s exited %d", platform.ErrSupervisorState, target, res.ExitCode)
@@ -206,17 +267,18 @@ func (c *Containment) print(ctx context.Context, target string) (jobState, error
 	return parsePrint(res.Stdout)
 }
 
-// parsePrint reads the state, PID and last exit code from launchctl print
-// output. Output without a state line is an error.
+// parsePrint reads a loaded job's state from launchctl print output. A
+// running job, or one with a PID, is active; one that has exited, with a
+// numeric last exit code, is gone; one that has never run is pending. Any
+// other state is an error.
 func parsePrint(out string) (jobState, error) {
 	m := printState.FindStringSubmatch(out)
 	if m == nil {
 		return jobState{}, fmt.Errorf("%w: no state in launchctl print output", platform.ErrSupervisorState)
 	}
-	st := jobState{running: m[1] == "running"}
+	st := jobState{loaded: true}
 	if p := printPID.FindStringSubmatch(out); p != nil {
 		st.pid, _ = strconv.Atoi(p[1])
-		st.running = true
 	}
 	if e := printLastRun.FindStringSubmatch(out); e != nil {
 		code, err := strconv.Atoi(e[1])
@@ -224,6 +286,16 @@ func parsePrint(out string) (jobState, error) {
 			return jobState{}, fmt.Errorf("%w: exit code %q", platform.ErrSupervisorState, e[1])
 		}
 		st.exited, st.exitCode = true, code
+	}
+	switch {
+	case m[1] == "running" || st.pid > 0:
+		st.state = platform.StateActive
+	case m[1] == stateNotRunning && st.exited:
+		st.state = platform.StateGone
+	case m[1] == stateNotRunning || m[1] == "spawn scheduled" || m[1] == "waiting":
+		st.state = platform.StatePending
+	default:
+		return jobState{}, fmt.Errorf("%w: job state %q", platform.ErrSupervisorState, m[1])
 	}
 	return st, nil
 }
@@ -240,7 +312,7 @@ func (c *Containment) waitStarted(ctx context.Context, target string) (jobState,
 		if err != nil {
 			return jobState{}, err
 		}
-		if st.running || st.exited {
+		if st.state == platform.StateActive || st.exited {
 			return st, nil
 		}
 		if time.Now().After(deadline) {
@@ -265,14 +337,6 @@ func (c *Containment) sleep(ctx context.Context) error {
 	case <-t.C:
 		return nil
 	}
-}
-
-// unload removes an ended job's definition and files. It is best effort: a
-// leftover definition of an ended job holds no process.
-func (c *Containment) unload(ctx context.Context, target string, f jobFiles) {
-	_, _ = c.Runner.Run(context.WithoutCancel(ctx), platform.ExecSpec{Argv: []string{launchctlBin, "bootout", target}, Env: launchctlEnv()})
-	_ = os.Remove(f.plist)
-	_ = os.Remove(f.out)
 }
 
 type jobFiles struct{ plist, out string }

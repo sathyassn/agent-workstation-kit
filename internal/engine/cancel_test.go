@@ -55,8 +55,13 @@ func TestCancelAndGraceNeverEndPackageTransaction(t *testing.T) {
 				t.Fatalf("tool context ended = %v, want %v", ended, !pkg)
 			}
 			name := w.cont.Launched()[0].Name
-			if pkg && (len(w.cont.EmptyCalls()) != 0 || w.cont.Killed(name)) {
-				t.Fatalf("package transaction emptied or killed: %+v", w.cont.EmptyCalls())
+			for _, call := range w.cont.EmptyCalls() {
+				if pkg && !call.Opts.PackageTransaction {
+					t.Fatalf("package transaction emptied as an ordinary command: %+v", call)
+				}
+			}
+			if pkg && w.cont.Killed(name) {
+				t.Fatal("package transaction killed")
 			}
 			if !pkg && len(w.cont.EmptyCalls()) == 0 {
 				t.Fatal("ordinary command's containment not emptied after the grace period")

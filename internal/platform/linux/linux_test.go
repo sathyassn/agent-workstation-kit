@@ -111,15 +111,15 @@ func TestRunStartsTransientScope(t *testing.T) {
 	r := platformtest.NewRunner(func([]string) (platform.ExecResult, error) { return platform.ExecResult{ExitCode: 7}, nil })
 	c := &linux.Containment{Runner: r, Inspector: &linux.ProcessInspector{ProcRoot: procFixture(t, "b", map[int]string{4242: "9"})}}
 	var ack platform.LaunchAck
-	res, err := c.Run(context.Background(), platform.LaunchSpec{Name: scope, Scope: contract.ScopeRoot, Argv: []string{"apt-get", "install"}}, func(a platform.LaunchAck) { ack = a })
+	res, err := c.Run(context.Background(), platform.LaunchSpec{Name: scope, Scope: contract.ScopeRoot, Argv: []string{"apt-get", "install"}}, func(a platform.LaunchAck) error { ack = a; return nil })
 	if err != nil || res.ExitCode != 7 {
 		t.Fatalf("Run = %+v, %v", res, err)
 	}
-	want := []string{"/usr/bin/systemd-run", "--scope", "--quiet", "--collect", "--unit=" + scope, "--", "apt-get", "install"}
+	want := []string{"/usr/bin/systemd-run", "--scope", "--quiet", "--unit=" + scope, "--", "apt-get", "install"}
 	if got := r.Calls()[0]; !slices.Equal(got, want) {
 		t.Fatalf("argv = %q, want %q", got, want)
 	}
-	if ack.Tool != (platform.ProcessIdentity{BootID: "b", PID: 4242, StartTime: "9"}) {
+	if ack.Supervisor != (platform.ProcessIdentity{BootID: "b", PID: 4242, StartTime: "9"}) {
 		t.Fatalf("ack = %+v", ack)
 	}
 }
@@ -148,9 +148,9 @@ func scopeRunner(unkillable bool) *platformtest.Runner {
 			return platform.ExecResult{}, nil
 		case slices.Contains(argv, "show"):
 			if killed.Load() {
-				return platform.ExecResult{Stdout: "inactive\n"}, nil
+				return platform.ExecResult{Stdout: "LoadState=loaded\nActiveState=failed\n"}, nil
 			}
-			return platform.ExecResult{Stdout: "active\n"}, nil
+			return platform.ExecResult{Stdout: "LoadState=loaded\nActiveState=active\n"}, nil
 		}
 		return platform.ExecResult{ExitCode: 1}, nil
 	})
@@ -210,7 +210,8 @@ func TestActiveFailsClosed(t *testing.T) {
 		res  platform.ExecResult
 		err  error
 	}{
-		{"unknown state", platform.ExecResult{Stdout: "maintenance\n"}, nil},
+		{"unknown state", platform.ExecResult{Stdout: "LoadState=loaded\nActiveState=maintenance\n"}, nil},
+		{"unknown load state", platform.ExecResult{Stdout: "LoadState=masked\nActiveState=inactive\n"}, nil},
 		{"systemctl failed", platform.ExecResult{ExitCode: 1}, nil},
 		{"systemctl missing", platform.ExecResult{}, errors.New("exec: not found")},
 	}
@@ -295,7 +296,7 @@ func TestUserManagerFoundOnlyInRunUser(t *testing.T) {
 		_, err := c.Run(context.Background(), platform.LaunchSpec{Name: scope, Scope: contract.ScopeUser, Argv: []string{"/usr/bin/true"}}, nil)
 		return err
 	}
-	if err := run(&linux.Containment{Runner: r, Inspector: &linux.ProcessInspector{ProcRoot: procFixture(t, "b", nil)}, UID: uid, RunUserRoot: root}); err != nil {
+	if err := run(&linux.Containment{Runner: r, Inspector: &linux.ProcessInspector{ProcRoot: procFixture(t, "b", map[int]string{4242: "9"})}, UID: uid, RunUserRoot: root}); err != nil {
 		t.Fatalf("own runtime folder refused: %v", err)
 	}
 	env := r.Envs()[0]
@@ -310,5 +311,20 @@ func TestUserManagerFoundOnlyInRunUser(t *testing.T) {
 	}
 	if err := run(&linux.Containment{Runner: r, UID: uid, RunUserRoot: root}); !errors.Is(err, platform.ErrNoUserManager) {
 		t.Fatalf("folder writable by others: err = %v", err)
+	}
+}
+
+// TestRefusedGateRunsNothing: when the supervisor's identity cannot be made
+// durable, the gate stays shut and systemd-run never runs.
+func TestRefusedGateRunsNothing(t *testing.T) {
+	table := platformtest.NewProcessTable("b")
+	sd := platformtest.NewSystemd(table)
+	ran := false
+	sd.SetTool(func(context.Context, *platformtest.Scope) int { ran = true; return 0 })
+	c := &linux.Containment{Runner: sd, Inspector: table}
+	_, err := c.Run(context.Background(), platform.LaunchSpec{Name: scope, Scope: contract.ScopeRoot, Argv: []string{"x"}},
+		func(platform.LaunchAck) error { return errors.New("disk full") })
+	if !errors.Is(err, platform.ErrGateClosed) || ran || sd.Loaded(scope) {
+		t.Fatalf("err = %v, ran = %v, loaded = %v", err, ran, sd.Loaded(scope))
 	}
 }

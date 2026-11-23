@@ -5,6 +5,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -15,29 +17,37 @@ import (
 	"github.com/sathyassn/agent-workstation-kit/internal/platform"
 )
 
-// fakeControl is a containment that empties after a given number of Active
-// checks once it receives a given signal.
+// fakeControl is a containment that empties after a given number of State
+// checks, or once it receives a given signal.
 type fakeControl struct {
-	mu        sync.Mutex
-	active    bool
-	emptyOn   syscall.Signal // the signal that ends the processes; 0 never
-	selfEnds  int            // Active checks after which the processes end by themselves; 0 never
-	checks    int
-	signals   []syscall.Signal
-	activeErr error
+	mu       sync.Mutex
+	active   bool
+	emptyOn  syscall.Signal // the signal that ends the processes; 0 never
+	selfEnds int            // State checks after which they end by themselves; 0 never
+	checks   int
+	signals  []syscall.Signal
+	stateErr error
+	block    bool // State blocks until its context ends
 }
 
-func (f *fakeControl) Active(context.Context, string, platform.ScopeSelector) (bool, error) {
+func (f *fakeControl) State(ctx context.Context, _ string, _ platform.ScopeSelector) (platform.ContainmentState, error) {
+	if f.block {
+		<-ctx.Done()
+		return 0, ctx.Err()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.activeErr != nil {
-		return false, f.activeErr
+	if f.stateErr != nil {
+		return 0, f.stateErr
 	}
 	f.checks++
 	if f.selfEnds > 0 && f.checks >= f.selfEnds {
 		f.active = false
 	}
-	return f.active, nil
+	if f.active {
+		return platform.StateActive, nil
+	}
+	return platform.StateGone, nil
 }
 
 func (f *fakeControl) Signal(_ context.Context, _ string, _ platform.ScopeSelector, sig syscall.Signal) error {
@@ -46,6 +56,30 @@ func (f *fakeControl) Signal(_ context.Context, _ string, _ platform.ScopeSelect
 	f.signals = append(f.signals, sig)
 	if sig == f.emptyOn {
 		f.active = false
+	}
+	return nil
+}
+
+// fakeProcs is a supervisor process that dies on a given signal.
+type fakeProcs struct {
+	mu      sync.Mutex
+	alive   bool
+	dieOn   syscall.Signal
+	signals []syscall.Signal
+}
+
+func (p *fakeProcs) Alive(context.Context, platform.ProcessIdentity) (bool, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.alive, nil
+}
+
+func (p *fakeProcs) Signal(_ context.Context, _ platform.ProcessIdentity, sig syscall.Signal) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.signals = append(p.signals, sig)
+	if sig == p.dieOn {
+		p.alive = false
 	}
 	return nil
 }
@@ -68,25 +102,96 @@ func TestEmptyBounded(t *testing.T) {
 		{"needs SIGTERM", &fakeControl{active: true, emptyOn: syscall.SIGTERM}, opts, []syscall.Signal{syscall.SIGTERM}, nil},
 		{"needs SIGKILL", &fakeControl{active: true, emptyOn: syscall.SIGKILL}, opts, []syscall.Signal{syscall.SIGTERM, syscall.SIGKILL}, nil},
 		{"never empties", &fakeControl{active: true}, opts, []syscall.Signal{syscall.SIGTERM, syscall.SIGKILL}, platform.ErrContainmentNotEmpty},
-		{"state unreadable", &fakeControl{active: true, activeErr: errBus}, opts, nil, errBus},
+		{"state unreadable", &fakeControl{active: true, stateErr: errBus}, opts, nil, errBus},
 		{"package transaction ends while waited for", &fakeControl{active: true, selfEnds: 3, emptyOn: syscall.SIGTERM}, pkg, nil, nil},
 		{"package transaction outlasts the bound", &fakeControl{active: true, emptyOn: syscall.SIGTERM}, pkg, nil, platform.ErrContainmentNotEmpty},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			err := platform.EmptyBounded(context.Background(), tc.ctl, "c", platform.ScopeSelector{}, tc.opts)
+			err := platform.EmptyBounded(context.Background(), tc.ctl, &fakeProcs{}, "c", platform.ScopeSelector{}, tc.opts)
 			if !errors.Is(err, tc.wantErr) || (tc.wantErr == nil && err != nil) {
 				t.Fatalf("err = %v, want %v", err, tc.wantErr)
 			}
-			if len(tc.ctl.signals) != len(tc.signals) {
+			if !slices.Equal(tc.ctl.signals, tc.signals) {
 				t.Fatalf("signals = %v, want %v", tc.ctl.signals, tc.signals)
 			}
-			for i := range tc.signals {
-				if tc.ctl.signals[i] != tc.signals[i] {
-					t.Fatalf("signals = %v, want %v", tc.ctl.signals, tc.signals)
-				}
-			}
 		})
+	}
+}
+
+// TestEmptyBoundedWaitsForLiveSupervisor is finding 1: a containment the
+// OS reports gone is not empty while its recorded supervisor lives, since
+// it can still register the containment and start the tool. The supervisor
+// is signalled with the containment; a package transaction's is not.
+func TestEmptyBoundedWaitsForLiveSupervisor(t *testing.T) {
+	sup := platform.ProcessIdentity{BootID: "b", PID: 7, StartTime: "1"}
+	opts := platform.EmptyOptions{Grace: 2 * time.Millisecond, KillWait: 4 * time.Millisecond, PollInterval: time.Millisecond, Supervisor: sup}
+	procs := &fakeProcs{alive: true, dieOn: syscall.SIGTERM}
+	if err := platform.EmptyBounded(context.Background(), &fakeControl{}, procs, "c", platform.ScopeSelector{}, opts); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if !slices.Equal(procs.signals, []syscall.Signal{syscall.SIGTERM}) || procs.alive {
+		t.Fatalf("supervisor signals = %v, alive = %v; want SIGTERM and dead", procs.signals, procs.alive)
+	}
+
+	opts.PackageTransaction = true
+	procs = &fakeProcs{alive: true, dieOn: syscall.SIGTERM}
+	err := platform.EmptyBounded(context.Background(), &fakeControl{}, procs, "c", platform.ScopeSelector{}, opts)
+	if !errors.Is(err, platform.ErrContainmentNotEmpty) || len(procs.signals) != 0 {
+		t.Fatalf("package transaction: err = %v, signals = %v; want not empty and no signal", err, procs.signals)
+	}
+}
+
+// TestEmptyBoundedDeadlinePerCall is finding 7: an inspection that hangs
+// ends at its own deadline, even under a context that never ends.
+func TestEmptyBoundedDeadlinePerCall(t *testing.T) {
+	start := time.Now()
+	opts := platform.EmptyOptions{CallTimeout: 20 * time.Millisecond}
+	err := platform.EmptyBounded(context.Background(), &fakeControl{block: true}, &fakeProcs{}, "c", platform.ScopeSelector{}, opts)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want a deadline", err)
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Fatal("hung inspection was not bounded")
+	}
+}
+
+// TestGateHoldsUntilAcknowledged: a gated process runs its argv only after
+// the gate returns nil, keeping the PID it was started with; a refused gate
+// runs nothing.
+func TestGateHoldsUntilAcknowledged(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "ran")
+	argv := []string{"/bin/sh", "-c", "echo $$ > " + marker}
+	var gatePID int
+	_, err := platform.OSCommandRunner{}.Run(context.Background(), platform.ExecSpec{
+		Argv: argv, GateShell: "/bin/sh",
+		Gate: func(pid int) error {
+			gatePID = pid
+			if _, err := os.Stat(marker); err == nil {
+				t.Error("argv ran before the gate opened")
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(marker) //nolint:gosec // test temp dir
+	if err != nil || strings.TrimSpace(string(got)) != strconv.Itoa(gatePID) {
+		t.Fatalf("argv ran as pid %q, gate saw %d (%v)", got, gatePID, err)
+	}
+
+	_ = os.Remove(marker)
+	_, err = platform.OSCommandRunner{}.Run(context.Background(), platform.ExecSpec{
+		Argv: argv, GateShell: "/bin/sh",
+		Gate: func(int) error { return errBus },
+	})
+	if !errors.Is(err, platform.ErrGateClosed) {
+		t.Fatalf("refused gate: err = %v", err)
+	}
+	if _, statErr := os.Stat(marker); statErr == nil {
+		t.Fatal("argv ran through a refused gate")
 	}
 }
 

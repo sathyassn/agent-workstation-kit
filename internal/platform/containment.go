@@ -1,10 +1,12 @@
 package platform
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"regexp"
+	"syscall"
 	"time"
 
 	"github.com/sathyassn/agent-workstation-kit/internal/contract"
@@ -88,12 +90,32 @@ type LaunchSpec struct {
 	Output io.Writer
 }
 
-// LaunchAck is the supervisor's acknowledgement that the tool started.
+// LaunchAck names the supervisor process an adapter started for a launch.
+// The adapter holds the supervisor at a gate until the callback that
+// receives this has made it durable; only then may anything run.
 type LaunchAck struct {
-	Name string
-	// Tool is the started tool's identity. It is zero when the tool ended
-	// before the adapter could observe it.
-	Tool ProcessIdentity
+	Name       string
+	Supervisor ProcessIdentity
+}
+
+// ContainmentState is what the OS supervisor reports for a containment.
+type ContainmentState int
+
+// Containment states.
+const (
+	// StateGone: not loaded, or loaded with no process left.
+	StateGone ContainmentState = iota
+	// StatePending: loaded and due to start; it may start at any moment.
+	StatePending
+	// StateActive: it holds at least one process.
+	StateActive
+)
+
+// ProcessControl inspects and signals a process by its full identity, so a
+// reused PID is never signalled.
+type ProcessControl interface {
+	Alive(ctx context.Context, id ProcessIdentity) (bool, error)
+	Signal(ctx context.Context, id ProcessIdentity, sig syscall.Signal) error
 }
 
 // EmptyOptions bounds how a containment is emptied: wait for Grace, then
@@ -105,4 +127,11 @@ type EmptyOptions struct {
 	KillWait           time.Duration
 	PollInterval       time.Duration
 	PackageTransaction bool
+	// Supervisor is the launch's recorded supervisor. While it lives, the
+	// containment is not empty: it may still register or start the tool.
+	// Zero means the launch gate never opened, so nothing ran.
+	Supervisor ProcessIdentity
+	// CallTimeout bounds every single inspection and signal. Zero is ten
+	// seconds.
+	CallTimeout time.Duration
 }

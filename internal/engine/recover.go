@@ -74,9 +74,11 @@ func (e *Engine) Resume(ctx context.Context, resolve Resolver, o ResumeOptions) 
 	renewDone := e.keepClaim(bk, rec.RunID, self)
 	defer renewDone()
 
-	if rec.Command != nil {
-		if err := e.opts.Containment.Empty(bk, rec.Command.Name, e.emptyOptions(rec.Command.PackageTransaction, e.opts.Grace)); err != nil {
-			return res, errors.Join(fmt.Errorf("empty containment of run %s: %w", rec.RunID, err), e.dropClaim(bk, l, rec.RunID, self))
+	if cmd := rec.Command; cmd != nil && !cmd.Finished {
+		// A live recorded supervisor, or a containment the OS still
+		// reports, is not empty; neither is one whose state is unknown.
+		if err := e.empty(bk, cmd.Name, cmd.Supervisor, cmd.PackageTransaction, e.opts.Grace); err != nil {
+			return res, errors.Join(fmt.Errorf("%w: run %s: %w", ErrEmptinessUnknown, rec.RunID, err), e.dropClaim(bk, l, rec.RunID, self))
 		}
 	}
 	e.fault(PointEmptied)

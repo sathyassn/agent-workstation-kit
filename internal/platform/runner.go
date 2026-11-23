@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -27,7 +28,22 @@ type ExecSpec struct {
 	// KillAfter is how long the runner waits after SIGTERM, sent when ctx
 	// ends, before it kills the process. Zero means one second.
 	KillAfter time.Duration
+	// Gate, when set, holds the process before it runs Argv: it starts as
+	// GateShell waiting on a pipe, Gate is called with its PID, and only
+	// when Gate returns nil does it exec Argv, keeping the same PID and
+	// start time. If Gate fails, or this process dies first, the pipe
+	// closes and the held process exits without running Argv.
+	Gate      func(pid int) error
+	GateShell string
 }
+
+// gateScript reads one line from descriptor 3 and execs its arguments only
+// if the line is "go". End of file, as when the engine dies, exits.
+const gateScript = `IFS= read -r go <&3 || exit 125; [ "$go" = go ] || exit 125; exec 3<&-; exec "$@"`
+
+// ErrGateClosed reports a gated launch whose Gate refused it; nothing ran.
+// It is a sentinel for errors.Is and is never reassigned.
+var ErrGateClosed = errors.New("launch gate closed; nothing ran")
 
 // ExecResult is how a process ended. A non-zero exit code is a result, not
 // an error.
@@ -63,9 +79,25 @@ func (OSCommandRunner) Run(ctx context.Context, spec ExecSpec) (ExecResult, erro
 		return ExecResult{}, ErrCommandEmpty
 	}
 	start := time.Now()
+	argv := spec.Argv
+	var gateR, gateW *os.File
+	if spec.Gate != nil {
+		if !filepath.IsAbs(spec.GateShell) {
+			return ExecResult{}, fmt.Errorf("%w: gate shell %q", ErrUntrustedBinary, spec.GateShell)
+		}
+		var err error
+		if gateR, gateW, err = os.Pipe(); err != nil {
+			return ExecResult{}, fmt.Errorf("gate pipe: %w", err)
+		}
+		defer func() { _ = gateW.Close() }()
+		argv = append([]string{spec.GateShell, "-c", gateScript, "wskit-gate"}, spec.Argv...)
+	}
 	// #nosec G204 -- argv comes from a declared Command or a fixed adapter
-	// argv, and runs without a shell.
-	cmd := exec.CommandContext(ctx, spec.Argv[0], spec.Argv[1:]...)
+	// argv, and runs without a shell; the gate script is a constant.
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	if gateR != nil {
+		cmd.ExtraFiles = []*os.File{gateR}
+	}
 	cmd.Dir = spec.Dir
 	cmd.Env = append([]string{}, spec.Env...)
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
@@ -79,13 +111,27 @@ func (OSCommandRunner) Run(ctx context.Context, spec ExecSpec) (ExecResult, erro
 	cmd.Stderr = teeWriter(&errBuf, spec.Stderr)
 
 	if err := cmd.Start(); err != nil {
+		if gateR != nil {
+			_ = gateR.Close()
+		}
 		return ExecResult{Duration: time.Since(start)}, fmt.Errorf("start %s: %w", spec.Argv[0], err)
+	}
+	var gateErr error
+	if gateR != nil {
+		_ = gateR.Close()
+		if gateErr = spec.Gate(cmd.Process.Pid); gateErr == nil {
+			_, gateErr = gateW.Write([]byte("go\n"))
+		}
+		_ = gateW.Close()
 	}
 	if spec.OnStart != nil {
 		spec.OnStart(cmd.Process.Pid)
 	}
 	waitErr := cmd.Wait()
 	res := ExecResult{Stdout: outBuf.String(), Stderr: errBuf.String(), Duration: time.Since(start)}
+	if gateErr != nil {
+		return res, fmt.Errorf("%w: %w", ErrGateClosed, gateErr)
+	}
 	if waitErr == nil {
 		return res, nil
 	}

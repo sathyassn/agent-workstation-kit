@@ -104,7 +104,9 @@ func TestResumeDuringActiveApplyExits4(t *testing.T) {
 	<-inStep
 
 	r, _ := w.engine(t)
+	emptiesBefore := len(w.cont.EmptyCalls())
 	_, err := r.Resume(context.Background(), resolverFor(u), engine.ResumeOptions{})
+	emptiesByResume := len(w.cont.EmptyCalls()) - emptiesBefore
 	if !errors.Is(err, engine.ErrActiveExecutor) || engine.ExitCode(err) != contract.ExitRecoveryBlocks {
 		t.Fatalf("resume err = %v, want ErrActiveExecutor and exit 4", err)
 	}
@@ -113,7 +115,7 @@ func TestResumeDuringActiveApplyExits4(t *testing.T) {
 		t.Fatalf("apply: %v", err)
 	}
 	assertFinished(t, w, "apply after a refused resume")
-	if len(w.cont.EmptyCalls()) != 0 {
+	if emptiesByResume != 0 {
 		t.Fatal("resume emptied an active executor's containment")
 	}
 }

@@ -20,6 +20,7 @@ const (
 	scopeSuffix    = ".scope"
 	defaultRunUser = "/run/user"
 	supervisorPath = "PATH=/usr/sbin:/usr/bin:/sbin:/bin"
+	activeInactive = "inactive"
 )
 
 // Binaries are the absolute paths the adapter executes. Nothing is looked
@@ -39,10 +40,17 @@ func DefaultBinaries() Binaries {
 // systemctl. It is compiled once and never changed.
 var validScopeName = regexp.MustCompile(`^wskit-run-[a-z0-9][a-z0-9_-]{0,63}-[0-9]{1,6}\.scope$`)
 
-// identityReader reads a started tool's identity for the launch
+// identityReader reads a started supervisor's identity for the launch
 // acknowledgement.
 type identityReader interface {
 	Identity(ctx context.Context, pid int) (platform.ProcessIdentity, error)
+}
+
+// processControl is identityReader plus inspecting and signalling by
+// identity; ProcessInspector provides both.
+type processControl interface {
+	identityReader
+	platform.ProcessControl
 }
 
 // Containment runs each command in its own transient systemd scope: in the
@@ -51,7 +59,7 @@ type identityReader interface {
 // and is emptied by name on the next start.
 type Containment struct {
 	Runner    platform.CommandRunner
-	Inspector identityReader
+	Inspector processControl
 	// Bin are the supervisor binaries; empty fields take DefaultBinaries.
 	Bin Binaries
 	// UID owns the user manager for a user scope.
@@ -121,9 +129,11 @@ func (c *Containment) NameFor(runID contract.RunID, seq int) (string, error) {
 }
 
 // Run starts spec.Argv in a new transient scope named spec.Name and waits for
-// it. A user scope with no user manager is refused, never run uncontained.
-// onAck receives the tool's identity once it has started.
-func (c *Containment) Run(ctx context.Context, spec platform.LaunchSpec, onAck func(platform.LaunchAck)) (contract.CommandResult, error) {
+// it. The supervisor is held at a gate until onSupervisor has made its
+// identity durable; systemd-run --scope then execs the tool in place, so
+// the supervisor's identity is the tool's. A user scope with no user
+// manager is refused, never run uncontained.
+func (c *Containment) Run(ctx context.Context, spec platform.LaunchSpec, onSupervisor func(platform.LaunchAck) error) (contract.CommandResult, error) {
 	if len(spec.Argv) == 0 {
 		return contract.CommandResult{}, platform.ErrCommandEmpty
 	}
@@ -135,21 +145,21 @@ func (c *Containment) Run(ctx context.Context, spec platform.LaunchSpec, onAck f
 		return contract.CommandResult{}, platform.ErrNoUserManager
 	}
 	res, err := c.Runner.Run(ctx, platform.ExecSpec{
-		Argv:   SystemdRunArgv(c.bin().SystemdRun, spec.Name, user, spec.Env, spec.Argv),
-		Env:    c.supervisorEnv(user),
-		Dir:    spec.Dir,
-		Stdout: spec.Output,
-		Stderr: spec.Output,
-		OnStart: func(pid int) {
-			ack := platform.LaunchAck{Name: spec.Name}
-			// systemd-run --scope execs the tool in place, so pid is the
-			// tool. If it has already exited, the identity stays zero.
-			if id, idErr := c.Inspector.Identity(ctx, pid); idErr == nil {
-				ack.Tool = id
+		Argv:      SystemdRunArgv(c.bin().SystemdRun, spec.Name, user, spec.Env, spec.Argv),
+		Env:       c.supervisorEnv(user),
+		Dir:       spec.Dir,
+		Stdout:    spec.Output,
+		Stderr:    spec.Output,
+		GateShell: c.bin().Shell,
+		Gate: func(pid int) error {
+			id, err := c.Inspector.Identity(ctx, pid)
+			if err != nil {
+				return fmt.Errorf("supervisor identity: %w", err)
 			}
-			if onAck != nil {
-				onAck(ack)
+			if onSupervisor == nil {
+				return nil
 			}
+			return onSupervisor(platform.LaunchAck{Name: spec.Name, Supervisor: id})
 		},
 	})
 	out := contract.CommandResult{ExitCode: res.ExitCode, Duration: res.Duration}
@@ -159,39 +169,53 @@ func (c *Containment) Run(ctx context.Context, spec platform.LaunchSpec, onAck f
 	return out, nil
 }
 
-// Empty empties the scope within its bound (platform.EmptyBounded). A
-// package-manager transaction is waited for and never signalled.
+// Empty empties the scope within its bound (platform.EmptyBounded), then
+// clears a failed scope's record so systemd forgets it. A package-manager
+// transaction is waited for and never signalled.
 func (c *Containment) Empty(ctx context.Context, name string, opts platform.EmptyOptions) error {
 	if !validScopeName.MatchString(name) {
 		return fmt.Errorf("%w: %q", platform.ErrInvalidContainmentName, name)
 	}
 	sel := platform.ScopeSelector{User: opts.Scope != contract.ScopeRoot}
-	if err := platform.EmptyBounded(ctx, c, name, sel, opts); err != nil {
+	if err := platform.EmptyBounded(ctx, c, c.Inspector, name, sel, opts); err != nil {
 		return fmt.Errorf("empty scope: %w", err)
 	}
+	// Best effort: a scope with no process left holds nothing.
+	_, _ = c.Runner.Run(ctx, platform.ExecSpec{Argv: c.systemctlArgv(sel, "reset-failed", name), Env: c.supervisorEnv(sel.User)})
 	return nil
 }
 
-// Active reports whether the scope holds processes, from its ActiveState.
-// A scope that never existed or was collected reports "inactive". Any state
-// or tool failure it does not recognise is an error, so the caller treats
-// the scope as not empty.
-func (c *Containment) Active(ctx context.Context, name string, sel platform.ScopeSelector) (bool, error) {
-	argv := c.systemctlArgv(sel, "show", "--property=ActiveState", "--value", name)
+// State reads the scope's LoadState and ActiveState. A unit that is not
+// loaded, or loaded with no process (inactive or failed), is gone. Any
+// output it does not recognise is an error, so the caller treats the scope
+// as not empty.
+func (c *Containment) State(ctx context.Context, name string, sel platform.ScopeSelector) (platform.ContainmentState, error) {
+	argv := c.systemctlArgv(sel, "show", "--property=LoadState,ActiveState", name)
 	res, err := c.Runner.Run(ctx, platform.ExecSpec{Argv: argv, Env: c.supervisorEnv(sel.User)})
 	if err != nil {
-		return false, fmt.Errorf("systemctl show %q: %w", name, err)
+		return 0, fmt.Errorf("systemctl show %q: %w", name, err)
 	}
 	if res.ExitCode != 0 {
-		return false, fmt.Errorf("%w: systemctl show %q exited %d", platform.ErrSupervisorState, name, res.ExitCode)
+		return 0, fmt.Errorf("%w: systemctl show %q exited %d", platform.ErrSupervisorState, name, res.ExitCode)
 	}
-	switch state := strings.TrimSpace(res.Stdout); state {
-	case "inactive", "failed":
-		return false, nil
-	case "active", "activating", "deactivating", "reloading", "refreshing":
-		return true, nil
+	props := map[string]string{}
+	for _, line := range strings.Split(res.Stdout, "\n") {
+		if k, v, ok := strings.Cut(strings.TrimSpace(line), "="); ok {
+			props[k] = v
+		}
+	}
+	load, active := props["LoadState"], props["ActiveState"]
+	switch {
+	case load == "not-found" && active == activeInactive:
+		return platform.StateGone, nil
+	case load != "loaded":
+		return 0, fmt.Errorf("%w: scope %q load state %q", platform.ErrSupervisorState, name, load)
+	case active == activeInactive || active == "failed":
+		return platform.StateGone, nil
+	case active == "active" || active == "activating" || active == "deactivating" || active == "reloading" || active == "refreshing":
+		return platform.StateActive, nil
 	default:
-		return false, fmt.Errorf("%w: scope %q state %q", platform.ErrSupervisorState, name, state)
+		return 0, fmt.Errorf("%w: scope %q state %q", platform.ErrSupervisorState, name, active)
 	}
 }
 
@@ -245,7 +269,9 @@ func SystemdRunArgv(bin, name string, user bool, env, command []string) []string
 	if user {
 		argv = append(argv, flagUser)
 	}
-	argv = append(argv, "--scope", "--quiet", "--collect", "--unit="+name)
+	// No --collect: a failed scope stays loaded, so its state is never
+	// mistaken for a scope that never registered.
+	argv = append(argv, "--scope", "--quiet", "--unit="+name)
 	for _, kv := range env {
 		argv = append(argv, "--setenv="+kv)
 	}

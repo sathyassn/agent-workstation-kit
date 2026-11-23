@@ -22,6 +22,9 @@ const (
 	PointLaunch Point = "tx.launch"
 	// PointCommandDone: a tool has ended.
 	PointCommandDone Point = "tx.command-done"
+	// PointCommandEmptied: a tool's containment is proven empty and the
+	// command is durably finished.
+	PointCommandEmptied Point = "tx.command-emptied"
 	// PointApplied: the unit's Apply has returned.
 	PointApplied Point = "apply.returned"
 	// PointVerified: Verify has returned; no receipt yet.
