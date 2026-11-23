@@ -250,6 +250,7 @@ def main() -> int:
     required_executables = [
         *ROOT.glob("scripts/*.sh"),
         *ROOT.glob("scripts/*.py"),
+        ROOT / "scripts/agent-work-shell",
         *ROOT.glob("agentctl/*"),
         *ROOT.glob(".codeflow/git-hooks/*"),
     ]

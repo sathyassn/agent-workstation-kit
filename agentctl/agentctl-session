@@ -120,9 +120,25 @@ EOF
         ;;
       *) die 'tool must be shell, codex, claude, or grok.' ;;
     esac
+    # With the resource policy installed, sessions must start inside the
+    # agent's agent-work.slice so its memory ceiling holds. sudo keeps them in
+    # the operator's login session otherwise. The tmux server runs every
+    # session, so it must itself run in the slice.
+    launcher=()
+    if [[ -f /etc/systemd/user/agent-work.slice ]]; then
+      XDG_RUNTIME_DIR="/run/user/$(id -u)"
+      export XDG_RUNTIME_DIR
+      [[ -S "$XDG_RUNTIME_DIR/bus" ]] ||
+        die 'the agent user manager is not running; apply the resources phase, which enables lingering.'
+      if server_pid=$(tmux list-sessions -F '#{pid}' 2>/dev/null | sed -n 1p) && [[ -n "$server_pid" ]]; then
+        grep -Fq '/agent-work.slice/' "/proc/$server_pid/cgroup" ||
+          die 'the tmux server started outside agent-work.slice; stop all sessions once so it restarts inside the memory ceiling.'
+      fi
+      launcher=(systemd-run --user --scope --quiet --collect --slice=agent-work.slice --)
+    fi
     log_action "$session:$tool"
     export AGENT_OPERATOR="$operator"
-    tmux new-session -d -c "$agent_home" -e "AGENT_OPERATOR=$operator" -s "$session" "${command[@]}"
+    "${launcher[@]}" tmux new-session -d -c "$agent_home" -e "AGENT_OPERATOR=$operator" -s "$session" "${command[@]}"
     printf 'Started %s in session %s. Attach with: agentctl attach %s %s\n' \
       "$tool" "$session" "$AGENTCTL_TARGET" "$session"
     ;;
