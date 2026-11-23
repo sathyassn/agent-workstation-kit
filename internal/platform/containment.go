@@ -1,0 +1,108 @@
+package platform
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"regexp"
+	"time"
+
+	"github.com/sathyassn/agent-workstation-kit/internal/contract"
+)
+
+// Sentinel errors returned by the containment and process adapters. They are
+// sentinels for errors.Is and are never reassigned.
+var (
+	// ErrContainmentNotEmpty reports that a containment still held processes
+	// when its bound ran out. A package-manager transaction ends here too,
+	// because it is waited for and never killed.
+	ErrContainmentNotEmpty = errors.New("containment could not be emptied within its bound")
+	// ErrInvalidContainmentName reports a run ID or containment name that
+	// fails validation.
+	ErrInvalidContainmentName = errors.New("invalid containment name")
+	// ErrLaunchNotAcknowledged reports that the OS supervisor did not
+	// acknowledge a launch.
+	ErrLaunchNotAcknowledged = errors.New("containment launch not acknowledged")
+	// ErrInvalidProcessIdentity reports an identity that lacks a field, or
+	// OS output that does not parse into one.
+	ErrInvalidProcessIdentity = errors.New("invalid process identity")
+	// ErrCommandEmpty reports a launch with an empty argv.
+	ErrCommandEmpty = errors.New("command argv is empty")
+	// ErrNoUserManager reports that a user-scope containment was asked for
+	// where no user service manager runs. The adapter refuses rather than
+	// run the command uncontained.
+	ErrNoUserManager = errors.New("no user service manager for a user-scope containment")
+	// ErrSupervisorState reports output from the OS supervisor that the
+	// adapter cannot interpret, so it cannot tell whether a containment is
+	// empty. Callers treat it as not empty.
+	ErrSupervisorState = errors.New("supervisor state unknown")
+	// ErrUnsafeDir reports a private folder that is missing, not a folder,
+	// or writable by others.
+	ErrUnsafeDir = errors.New("folder is not private")
+)
+
+// validRunID bounds run IDs to characters that are safe in a systemd unit
+// name, a launchd label and a file name. It is compiled once and never
+// changed.
+var validRunID = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
+
+// ValidateRunID checks that runID is safe to use in containment names and
+// file paths.
+func ValidateRunID(runID contract.RunID) error {
+	if !validRunID.MatchString(string(runID)) {
+		return fmt.Errorf("%w: run ID %q", ErrInvalidContainmentName, runID)
+	}
+	return nil
+}
+
+// ProcessIdentity names one process instance. The PID alone is reused by the
+// OS; the boot ID and the start time make the identity unique (SPC-001
+// "Intent, recovery and revert").
+type ProcessIdentity struct {
+	BootID    string `json:"boot_id"`
+	PID       int    `json:"pid"`
+	StartTime string `json:"start_time"`
+}
+
+// Valid reports whether id carries all three fields.
+func (id ProcessIdentity) Valid() bool {
+	return id.BootID != "" && id.PID > 0 && id.StartTime != ""
+}
+
+// LaunchSpec is one command started inside a named containment.
+type LaunchSpec struct {
+	// Name is the containment name, written into the intent record before
+	// the launch.
+	Name string
+	// Scope selects the system manager (root) or the user's manager.
+	Scope contract.Scope
+	Argv  []string
+	// Env is the complete environment; nothing is inherited.
+	Env []string
+	Dir string
+	// PackageTransaction marks a package-manager transaction. Adapters never
+	// signal one; the engine also runs it with a context that cancel and
+	// grace cannot end.
+	PackageTransaction bool
+	// Output receives the tool's output. It may be nil.
+	Output io.Writer
+}
+
+// LaunchAck is the supervisor's acknowledgement that the tool started.
+type LaunchAck struct {
+	Name string
+	// Tool is the started tool's identity. It is zero when the tool ended
+	// before the adapter could observe it.
+	Tool ProcessIdentity
+}
+
+// EmptyOptions bounds how a containment is emptied: wait for Grace, then
+// terminate, then kill, each step bounded. A package-manager transaction is
+// only waited for, for Grace plus KillWait, and never signalled.
+type EmptyOptions struct {
+	Scope              contract.Scope
+	Grace              time.Duration
+	KillWait           time.Duration
+	PollInterval       time.Duration
+	PackageTransaction bool
+}
