@@ -490,5 +490,33 @@ class ThirdReviewTests(unittest.TestCase):
                     scan.tree_sources(root, head)
 
 
+
+class FourthReviewTests(unittest.TestCase):
+    """Regression tests for the fourth security review of PR #24."""
+
+    def test_address_overflow_fails_even_when_every_collected_value_is_allowed(self) -> None:
+        allowed = ip("100", "64", "0", "10")
+        unapproved = ip("192", "168", "7", "7")
+        text = ("x = " + allowed + "\n") * (scan.MAX_FINDINGS + 1) + "y = " + unapproved + "\n"
+        exceptions = scan.Exceptions(binary={}, private_ipv4={"tests/a.py": frozenset({allowed})})
+        findings = scan_bytes(text.encode(), "tests/a.py", exceptions)
+        self.assertEqual(
+            [f"more than {scan.MAX_FINDINGS} private address matches; the scan cannot check the rest: tests/a.py"],
+            findings,
+        )
+
+    def test_wrap_findings_count_toward_the_limit(self) -> None:
+        text = "owner alphaper-\nson73 and more\n" * 50
+        scanner = scan.Scanner(rules=rules(), key=KEY)
+        with mock.patch.object(scan, "MAX_FINDINGS", 7):
+            found = scanner.scan_lines(text)
+        self.assertEqual(8, len(found))
+        self.assertTrue(all("across a line wrap" in label for _, label in found))
+
+    def test_an_escaped_mark_between_words_does_not_join_them(self) -> None:
+        self.assertTrue(scan_line("owner " + PERSON + "\\u034fxyz"))
+        self.assertTrue(scan_line("owner " + PERSON + "\\u0301xyz"))
+
+
 if __name__ == "__main__":
     unittest.main()

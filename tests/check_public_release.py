@@ -355,8 +355,9 @@ def _extract_candidates(line: str) -> set[str]:
     """
     candidates: set[str] = set()
     _candidates_from(normalize_text(line), candidates)
-    if not line.isascii():
-        # Also tokenise with combining marks kept: removing a mark that sits
+    if not line.isascii() or "\\u" in line:
+        # Also tokenise with combining marks kept (decided on the decoded
+        # text, so an escaped mark counts as one): removing a mark that sits
         # between two words would otherwise join them into one token.
         kept = normalize_text(line, strip_marks=False)
         if kept != normalize_text(line):
@@ -1082,7 +1083,7 @@ class Scanner:
         )
         self.cache: dict[str, tuple[str, ...]] = {}
         self.cache_bytes = 0
-        self.object_findings: dict[str, tuple[str | None, list[tuple[int, str]], list[tuple[int, str, str]]]] = {}
+        self.object_findings: dict[str, tuple[str | None, list[tuple[int, str]], tuple[list[tuple[int, str, str]], bool]]] = {}
 
     def keyed_hits(self, candidates: Iterable[str]) -> set[str]:
         matched: set[str] = set()
@@ -1120,30 +1121,33 @@ class Scanner:
         return escape_for_display(relative)
 
     def scan_lines(self, text: str) -> list[tuple[int, str]]:
-        """Return (line number, label) findings for text, without any value."""
+        """Return (line number, label) findings for text, without any value.
+
+        Lines are scanned in one pass, and the finding limit is checked as
+        findings are produced, line and wrap findings alike. Past the limit
+        the list holds MAX_FINDINGS + 1 entries, which fails the scan.
+        """
         lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
         found: list[tuple[int, str]] = []
-        per_line: list[set[str]] = []
-        for line in lines:
+        previous_hits: set[str] = set()
+        for index, line in enumerate(lines):
             hits = self.keyed_hits(extract_candidates(line)) if line else set()
-            per_line.append(hits)
-        for number, line in enumerate(lines, start=1):
-            for rule_id in sorted(per_line[number - 1]):
-                found.append((number, f"matched keyed rule '{rule_id}'"))
-            if len(found) > MAX_FINDINGS:
-                return found
-        # Join each line with the next to catch names split by a wrap: a
-        # trailing hyphen joins without a space, any other wrap with one.
-        for index in range(len(lines) - 1):
-            # A bounded window: the end of one line and the start of the next.
-            left = lines[index].rstrip()[-WRAP_WINDOW_CHARS:]
-            right = lines[index + 1].lstrip()[:WRAP_WINDOW_CHARS]
-            if not left or not right:
-                continue
-            joined = left[:-1] + right if left.endswith("-") else left + " " + right
-            hits = self.keyed_hits(extract_candidates(joined)) - per_line[index] - per_line[index + 1]
             for rule_id in sorted(hits):
-                found.append((index + 1, f"matched keyed rule '{rule_id}' across a line wrap"))
+                found.append((index + 1, f"matched keyed rule '{rule_id}'"))
+            # Join this line with the previous one to catch a name split by a
+            # wrap: a trailing hyphen joins without a space, any other wrap
+            # with one. A bounded window from each side.
+            if index > 0:
+                left = lines[index - 1].rstrip()[-WRAP_WINDOW_CHARS:]
+                right = line.lstrip()[:WRAP_WINDOW_CHARS]
+                if left and right:
+                    joined = left[:-1] + right if left.endswith("-") else left + " " + right
+                    wrapped = self.keyed_hits(extract_candidates(joined)) - previous_hits - hits
+                    for rule_id in sorted(wrapped):
+                        found.append((index, f"matched keyed rule '{rule_id}' across a line wrap"))
+            if len(found) > MAX_FINDINGS:
+                return found[: MAX_FINDINGS + 1]
+            previous_hits = hits
         return found
 
     def allowed_private(self, relative: str) -> frozenset[str]:
@@ -1152,14 +1156,20 @@ class Scanner:
             return frozenset().union(*self.exceptions.private_ipv4.values())
         return self.exceptions.private_ipv4.get(relative, frozenset())
 
-    def private_ipv4_values(self, text: str) -> list[tuple[int, str, str]]:
+    def private_ipv4_values(self, text: str) -> tuple[list[tuple[int, str, str]], bool]:
+        """Return the raw address hits and whether collection overflowed.
+
+        Exceptions are applied later, per path, so an overflow is a failure
+        whatever the exceptions: otherwise repeating an allowed value past the
+        limit would hide every address after it.
+        """
         found: list[tuple[int, str, str]] = []
         for number, line in enumerate(text.replace("\r\n", "\n").replace("\r", "\n").split("\n"), start=1):
             for label, value in private_ipv4_hits(line):
                 found.append((number, label, value))
             if len(found) > MAX_FINDINGS:
-                break
-        return found
+                return found[:MAX_FINDINGS], True
+        return found, False
 
     def scan_private_ipv4(self, relative: str, text: str) -> list[tuple[int, str]]:
         allowed = self.allowed_private(relative)
@@ -1198,15 +1208,17 @@ class Scanner:
             try:
                 text = decode_content(source.content)
             except ScanConfigError as exc:
-                cached = (str(exc), [], [])
+                cached = (str(exc), [], ([], False))
             else:
                 cached = (None, self.scan_lines(text), self.private_ipv4_values(text))
             if source.object_id:
                 self.object_findings[source.object_id] = cached
-        error, line_findings, address_hits = cached
+        error, line_findings, (address_hits, address_overflow) = cached
         if error is not None:
             failures.append(f"{error}: {shown}")
             return failures
+        if address_overflow:
+            failures.append(f"more than {MAX_FINDINGS} private address matches; the scan cannot check the rest: {shown}")
 
         allowed_values = self.allowed_private(source.path)
         findings = line_findings + [
