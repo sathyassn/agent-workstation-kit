@@ -93,3 +93,15 @@ jobs:
           rm -f negative-fixture.txt
           test "$fixture_exit" -eq 7
           ./gitleaks git --redact --no-banner --exit-code 1 .
+
+  macos-host-lock:
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify macOS root host apply lock contention
+        run: sudo /usr/bin/python3 -I -B tests/verify_macos_host_lock.py

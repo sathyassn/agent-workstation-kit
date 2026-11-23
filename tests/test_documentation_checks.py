@@ -59,7 +59,8 @@ class DocumentationCheckTests(unittest.TestCase):
         self.assertNotIn("/path/to/ac-ws-001.toml", linux_guide)
         self.assertNotIn("run PROFILE", linux_guide)
         self.assertIn("cd /opt/agent-workstation-kit", linux_guide)
-        self.assertIn("--fleet-root /opt/agent-workstation-fleet", linux_guide)
+        self.assertIn("/opt/agent-workstation-fleet/plans/execution-plan.json", linux_guide)
+        self.assertIn("sudo /bin/bash /opt/agent-workstation-kit/scripts/setup-workstation.sh run", linux_guide)
 
     def test_profile_commit_precedes_staging_archive(self) -> None:
         day_zero = (ROOT / "docs/runbooks/day-zero-linux.md").read_text(
@@ -122,6 +123,51 @@ class DocumentationCheckTests(unittest.TestCase):
         )
         for platform in ("macOS", "Windows", "Linux", "iPadOS", "Android"):
             self.assertIn(platform, remote)
+
+    def test_fleetctl_run_apply_check_rejects_documented_apply_commands(self) -> None:
+        self.assertTrue(
+            check_repository.has_fleetctl_run_apply(
+                "```bash\n./scripts/fleetctl.py run machines/acme-ws-001.toml base --apply\n```\n"
+            )
+        )
+        self.assertTrue(
+            check_repository.has_fleetctl_run_apply(
+                "```bash\nsudo /usr/bin/python3 -I -B /opt/agent-workstation-kit/scripts/fleetctl.py \\\n"
+                "  --fleet-root /opt/agent-workstation-fleet \\\n"
+                '  run "$PROFILE" base --apply\n```\n'
+            )
+        )
+        self.assertTrue(
+            check_repository.has_fleetctl_run_apply(
+                "Run `fleetctl run machines/acme-ws-001.toml accounts --apply`.\n"
+            )
+        )
+        self.assertFalse(
+            check_repository.has_fleetctl_run_apply(
+                "```bash\n./scripts/fleetctl.py run machines/acme-ws-001.toml base\n```\n"
+            )
+        )
+        self.assertFalse(
+            check_repository.has_fleetctl_run_apply(
+                "```bash\n./scripts/fleetctl.py run machines/acme-ws-001.toml audit\n```\n"
+            )
+        )
+        self.assertFalse(
+            check_repository.has_fleetctl_run_apply(
+                "Use `fleetctl.py run` to preview, then `setup-workstation.sh run --apply`.\n"
+            )
+        )
+        self.assertEqual([], check_repository.fleetctl_run_apply_issues(ROOT))
+
+    def test_onboarding_and_macos_identity_docs_use_complete_executor_commands(self) -> None:
+        onboarding = (ROOT / "docs/01a-onboarding-profile.md").read_text(encoding="utf-8")
+        self.assertIn("--confirm-recovery-tested --connection-context local-console", onboarding)
+        self.assertIn("--connection-context tailscale-ssh", onboarding)
+        self.assertIn("--ssh-source-ip", onboarding)
+        macos_guide = (ROOT / "docs/03-macos-setup.md").read_text(encoding="utf-8")
+        self.assertNotIn("install-machine-identity.py", macos_guide)
+        self.assertIn("--scope machine --apply", macos_guide)
+        self.assertIn("--confirm-recovery-tested --connection-context local-console", macos_guide)
 
 
 if __name__ == "__main__":

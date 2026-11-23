@@ -567,6 +567,114 @@ def phase_for(
 PHASES = ("base", "identity", "accounts", "remote-hardening", "agentctl", "shell", "user-tooling", "workloads", "resources", "audit")
 
 
+def scope_for_phase(phase_name: str, platform: str) -> str | None:
+    sys.path.insert(0, str(ROOT / "scripts/lib"))
+    from setup_scopes import SCOPES
+    for scope, phases in SCOPES.get(platform, {}).items():
+        if phase_name in phases:
+            return scope
+    return None
+
+
+def print_executor_handoff(args: argparse.Namespace, profile: dict[str, Any]) -> None:
+    sys.path.insert(0, str(ROOT / "scripts/lib"))
+    from setup_scopes import expected_owner
+
+    platform = profile["machine"]["platform"]
+    hostname = profile["machine"]["hostname"]
+    scope = scope_for_phase(args.phase, platform)
+    if scope is None:
+        phase = phase_for(profile, args.phase, apply=False, recovery=False)
+        print(f"ERROR {args.phase}: {phase.note}", file=sys.stderr)
+        return
+
+    fleet = str(args.fleet_root) if args.fleet_root else "FLEET"
+    profile_arg = str(args.profile)
+    owner = expected_owner(args.phase, platform)
+    is_root = owner == "root"
+
+    base_plan = [
+        "scripts/setup-workstation.sh", "plan",
+        "--fleet-root", fleet,
+        "--profile", profile_arg,
+        "--confirm-recovery-tested",
+    ]
+    if args.connection_context == "tailscale-ssh":
+        plan_commands = [
+            (
+                "Export the execution plan (Tailscale SSH)",
+                [*base_plan, "--connection-context", "tailscale-ssh", "--ssh-source-ip", args.ssh_source_ip or "SSH_SOURCE_IP", "--export-plan", "PRIVATE/execution-plan.json"],
+            ),
+        ]
+    elif args.connection_context == "local-console":
+        plan_commands = [
+            (
+                "Export the execution plan (local console)",
+                [*base_plan, "--connection-context", "local-console", "--export-plan", "PRIVATE/execution-plan.json"],
+            ),
+        ]
+    else:
+        plan_commands = [
+            (
+                "Export the execution plan (local console)",
+                [*base_plan, "--connection-context", "local-console", "--export-plan", "PRIVATE/execution-plan.json"],
+            ),
+            (
+                "Or over Tailscale SSH (capture ssh_peer=${SSH_CONNECTION%% *} before sudo)",
+                [*base_plan, "--connection-context", "tailscale-ssh", "--ssh-source-ip", "SSH_SOURCE_IP", "--export-plan", "PRIVATE/execution-plan.json"],
+            ),
+        ]
+
+    if is_root:
+        preview_cmd = [
+            "sudo", "/bin/bash",
+            "/opt/agent-workstation-kit/scripts/setup-workstation.sh", "run",
+            "--plan-file", "/opt/agent-workstation-fleet/plans/execution-plan.json",
+            "--scope", scope,
+        ]
+        apply_cmd = [
+            *preview_cmd,
+            "--apply",
+            "--approve-plan", "REVIEWED_EXECUTION_PLAN_ID",
+            "--confirm-target", hostname,
+            "--execution-context", "host",
+            "--confirm-recovery-tested",
+            "--journal", "/PRIVATE/ROOT_OWNED_DIRECTORY/setup.json",
+        ]
+    else:
+        preview_cmd = [
+            "scripts/setup-workstation.sh", "run",
+            "--plan-file", "PRIVATE/execution-plan.json",
+            "--scope", scope,
+        ]
+        apply_cmd = [
+            *preview_cmd,
+            "--apply",
+            "--approve-plan", "REVIEWED_EXECUTION_PLAN_ID",
+            "--confirm-target", hostname,
+            "--execution-context", "host",
+            "--journal", "/PRIVATE/PER_EXECUTOR_DIRECTORY/setup.json",
+        ]
+
+    print(
+        "ERROR run: fleetctl run --apply is disabled; apply only through "
+        "scripts/setup-workstation.sh so locks, receipts, source digests and "
+        "staged-root checks run.",
+        file=sys.stderr,
+    )
+    print(f"Scope for phase {args.phase!r} on {platform}: {scope} (run as {owner})", file=sys.stderr)
+    print("Use the executor instead (preview first, then apply):", file=sys.stderr)
+    for label, command in plan_commands:
+        print(f"# {label}:", file=sys.stderr)
+        print(f"  {shlex.join(command)}", file=sys.stderr)
+    if is_root:
+        print("# Stage the reviewed plan to /opt/agent-workstation-fleet/plans/execution-plan.json, preview, then apply as root:", file=sys.stderr)
+    else:
+        print(f"# Preview, then apply as {owner}:", file=sys.stderr)
+    print(f"  {shlex.join(preview_cmd)}", file=sys.stderr)
+    print(f"  {shlex.join(apply_cmd)}", file=sys.stderr)
+
+
 def account_groups(account: str) -> set[str]:
     result = subprocess.run(["id", "-nG", account], check=False, text=True, capture_output=True)
     return set(result.stdout.split()) if result.returncode == 0 else set()
@@ -1058,19 +1166,23 @@ def main() -> int:
     setup.add_argument("--fleet-revision", help="require the exact reviewed fleet commit")
     setup.add_argument("--execution-context", choices=("host", "sandbox", "unknown"), default="unknown",
                        help="state that readiness runs in an ordinary target-host terminal (host); anything else reports NOT READY")
-    run = subs.add_parser("run", help="run exactly one phase")
+    run = subs.add_parser("run", help="preview one phase or run read-only audit")
     run.add_argument("profile", type=Path)
     run.add_argument("phase", choices=PHASES)
-    run.add_argument("--apply", action="store_true")
+    run.add_argument(
+        "--apply",
+        action="store_true",
+        help="disabled: exits 2 and prints the setup-workstation.sh executor commands",
+    )
     run.add_argument("--confirm-recovery-tested", action="store_true")
     run.add_argument(
         "--connection-context",
         choices=("local-console", "tailscale-ssh"),
-        help="required for identity/remote-hardening apply; states how this shell reaches the host",
+        help="legacy flag; apply through setup-workstation.sh",
     )
     run.add_argument(
         "--ssh-source-ip",
-        help="SSH peer captured before sudo; required with tailscale-ssh",
+        help="legacy flag; apply through setup-workstation.sh",
     )
     args = parser.parse_args()
 
@@ -1154,10 +1266,16 @@ def main() -> int:
     except ValueError as exc:
         print(f"ERROR profile: {exc}", file=sys.stderr)
         return 2
-    require_ready = bool(getattr(args, "ready", False) or getattr(args, "apply", False) or getattr(args, "phase", "") == "audit")
+    require_ready = bool(
+        getattr(args, "ready", False)
+        or (getattr(args, "phase", "") == "audit" and not getattr(args, "apply", False))
+    )
     issues = validate_profile(profile, ready=require_ready)
     if issues:
         show_issues(issues)
+        return 2
+    if args.command == "run" and args.apply:
+        print_executor_handoff(args, profile)
         return 2
     if args.command == "setup":
         try:
@@ -1184,29 +1302,14 @@ def main() -> int:
     if profile["machine"]["platform"] != actual_platform():
         print(f"ERROR machine.platform: profile is {profile['machine']['platform']}, host is {actual_platform()}", file=sys.stderr)
         return 2
-    if args.phase in {"identity", "remote-hardening"} and args.apply and not args.confirm_recovery_tested:
-        print(f"ERROR {args.phase}: --apply also requires --confirm-recovery-tested", file=sys.stderr)
-        return 2
-    if args.phase in {"identity", "remote-hardening"} and args.apply:
-        if not args.connection_context:
-            print(f"ERROR {args.phase}: --apply also requires --connection-context", file=sys.stderr)
-            return 2
-        if args.connection_context == "tailscale-ssh" and not args.ssh_source_ip:
-            print(f"ERROR {args.phase}: tailscale-ssh also requires --ssh-source-ip", file=sys.stderr)
-            return 2
-        if args.connection_context == "local-console" and args.ssh_source_ip:
-            print(f"ERROR {args.phase}: local-console must not include --ssh-source-ip", file=sys.stderr)
-            return 2
     if (args.phase in {"shell", "user-tooling"} or (args.phase == "workloads" and profile["machine"]["platform"] == "macos")) and pwd.getpwuid(os.getuid()).pw_name != profile["accounts"]["agent"]:
         print(f"ERROR {args.phase}: run this phase as {profile['accounts']['agent']}, not root or a human account", file=sys.stderr)
         return 2
     phase = phase_for(
         profile,
         args.phase,
-        apply=args.apply,
-        recovery=args.confirm_recovery_tested,
-        connection_context=args.connection_context,
-        ssh_source_ip=args.ssh_source_ip,
+        apply=False,
+        recovery=False,
     )
     print(f"PHASE {phase.name}: {phase.note}")
     if phase.command is None:

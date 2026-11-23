@@ -47,6 +47,42 @@ HOSTNAME_EXAMPLE = re.compile(
     re.IGNORECASE,
 )
 NEUTRAL_EXAMPLE_NAMESPACES = {"ac", "acme", "home", "lab", "ss"}
+FLEETCTL_RUN_APPLY = re.compile(r"\bfleetctl(?:\.py)?\b[^`\n;]*\brun\b[^`\n;]*--apply\b")
+# Design ADR 0005 records the historical problem and decision in prose; fenced
+# code blocks are still scanned everywhere so no runnable apply command returns.
+FLEETCTL_RUN_APPLY_PROSE_EXEMPT = frozenset({"docs/design/setup-architecture.md"})
+FLEETCTL_DOC_ROOTS = ("docs/", "skills/", "templates/")
+FLEETCTL_DOC_FILES = frozenset({"README.md", "AGENTS.md"})
+
+
+def has_fleetctl_run_apply(text: str) -> bool:
+    """Return True if TEXT shows a `fleetctl run ... --apply` command."""
+    joined = re.sub(r"\\\n[ \t]*", " ", text)
+    for line in joined.splitlines():
+        for part in re.split(r"&&|\|\||;", line):
+            if FLEETCTL_RUN_APPLY.search(part):
+                return True
+    return False
+
+
+def fleetctl_run_apply_issues(root: Path) -> list[str]:
+    """Fail if any user documentation shows `fleetctl run ... --apply`."""
+    issues: list[str] = []
+    for path in sorted(root.rglob("*.md")):
+        if ".git" in path.parts or not path.is_file():
+            continue
+        relative = path.relative_to(root).as_posix()
+        if codeflow_managed(relative):
+            continue
+        if not (relative in FLEETCTL_DOC_FILES or relative.startswith(FLEETCTL_DOC_ROOTS)):
+            continue
+        text = path.read_text(encoding="utf-8")
+        if relative in FLEETCTL_RUN_APPLY_PROSE_EXEMPT:
+            if any(has_fleetctl_run_apply(block.group(0)) for block in FENCED_BLOCK.finditer(text)):
+                issues.append(f"documented fleetctl run --apply command in {relative}")
+        elif has_fleetctl_run_apply(text):
+            issues.append(f"documented fleetctl run --apply command in {relative}")
+    return issues
 
 
 CHANGELOG_GUARDED = ("scripts/", "config/", "templates/")
@@ -342,6 +378,7 @@ def main() -> int:
         failures.append("hosted secret scan does not use the supported Gitleaks git command")
 
     failures.extend(agents_manual_issues(ROOT))
+    failures.extend(fleetctl_run_apply_issues(ROOT))
 
     base = changelog_base(ROOT)
     if base is None:
