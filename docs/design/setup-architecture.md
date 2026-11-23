@@ -1782,9 +1782,11 @@ What revert cannot undo, listed in every revert preview:
   - from learnings batch 3 (EPC-022 AC-7 to AC-10): the full report in
     the root log folder with a summary and `--json` in the public export;
     checks that follow the declared topology, remote-desktop service,
-    grants and firewall choices; processes outside the ceiling counted per
-    session or scope; new agent terminals inside the ceiling; and long
-    uptime with swapped-out desktop processes;
+    grants and firewall choices; on Linux, processes outside the ceiling
+    counted per session or scope, and on macOS the QoS check per agent
+    terminal; new agent terminals inside the ceiling; and long uptime with
+    swapped-out desktop processes on Linux, or with the memory-pressure
+    history on macOS;
   - the earlier doctor items.
 
   `--admin` runs the root-only checks from the staged root and writes their
