@@ -13,6 +13,7 @@ step is in [docs/maintenance/releasing.md](docs/maintenance/releasing.md).
 
 ### Added
 
+- Go CI workflow (`.github/workflows/go.yml`) running `go mod verify`, `gofmt`, `goimports`, `go vet`, `golangci-lint`, `go test -race`, `govulncheck` and `make go-check` on `ubuntu-24.04` and `macos-latest` with SHA-pinned actions, Go targets in `.codeflow/test-config.json`, and Git-aware scanning plus workflow action SHA-pinning enforcement in `tests/check_repository.py`.
 - Go module (`go.mod`, `go.sum`), package layout under `cmd/` and `internal/`, root data embedding (`assets.go`), stub `wskit` and `agentctl` binaries that print their build version, `registry/tools.toml` pinning each direct Go library and build tool to its version and `go.sum` hash (checked by `internal/registry`, which refuses `replace` and `exclude`), and a `make go-check` target that tests and builds for Linux and macOS without cgo.
 - CodeFlow full tier, on the released CodeFlow 3.1.1 with its digests pinned: skills, project records (`project-management/`), product, capabilities and architecture pages, and the Go roadmap with its 32 epics (`docs/plan/roadmap.md`).
 - `.golangci.yml`, the lint configuration the Go code will be held to.

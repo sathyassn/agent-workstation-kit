@@ -254,32 +254,110 @@ def markdown_headings(text: str) -> set[str]:
     return {heading_slug(heading) for heading in MARKDOWN_HEADING.findall(visible_text)}
 
 
-def main() -> int:
-    failures: list[str] = []
+WORKFLOW_USES_LINE = re.compile(r"^\s*(?:-\s+)?uses:\s*(.+?)\s*$")
+WORKFLOW_LOCAL_ACTION = re.compile(r"^(?:'(\./[^\s'#]+)'|\"(\./[^\s\"#]+)\"|(\./[^\s#]+))(?:\s+#.*)?$")
+WORKFLOW_PINNED_ACTION = re.compile(
+    r"^(?:'([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_./-]+)?@[0-9a-f]{40})'"
+    r"|\"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_./-]+)?@[0-9a-f]{40})\""
+    r"|([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_./-]+)?@[0-9a-f]{40}))"
+    r"\s+#\s*\S.*$"
+)
 
-    for path in ROOT.rglob("*"):
+
+def repo_files(root: Path) -> tuple[list[Path] | None, str | None]:
+    """Return tracked and untracked non-ignored files from Git, or an error."""
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "--no-optional-locks",
+                "-C",
+                str(root),
+                "ls-files",
+                "-z",
+                "--cached",
+                "--others",
+                "--exclude-standard",
+            ],
+            capture_output=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return None, "cannot list repository files: git is unavailable"
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", errors="replace").strip()
+        return None, f"cannot list repository files via git ls-files: {detail or f'exit {result.returncode}'}"
+    paths: list[Path] = []
+    seen: set[str] = set()
+    for raw in result.stdout.split(b"\x00"):
+        if not raw:
+            continue
+        rel = raw.decode("utf-8", errors="surrogateescape")
+        if rel in seen:
+            continue
+        seen.add(rel)
+        path = root / rel
+        if path.is_file():
+            paths.append(path)
+    return sorted(paths), None
+
+
+def workflow_action_pin_issues(root: Path) -> list[str]:
+    """Every `uses:` in .github/workflows/*.yml must be a local `./` path or a 40-hex SHA pin with a version comment."""
+    issues: list[str] = []
+    workflows_dir = root / ".github/workflows"
+    if not workflows_dir.is_dir():
+        return issues
+    workflow_paths = sorted({*workflows_dir.glob("*.yml"), *workflows_dir.glob("*.yaml")})
+    for path in workflow_paths:
+        if not path.is_file():
+            continue
+        relative = path.relative_to(root).as_posix()
+        for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            match = WORKFLOW_USES_LINE.match(line)
+            if not match:
+                continue
+            value = match.group(1)
+            if WORKFLOW_LOCAL_ACTION.fullmatch(value) or WORKFLOW_PINNED_ACTION.fullmatch(value):
+                continue
+            issues.append(
+                f"unpinned workflow action in {relative}:{line_no}: {value} "
+                "(expected './...' or 'owner/repo[/path]@<40-lowercase-hex> # <version>')"
+            )
+    return issues
+
+
+def scan_repository_files(root: Path) -> list[str]:
+    """Scan Git-listed repository files for forbidden files, secrets, paths, links and markers."""
+    failures: list[str] = []
+    files, list_error = repo_files(root)
+    if list_error is not None:
+        return [list_error]
+    assert files is not None
+
+    for path in files:
         if ".git" in path.parts or not path.is_file():
             continue
         if path.name in FORBIDDEN_NAMES or path.suffix.lower() in {".key", ".pem", ".p12", ".pfx"}:
-            failures.append(f"forbidden credential-like file: {path.relative_to(ROOT)}")
+            failures.append(f"forbidden credential-like file: {path.relative_to(root)}")
         try:
             content = path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             content = ""
-        relative = path.relative_to(ROOT).as_posix()
+        relative = path.relative_to(root).as_posix()
         if unexpected_matches(SECRET_LIKE, content, relative):
-            failures.append(f"secret-like value in {path.relative_to(ROOT)}")
+            failures.append(f"secret-like value in {path.relative_to(root)}")
         if unexpected_matches(PERSONAL_PATH, content, relative):
-            failures.append(f"personal absolute path in {path.relative_to(ROOT)}")
+            failures.append(f"personal absolute path in {path.relative_to(root)}")
         non_neutral = non_neutral_hostname_examples(content)
         if non_neutral:
             failures.append(
-                f"non-neutral hostname namespace(s) in {path.relative_to(ROOT)}: "
+                f"non-neutral hostname namespace(s) in {path.relative_to(root)}: "
                 + ", ".join(sorted(non_neutral))
             )
         if path.suffix == ".md" and BARE_KVM_MODEL.search(content):
             failures.append(
-                f"bare remote-KVM model shorthand in {path.relative_to(ROOT)}"
+                f"bare remote-KVM model shorthand in {path.relative_to(root)}"
             )
         if path.suffix != ".md" or codeflow_managed(relative):
             continue
@@ -295,17 +373,22 @@ def main() -> int:
                 continue
             if not resolved.exists():
                 failures.append(
-                    f"broken relative link in {path.relative_to(ROOT)}: {target}"
+                    f"broken relative link in {path.relative_to(root)}: {target}"
                 )
                 continue
             if anchor and resolved.suffix == ".md":
                 headings = markdown_headings(resolved.read_text(encoding="utf-8"))
                 if anchor not in headings:
                     failures.append(
-                        f"broken heading link in {path.relative_to(ROOT)}: {raw_target}"
+                        f"broken heading link in {path.relative_to(root)}: {raw_target}"
                     )
         if PLACEHOLDER.search(text):
-            failures.append(f"unfinished marker in {path.relative_to(ROOT)}")
+            failures.append(f"unfinished marker in {path.relative_to(root)}")
+    return failures
+
+
+def main() -> int:
+    failures: list[str] = scan_repository_files(ROOT)
 
     required_executables = [
         *ROOT.glob("scripts/*.sh"),
@@ -377,6 +460,7 @@ def main() -> int:
     if "./gitleaks git" not in workflow_text:
         failures.append("hosted secret scan does not use the supported Gitleaks git command")
 
+    failures.extend(workflow_action_pin_issues(ROOT))
     failures.extend(agents_manual_issues(ROOT))
     failures.extend(fleetctl_run_apply_issues(ROOT))
 

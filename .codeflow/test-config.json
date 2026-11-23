@@ -1,5 +1,5 @@
 {
-  "_description": "Kit gates. Go targets (gofmt, vet, golangci-lint, go test, govulncheck) are added by EPC-001 once go.mod exists.",
+  "_description": "Kit gates and Go targets (gofmt, goimports, vet, golangci-lint, go test, govulncheck).",
   "$schema": "test-config.schema.json",
   "schema_version": "1.0",
   "execution": {
@@ -20,6 +20,71 @@
         },
         "full": {
           "command": "make ci-check && make public-check"
+        }
+      }
+    },
+    {
+      "name": "go-format",
+      "enabled": true,
+      "runner": "custom",
+      "modes": {
+        "quick": {
+          "command": "sh -c 'out=$(gofmt -l .); if [ -n \"$out\" ]; then printf \"%s\\n\" \"$out\"; exit 1; fi'"
+        },
+        "essential": {
+          "command": "sh -c 'out=$(gofmt -l .); if [ -n \"$out\" ]; then printf \"%s\\n\" \"$out\"; exit 1; fi'"
+        },
+        "full": {
+          "command": "sh -c 'out=$(gofmt -l .); if [ -n \"$out\" ]; then printf \"%s\\n\" \"$out\"; exit 1; fi; diff=$(go tool golangci-lint fmt --diff); if [ -n \"$diff\" ]; then printf \"%s\\n\" \"$diff\"; exit 1; fi'"
+        }
+      }
+    },
+    {
+      "name": "go-vet",
+      "enabled": true,
+      "runner": "custom",
+      "modes": {
+        "quick": {
+          "command": "go vet ./..."
+        },
+        "essential": {
+          "command": "go vet ./..."
+        },
+        "full": {
+          "command": "go vet ./..."
+        }
+      }
+    },
+    {
+      "name": "go-lint",
+      "enabled": true,
+      "runner": "custom",
+      "modes": {
+        "full": {
+          "command": "go tool golangci-lint run ./..."
+        }
+      }
+    },
+    {
+      "name": "go-test",
+      "enabled": true,
+      "runner": "custom",
+      "modes": {
+        "essential": {
+          "command": "make go-check"
+        },
+        "full": {
+          "command": "go mod verify && go test -race ./... && make go-check"
+        }
+      }
+    },
+    {
+      "name": "go-vuln",
+      "enabled": true,
+      "runner": "custom",
+      "modes": {
+        "full": {
+          "command": "go tool govulncheck ./..."
         }
       }
     }
