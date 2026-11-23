@@ -139,7 +139,13 @@ class WorkflowActionPinTests(unittest.TestCase):
             wf = root / ".github/workflows/sample.yml"
             wf.parent.mkdir(parents=True)
             wf.write_text(content, encoding="utf-8")
-            table = SAMPLE_PINS if pins is None else pins
+            # By default the table holds exactly the sample pins this workflow
+            # uses, so the reverse (stale entry) check stays quiet.
+            table = (
+                {key: tag for key, tag in SAMPLE_PINS.items() if key.split("@")[1] in content}
+                if pins is None
+                else pins
+            )
             pins_file = root / "tests/action_pins.json"
             pins_file.parent.mkdir(parents=True)
             pins_file.write_text(json.dumps(table, indent=2) + "\n", encoding="utf-8")
@@ -154,6 +160,47 @@ class WorkflowActionPinTests(unittest.TestCase):
             "      - uses: owner/repo/sub/action@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0\n"
         )
         self.assertEqual(self._check_workflow(content), [])
+
+    def test_compact_flow_mapping_fails(self) -> None:
+        content = 'jobs:\n  build:\n    steps:\n      - {"uses":"actions/checkout@main"}\n'
+        issues = self._check_workflow(content)
+        self.assertEqual(1, len(issues), issues)
+        self.assertIn("unsupported uses syntax", issues[0])
+
+    def test_explicit_key_on_one_line_fails(self) -> None:
+        content = "jobs:\n  build:\n    steps:\n      - ? uses : actions/checkout@main\n"
+        issues = self._check_workflow(content)
+        self.assertEqual(1, len(issues), issues)
+        self.assertIn("unsupported uses syntax", issues[0])
+
+    def test_quoted_value_is_not_canonical(self) -> None:
+        content = (
+            "jobs:\n  build:\n    steps:\n"
+            "      - uses: 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1' # v7.0.1\n"
+        )
+        issues = self._check_workflow(content, pins=SAMPLE_PINS)
+        self.assertTrue(any("unpinned workflow action" in issue for issue in issues), issues)
+
+    def test_run_line_mentioning_uses_does_not_trip(self) -> None:
+        content = (
+            "jobs:\n  build:\n    steps:\n"
+            "      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n"
+            "      - run: echo \"this step uses: nothing\"\n"
+            "      - run: |\n"
+            "          echo uses: inside a block scalar\n"
+        )
+        self.assertEqual([], self._check_workflow(content))
+
+    def test_stale_table_entry_fails(self) -> None:
+        content = (
+            "jobs:\n  build:\n    steps:\n"
+            "      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n"
+        )
+        issues = self._check_workflow(content, pins=SAMPLE_PINS)
+        self.assertEqual(
+            ["tests/action_pins.json lists a pin no workflow uses: owner/repo@d8cbb8045d7f43706b9177cceb36c1f91a6644d5"],
+            issues,
+        )
 
     def test_local_action_passes(self) -> None:
         content = (
@@ -253,8 +300,10 @@ class WorkflowActionPinTests(unittest.TestCase):
     def test_sha_without_version_comment_fails(self) -> None:
         content = "      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1\n"
         issues = self._check_workflow(content)
-        self.assertEqual(len(issues), 1)
+        # The line is rejected, so its table entry is also reported as unused.
+        self.assertEqual(2, len(issues), issues)
         self.assertIn("unpinned workflow action", issues[0])
+        self.assertIn("lists a pin no workflow uses", issues[1])
 
     def test_docker_without_digest_fails(self) -> None:
         content = "      - uses: docker://alpine:3.20\n"

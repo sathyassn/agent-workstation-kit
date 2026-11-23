@@ -260,21 +260,14 @@ WORKFLOW_PLAIN_USES_LINE = re.compile(r"^\s*(?:-\s+)?uses:(?:\s+(.*))?$")
 WORKFLOW_BLOCK_SCALAR_HEADER = re.compile(
     r"^(\s*(?:-\s+)?)(?:[^:#\n]+:\s*)?[|>](?:[1-9]?[+-]?|[+-]?[1-9]?)\s*(?:#.*)?$"
 )
-WORKFLOW_UNSUPPORTED_BLOCK_USES = re.compile(
-    r"^\s*(?:-\s+)?(?:&[A-Za-z0-9_-]+\s+)?(?:'uses'|\"uses\"|uses)\s*:"
-)
-WORKFLOW_EXPLICIT_USES_KEY = re.compile(
-    r"^\s*(?:-\s+)?\?\s*(?:'uses'|\"uses\"|uses)(?:\s*(?:#.*)?$)"
-)
-WORKFLOW_FLOW_USES_KEY = re.compile(
-    r"[{,]\s*(?:&[A-Za-z0-9_-]+\s+)?(?:'uses'|\"uses\"|uses)\s*:(?:\s|$|[,\}\]])"
-)
-WORKFLOW_LOCAL_ACTION = re.compile(r"^(?:'(\./[^\s'#]+)'|\"(\./[^\s\"#]+)\"|(\./[^\s#]+))(?:\s+#.*)?$")
+# Fail closed: outside a `run:` value or a block scalar, the token `uses`
+# followed by a colon, in any quoting, spacing, flow or explicit-key form,
+# must be the one canonical line below; anything else is unsupported.
+WORKFLOW_ANY_USES_KEY = re.compile(r"(?<![A-Za-z0-9_-])['\"]?uses['\"]?\s*:")
+WORKFLOW_RUN_INLINE = re.compile(r"^\s*(?:-\s+)?run:\s+\S")
+WORKFLOW_LOCAL_ACTION = re.compile(r"^(\./[^\s'\"#]+)(?:\s+#.*)?$")
 WORKFLOW_PINNED_ACTION = re.compile(
-    r"^(?:'([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(?:/[A-Za-z0-9_./-]+)?@([0-9a-f]{40})'"
-    r"|\"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(?:/[A-Za-z0-9_./-]+)?@([0-9a-f]{40})\""
-    r"|([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(?:/[A-Za-z0-9_./-]+)?@([0-9a-f]{40}))"
-    r"\s+#\s*(\S.*?)\s*$"
+    r"^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(?:/[A-Za-z0-9_./-]+)?@([0-9a-f]{40})\s+#\s*(\S.*?)\s*$"
 )
 ACTION_PIN_KEY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}$")
 
@@ -413,6 +406,7 @@ def workflow_action_pin_issues(root: Path) -> list[str]:
     pins_table, pins_error = _load_action_pins_table(root)
     if pins_error is not None:
         issues.append(pins_error)
+    used_pins: set[str] = set()
 
     for path in workflow_paths:
         if not path.is_file():
@@ -445,10 +439,10 @@ def workflow_action_pin_issues(root: Path) -> list[str]:
                         "(expected './...' or 'owner/repo[/path]@<40-lowercase-hex> # <version>')"
                     )
                     continue
-                repo = pinned_match.group(1) or pinned_match.group(3) or pinned_match.group(5)
-                sha = pinned_match.group(2) or pinned_match.group(4) or pinned_match.group(6)
-                comment_tag = pinned_match.group(7).strip()
+                repo, sha = pinned_match.group(1), pinned_match.group(2)
+                comment_tag = pinned_match.group(3).strip()
                 pin_key = f"{repo}@{sha}"
+                used_pins.add(pin_key)
                 if pins_table is not None:
                     expected_tag = pins_table.get(pin_key)
                     if expected_tag is None:
@@ -463,20 +457,19 @@ def workflow_action_pin_issues(root: Path) -> list[str]:
                 continue
 
             code_only = _strip_yaml_comment(line)
-            if (
-                WORKFLOW_UNSUPPORTED_BLOCK_USES.match(code_only)
-                or WORKFLOW_EXPLICIT_USES_KEY.match(code_only)
-                or WORKFLOW_FLOW_USES_KEY.search(code_only)
-            ):
+            if not WORKFLOW_RUN_INLINE.match(code_only) and WORKFLOW_ANY_USES_KEY.search(code_only):
                 issues.append(
-                    f"unsupported YAML syntax for workflow 'uses' key in {relative}:{line_no}: {stripped} "
-                    "(use a plain block 'uses:' line)"
+                    f"unsupported uses syntax in {relative}:{line_no}: {stripped} "
+                    "(use the canonical line 'uses: owner/repo@<40-hex> # <version>' or 'uses: ./path')"
                 )
                 continue
 
             header_match = WORKFLOW_BLOCK_SCALAR_HEADER.match(line)
             if header_match:
                 block_indent = len(header_match.group(1))
+    if pins_table is not None:
+        for stale in sorted(set(pins_table) - used_pins):
+            issues.append(f"tests/action_pins.json lists a pin no workflow uses: {stale}")
     return issues
 
 
