@@ -220,6 +220,9 @@ func (p *contractOnlyStateProvider) Name() contract.StateProviderName { return p
 func (p *contractOnlyStateProvider) Read(ctx context.Context, key contract.StateKey) (contract.State, error) {
 	return p.inner.Read(ctx, key)
 }
+func (p *contractOnlyStateProvider) Write(ctx context.Context, key contract.StateKey, want contract.State) error {
+	return p.inner.Write(ctx, key, want)
+}
 func (p *contractOnlyStateProvider) Snapshot(ctx context.Context) (contract.Snapshot, error) {
 	return p.inner.Snapshot(ctx)
 }
@@ -506,6 +509,12 @@ func (p *brokenNoRestoreProvider) Restore(_ context.Context, _ contract.Snapshot
 	return nil
 }
 
+type brokenNoWriteProvider struct{ *FakeStateProvider }
+
+func (p *brokenNoWriteProvider) Write(_ context.Context, _ contract.StateKey, _ contract.State) error {
+	return nil
+}
+
 type brokenAcceptWrongProvider struct{ *FakeStateProvider }
 
 func (p *brokenAcceptWrongProvider) Restore(ctx context.Context, s contract.Snapshot) error {
@@ -715,6 +724,18 @@ func TestContractChecksCatchBrokenStateProviders(t *testing.T) {
 				}
 			},
 			wantErr: "state after Restore",
+		},
+		{
+			name: "write does not change state",
+			make: func() (contract.StateProvider, func(context.Context) error) {
+				base := NewFakeStateProvider(contract.ProviderHostname, map[contract.StateKey]contract.State{
+					declaredState: {Value: "lab-ws-01"},
+				})
+				return &brokenNoWriteProvider{base}, func(ctx context.Context) error {
+					return base.Write(ctx, declaredState, contract.State{Value: "changed"})
+				}
+			},
+			wantErr: "state after Write",
 		},
 		{
 			name: "restore accepts wrong provider snapshot",

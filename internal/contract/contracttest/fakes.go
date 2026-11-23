@@ -835,9 +835,9 @@ func (tx *FakeTx) SetRunner(fn func(ctx context.Context, c contract.Command) (co
 	tx.runFn = fn
 }
 
-// SetState mutates a declared state key through p's contract Snapshot and
-// Restore methods, records the pre-change snapshot as a backup and logs the
-// change for the receipt.
+// SetState refuses an undeclared key, snapshots the provider as the backup,
+// writes the key through the contract's Write, and logs the change for the
+// receipt.
 func (tx *FakeTx) SetState(ctx context.Context, p contract.StateProvider, key contract.StateKey, want contract.State) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("set state %q: %w", key, err)
@@ -863,22 +863,8 @@ func (tx *FakeTx) SetState(ctx context.Context, p contract.StateProvider, key co
 		before = digestBytes([]byte(prev.Value))
 	}
 
-	values := make(map[contract.StateKey]contract.State)
-	if len(snap.Data) > 0 {
-		if err := json.Unmarshal(snap.Data, &values); err != nil {
-			return fmt.Errorf("decode snapshot for %q: %w", key, err)
-		}
-		if values == nil {
-			values = make(map[contract.StateKey]contract.State)
-		}
-	}
-	values[key] = want
-	nextData, err := json.Marshal(values)
-	if err != nil {
-		return fmt.Errorf("encode state snapshot for %q: %w", key, err)
-	}
-	if err := p.Restore(ctx, contract.Snapshot{Provider: p.Name(), Data: nextData}); err != nil {
-		return fmt.Errorf("apply state %q via restore: %w", key, err)
+	if err := p.Write(ctx, key, want); err != nil {
+		return fmt.Errorf("write state %q: %w", key, err)
 	}
 
 	tx.mu.Lock()

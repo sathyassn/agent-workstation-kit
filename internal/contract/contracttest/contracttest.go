@@ -197,6 +197,9 @@ func (p *contractStateProvider) Name() contract.StateProviderName { return p.inn
 func (p *contractStateProvider) Read(ctx context.Context, key contract.StateKey) (contract.State, error) {
 	return p.inner.Read(ctx, key)
 }
+func (p *contractStateProvider) Write(ctx context.Context, key contract.StateKey, want contract.State) error {
+	return p.inner.Write(ctx, key, want)
+}
 func (p *contractStateProvider) Snapshot(ctx context.Context) (contract.Snapshot, error) {
 	return p.inner.Snapshot(ctx)
 }
@@ -436,6 +439,29 @@ func checkStateProvider(
 	}
 	if after != before {
 		r.Errorf("state after Restore = %+v, want %+v", after, before)
+	}
+
+	// Write: read back the written value, and undo it through Restore of a
+	// snapshot taken before the write.
+	beforeWrite, err := p.Snapshot(ctx)
+	if err != nil {
+		r.Errorf("StateProvider.Snapshot before Write failed: %v", err)
+		return
+	}
+	want := contract.State{Value: "contracttest-written-value"}
+	if err := p.Write(ctx, key, want); err != nil {
+		r.Errorf("StateProvider.Write(%q) failed: %v", key, err)
+		return
+	}
+	if got, err := p.Read(ctx, key); err != nil || got != want {
+		r.Errorf("state after Write = %+v (err %v), want %+v", got, err, want)
+	}
+	if err := p.Restore(ctx, beforeWrite); err != nil {
+		r.Errorf("StateProvider.Restore after Write failed: %v", err)
+		return
+	}
+	if got, err := p.Read(ctx, key); err != nil || got != before {
+		r.Errorf("state after Restore of the pre-Write snapshot = %+v (err %v), want %+v", got, err, before)
 	}
 
 	wrong := contract.Snapshot{
