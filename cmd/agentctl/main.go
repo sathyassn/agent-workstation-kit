@@ -2,10 +2,23 @@
 // rule on Linux.
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"io"
+	"os"
 
-var version = "dev"
+	"github.com/sathyassn/agent-workstation-kit/internal/version"
+)
 
 func main() {
-	fmt.Println(version)
+	if err := run(os.Stdout); err != nil {
+		os.Exit(1)
+	}
+}
+
+func run(w io.Writer) error {
+	if _, err := fmt.Fprintln(w, version.String()); err != nil {
+		return fmt.Errorf("print version: %w", err)
+	}
+	return nil
 }
