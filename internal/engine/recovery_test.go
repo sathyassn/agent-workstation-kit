@@ -2,10 +2,13 @@ package engine_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/sathyassn/agent-workstation-kit/internal/contract"
 	"github.com/sathyassn/agent-workstation-kit/internal/engine"
@@ -93,19 +96,20 @@ func TestResumeEmptiesContainmentWithinBound(t *testing.T) {
 	w.assertState(t, appliedState(), "after recovery")
 }
 
-// TestResumeExits4WithoutLockWhenContainmentStaysBusy is AC-2: when the
-// containment cannot be emptied within its bound, the start exits 4, never
-// takes the host lock, withdraws its claim, and leaves the record and the
-// machine as they were.
-func TestResumeExits4WithoutLockWhenContainmentStaysBusy(t *testing.T) {
+// TestResumeHoldsHostLockWhileEmptying is AC-2 with finding 8: the start
+// takes the host lock before it empties the containment, so no other
+// starter can signal a job a live resumer runs. When the containment cannot
+// be emptied within its bound, it exits 4, releases the host lock,
+// withdraws its claim, and leaves the record and the machine as they were.
+func TestResumeHoldsHostLockWhileEmptying(t *testing.T) {
 	w := newWorld(t)
 	u := &testUnit{root: w.root}
 	w.abandon(t, engine.PointLaunch, u)
 	name := w.record(t).Command.Name
 	w.cont.SetBusy(name, true)
 	w.cont.SetUnkillable(name)
-	hostFree := false
-	w.cont.OnEmpty(func(string, platform.EmptyOptions) { hostFree = lockFree(t, w.hostLock) })
+	hostHeld := false
+	w.cont.OnEmpty(func(string, platform.EmptyOptions) { hostHeld = !lockFree(t, w.hostLock) })
 	before := w.state(t)
 
 	e, _ := w.engine(t)
@@ -113,8 +117,8 @@ func TestResumeExits4WithoutLockWhenContainmentStaysBusy(t *testing.T) {
 	if !errors.Is(err, platform.ErrContainmentNotEmpty) || engine.ExitCode(err) != contract.ExitRecoveryBlocks {
 		t.Fatalf("err = %v (exit %d), want ErrContainmentNotEmpty and exit 4", err, engine.ExitCode(err))
 	}
-	if !hostFree {
-		t.Fatal("host lock was held while emptying the containment")
+	if !hostHeld {
+		t.Fatal("containment emptied without the host lock")
 	}
 	if !lockFree(t, w.hostLock) {
 		t.Fatal("host lock held after exit 4")
@@ -123,6 +127,79 @@ func TestResumeExits4WithoutLockWhenContainmentStaysBusy(t *testing.T) {
 		t.Fatalf("record = %+v, want applying with no claim", r)
 	}
 	w.assertState(t, before, "after exit 4")
+}
+
+// setClaim writes a claim into the journal record, as another starter would.
+func setClaim(t *testing.T, w *world, c engine.Claim) {
+	t.Helper()
+	rec := w.record(t)
+	rec.Claim = &c
+	data, err := json.Marshal(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(w.journal, "record.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestExpiredClaimOfLiveClaimantBlocks is finding 8: a claim past its
+// expiry is taken over only when its claimant is dead. A live claimant
+// whose renewals lapsed still holds it, and the start exits 4.
+func TestExpiredClaimOfLiveClaimantBlocks(t *testing.T) {
+	w := newWorld(t)
+	u := &testUnit{root: w.root}
+	w.abandon(t, engine.PointMutation, u)
+	claimant := w.table.Spawn()
+	setClaim(t, w, engine.Claim{RunID: w.record(t).RunID, Claimant: claimant, Expires: time.Now().Add(-time.Hour)})
+	e, _ := w.engine(t)
+	_, err := e.Resume(context.Background(), resolverFor(u), engine.ResumeOptions{})
+	if !errors.Is(err, engine.ErrRecoveryClaimed) || engine.ExitCode(err) != contract.ExitRecoveryBlocks {
+		t.Fatalf("err = %v, want ErrRecoveryClaimed and exit 4", err)
+	}
+	if r := w.record(t); r.Claim == nil || r.Claim.Claimant != claimant {
+		t.Fatalf("claim taken over: %+v", r.Claim)
+	}
+
+	// Once the claimant is dead, the expired claim is taken over.
+	w.table.Kill(claimant)
+	if res, err := e.Resume(context.Background(), resolverFor(u), engine.ResumeOptions{}); err != nil || res.Action != engine.ResumeReapplied {
+		t.Fatalf("resume after the claimant died = %+v, %v", res, err)
+	}
+}
+
+// TestLostClaimStopsRecovery is finding 8: the renewal finds the claim is no
+// longer this starter's and recovery stops with exit 4 instead of going on
+// or returning quietly.
+func TestLostClaimStopsRecovery(t *testing.T) {
+	w := newWorld(t)
+	u := &testUnit{root: w.root}
+	w.abandon(t, engine.PointMutation, u)
+	other := w.table.Spawn()
+	paused := make(chan struct{})
+	resume := make(chan struct{})
+	e, _ := w.engine(t, func(o *engine.Options) {
+		o.ClaimRenew = 2 * time.Millisecond
+		o.Fault = func(p engine.Point) {
+			if p == engine.PointClaimed {
+				close(paused)
+				<-resume
+			}
+		}
+	})
+	done := make(chan error, 1)
+	go func() {
+		_, err := e.Resume(context.Background(), resolverFor(u), engine.ResumeOptions{})
+		done <- err
+	}()
+	<-paused
+	setClaim(t, w, engine.Claim{RunID: w.record(t).RunID, Claimant: other, Expires: time.Now().Add(time.Hour)})
+	time.Sleep(50 * time.Millisecond) // several renewal ticks
+	close(resume)
+	if err := <-done; !errors.Is(err, engine.ErrRecoveryClaimed) || engine.ExitCode(err) != contract.ExitRecoveryBlocks {
+		t.Fatalf("err = %v, want ErrRecoveryClaimed and exit 4", err)
+	}
+	w.assertState(t, map[string]*string{pathA: ptr("new-a\n"), pathB: originalState()[pathB], pathC: originalState()[pathC], pathD: nil}, "after a lost claim")
 }
 
 // lockFree reports whether nobody holds the flock at path.

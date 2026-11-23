@@ -71,22 +71,29 @@ func (e *Engine) Resume(ctx context.Context, resolve Resolver, o ResumeOptions) 
 	res := ResumeResult{Action: ResumeNothing, RunID: rec.RunID}
 	e.fault(PointClaimed)
 
-	renewDone := e.keepClaim(bk, rec.RunID, self)
-	defer renewDone()
+	k := e.keepClaim(bk, rec.RunID, self)
+	defer func() { _ = k.stopRenewing() }()
 
+	// The host lock comes before the containment is touched, so no other
+	// starter can signal a job that a live resumer runs.
+	if err := l.takeHost(ctx); err != nil {
+		_ = k.stopRenewing()
+		return res, errors.Join(err, e.dropClaim(bk, l, rec.RunID, self))
+	}
+	defer l.releaseHost()
+	if err := k.err(); err != nil {
+		return res, err
+	}
 	if cmd := rec.Command; cmd != nil && !cmd.Finished {
 		// A live recorded supervisor, or a containment the OS still
 		// reports, is not empty; neither is one whose state is unknown.
 		if err := e.empty(bk, cmd.Name, cmd.Supervisor, cmd.PackageTransaction, e.opts.Grace); err != nil {
+			_ = k.stopRenewing()
 			return res, errors.Join(fmt.Errorf("%w: run %s: %w", ErrEmptinessUnknown, rec.RunID, err), e.dropClaim(bk, l, rec.RunID, self))
 		}
 	}
 	e.fault(PointEmptied)
 
-	if err := l.takeHost(ctx); err != nil {
-		return res, errors.Join(err, e.dropClaim(bk, l, rec.RunID, self))
-	}
-	defer l.releaseHost()
 	var cur *Record
 	if err := l.withJournal(bk, func() error {
 		cur, err = e.readRecord()
@@ -94,11 +101,17 @@ func (e *Engine) Resume(ctx context.Context, resolve Resolver, o ResumeOptions) 
 	}); err != nil {
 		return res, err
 	}
-	if !cur.unfinished() || cur.RunID != rec.RunID || cur.Claim == nil || cur.Claim.Claimant != self {
+	if !cur.unfinished() || cur.RunID != rec.RunID {
 		return res, nil
 	}
+	if cur.Claim == nil || cur.Claim.Claimant != self {
+		return res, fmt.Errorf("%w: run %s, claim lost", ErrRecoveryClaimed, rec.RunID)
+	}
+	if err := k.err(); err != nil {
+		return res, err
+	}
 	e.fault(PointRecoverLocked)
-	return e.recoverLocked(ctx, l, self, cur, resolve, o)
+	return e.recoverLocked(ctx, l, self, cur, resolve, o, k)
 }
 
 // claim reads the record and, if it is unfinished and abandoned, writes this
@@ -137,13 +150,11 @@ func (e *Engine) claim(ctx context.Context, l *locks, self platform.ProcessIdent
 	return rec, err
 }
 
-// claimLive reports whether another starter's claim still holds: its
-// claimant is alive and it has not expired. When the claimant cannot be
+// claimLive reports whether another starter's claim still holds. A claim
+// whose claimant is alive holds even past its expiry: its renewals may only
+// have lapsed. A dead claimant's claim is free. When the claimant cannot be
 // inspected, the claim counts as live.
 func (e *Engine) claimLive(ctx context.Context, c *Claim) (bool, error) {
-	if !e.opts.Now().Before(c.Expires) {
-		return false, nil
-	}
 	alive, err := e.opts.Inspector.Alive(ctx, c.Claimant)
 	if err != nil {
 		return false, fmt.Errorf("%w: cannot inspect claimant: %w", ErrRecoveryClaimed, err)
@@ -151,37 +162,69 @@ func (e *Engine) claimLive(ctx context.Context, c *Claim) (bool, error) {
 	return alive, nil
 }
 
-// keepClaim renews this starter's claim every ClaimRenew until the returned
-// function is called.
-func (e *Engine) keepClaim(ctx context.Context, runID contract.RunID, self platform.ProcessIdentity) func() {
-	stop := make(chan struct{})
-	var wg sync.WaitGroup
-	wg.Go(func() {
+// claimKeeper renews a recovery claim every ClaimRenew and records the
+// first failure: a write that failed, or a claim no longer this starter's.
+type claimKeeper struct {
+	stop    chan struct{}
+	once    sync.Once
+	wg      sync.WaitGroup
+	mu      sync.Mutex
+	failure error
+}
+
+func (k *claimKeeper) err() error {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.failure
+}
+
+func (k *claimKeeper) setErr(err error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.failure == nil {
+		k.failure = err
+	}
+}
+
+// stopRenewing stops the renewer and returns its first failure.
+func (k *claimKeeper) stopRenewing() error {
+	k.once.Do(func() { close(k.stop) })
+	k.wg.Wait()
+	return k.err()
+}
+
+// keepClaim starts renewing this starter's claim on runID.
+func (e *Engine) keepClaim(ctx context.Context, runID contract.RunID, self platform.ProcessIdentity) *claimKeeper {
+	k := &claimKeeper{stop: make(chan struct{})}
+	k.wg.Go(func() {
 		t := time.NewTicker(e.opts.ClaimRenew)
 		defer t.Stop()
 		for {
 			select {
-			case <-stop:
+			case <-k.stop:
 				return
 			case <-t.C:
 				// A separate locks value: the renewer never shares the
 				// recovery's lock bookkeeping.
 				rl := &locks{e: e}
-				_ = rl.withJournal(ctx, func() error {
+				err := rl.withJournal(ctx, func() error {
 					r, err := e.readRecord()
-					if err != nil || r == nil || r.RunID != runID || r.Claim == nil || r.Claim.Claimant != self {
+					if err != nil {
 						return err
 					}
-					r.Claim.Expires = e.opts.Now().Add(e.opts.ClaimTTL).UTC()
+					if r == nil || r.RunID != runID || r.Claim == nil || r.Claim.Claimant != self {
+						return fmt.Errorf("%w: run %s, claim lost", ErrRecoveryClaimed, runID)
+					}
 					return e.writeRecord(r)
 				})
+				if err != nil {
+					k.setErr(fmt.Errorf("renew claim: %w", err))
+					return
+				}
 			}
 		}
 	})
-	return func() {
-		close(stop)
-		wg.Wait()
-	}
+	return k
 }
 
 // dropClaim withdraws this starter's claim after it gave up.
@@ -198,7 +241,7 @@ func (e *Engine) dropClaim(ctx context.Context, l *locks, runID contract.RunID, 
 
 // recoverLocked restores and reapplies. The caller holds the host lock and
 // the claim on rec.
-func (e *Engine) recoverLocked(ctx context.Context, l *locks, self platform.ProcessIdentity, rec *Record, resolve Resolver, o ResumeOptions) (ResumeResult, error) {
+func (e *Engine) recoverLocked(ctx context.Context, l *locks, self platform.ProcessIdentity, rec *Record, resolve Resolver, o ResumeOptions, k *claimKeeper) (ResumeResult, error) {
 	bk := context.WithoutCancel(ctx)
 	res := ResumeResult{RunID: rec.RunID}
 	receipt, err := e.readReceipt(rec.RunID)
@@ -207,6 +250,9 @@ func (e *Engine) recoverLocked(ctx context.Context, l *locks, self platform.Proc
 	}
 	// Receipts are the authority for what is done.
 	if receipt != nil && receipt.Outcome == contract.OutcomeVerified {
+		if err := k.stopRenewing(); err != nil {
+			return res, err
+		}
 		rec.Status, rec.Claim = StatusIdle, nil
 		res.Action = ResumeCompleted
 		return res, l.withJournal(bk, func() error { return e.writeRecord(rec) })
@@ -221,11 +267,18 @@ func (e *Engine) recoverLocked(ctx context.Context, l *locks, self platform.Proc
 			return res, err
 		}
 		rec.RestoreOnly = rec.RestoreOnly || o.RestoreOnly
+		if err := k.err(); err != nil {
+			return res, err
+		}
 		if err := e.restoreRun(bk, l, rec, m, next); err != nil {
 			return res, err
 		}
 	}
 	res.Action = ResumeRestored
+	// The claim ends here: the record is closed or replaced by the reapply.
+	if err := k.stopRenewing(); err != nil {
+		return res, err
+	}
 	if next == StatusIdle {
 		rec.Claim = nil
 		return res, l.withJournal(bk, func() error { return e.writeRecord(rec) })
