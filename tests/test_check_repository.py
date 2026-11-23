@@ -165,13 +165,13 @@ class WorkflowActionPinTests(unittest.TestCase):
         content = 'jobs:\n  build:\n    steps:\n      - {"uses":"actions/checkout@main"}\n'
         issues = self._check_workflow(content)
         self.assertEqual(1, len(issues), issues)
-        self.assertIn("unsupported uses syntax", issues[0])
+        self.assertIn("unsupported YAML", issues[0])
 
     def test_explicit_key_on_one_line_fails(self) -> None:
         content = "jobs:\n  build:\n    steps:\n      - ? uses : actions/checkout@main\n"
         issues = self._check_workflow(content)
         self.assertEqual(1, len(issues), issues)
-        self.assertIn("unsupported uses syntax", issues[0])
+        self.assertIn("unsupported YAML", issues[0])
 
     def test_quoted_value_is_not_canonical(self) -> None:
         content = (
@@ -201,6 +201,38 @@ class WorkflowActionPinTests(unittest.TestCase):
             ["tests/action_pins.json lists a pin no workflow uses: owner/repo@d8cbb8045d7f43706b9177cceb36c1f91a6644d5"],
             issues,
         )
+
+    def test_restricted_yaml_features_fail(self) -> None:
+        head = "jobs:\n  build:\n    steps:\n"
+        cases = {
+            "escaped quoted key": head + '      - "\\u0075ses": actions/checkout@main\n',
+            "explicit key split across lines": head + "      - ? uses\n        : actions/checkout@main\n",
+            "flow mapping": head + "      - {name: x, run: echo}\n",
+            "quoted key": "'on':\n  push:\n",
+            "anchor": "env: &defaults\n  A: b\n",
+            "alias": "env: *defaults\n",
+            "merge key": "env:\n  <<: *defaults\n",
+            "tag": "env:\n  A: !!str b\n",
+            "nested flow sequence": "on:\n  push:\n    branches: [[main]]\n",
+            "flow mapping in a sequence": "on:\n  push:\n    branches: [a: b]\n",
+        }
+        for name, content in cases.items():
+            with self.subTest(case=name):
+                issues = self._check_workflow(content, pins={})
+                self.assertTrue(any("unsupported YAML" in issue for issue in issues), issues)
+
+    def test_allowed_plain_yaml_passes(self) -> None:
+        content = (
+            "on:\n  push:\n    branches: [main, \"integration/**\"]\n"
+            "  pull_request_target:\n    types: [opened, synchronize]\n"
+            "jobs:\n  build:\n"
+            "    if: github.event_name != 'push' && !cancelled()\n"
+            "    steps:\n"
+            "      - name: Uses an expression\n"
+            "        env:\n          REF: ${{ github.event.pull_request.head.sha || github.sha }}\n"
+            "        run: echo \"${REF}\"\n"
+        )
+        self.assertEqual([], self._check_workflow(content, pins={}))
 
     def test_local_action_passes(self) -> None:
         content = (

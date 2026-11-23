@@ -272,6 +272,52 @@ WORKFLOW_PINNED_ACTION = re.compile(
 ACTION_PIN_KEY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}$")
 
 
+# Workflow YAML is restricted to a plain subset, so every key is a plain
+# `key:` on its own line and the canonical `uses:` rule is complete. Banned
+# outside `run:` values, block scalars and `${{ }}` expressions: explicit
+# keys, flow mappings, quoted keys (and so escapes in keys), anchors,
+# aliases, merge keys and tags. A flow sequence is allowed only when it holds
+# plain or quoted scalars, as in `branches: [main, "release/**"]`.
+WORKFLOW_EXPRESSION = re.compile(r"\$\{\{.*?\}\}")
+WORKFLOW_QUOTED_SCALAR = re.compile(r"'(?:[^']|'')*'|\"(?:[^\"\\]|\\.)*\"")
+WORKFLOW_QUOTED_KEY = re.compile(r"^\s*(?:-\s+)*(?:'(?:[^']|'')*'|\"(?:[^\"\\]|\\.)*\")\s*:(?:\s|$)")
+WORKFLOW_FLOW_SEQUENCE = re.compile(r"\[([^\[\]{}]*)\]")
+WORKFLOW_NODE_START = r"(?:^|:\s+|-\s+|[\[,]\s*)"
+WORKFLOW_BANNED = (
+    ("explicit key ('?')", re.compile(r"^\s*(?:-\s+)*\?(?:\s|$)")),
+    ("merge key ('<<')", re.compile(r"^\s*(?:-\s+)*<<\s*:")),
+    ("anchor ('&')", re.compile(WORKFLOW_NODE_START + r"&\S")),
+    ("alias ('*')", re.compile(WORKFLOW_NODE_START + r"\*\S")),
+    ("tag ('!')", re.compile(WORKFLOW_NODE_START + r"!\S")),
+)
+
+
+def workflow_syntax_issue(code_only: str) -> str | None:
+    """Return the banned YAML feature on a workflow line, or None.
+
+    `code_only` is one line with its comment removed, outside `run:` values
+    and block scalars.
+    """
+    if WORKFLOW_QUOTED_KEY.match(code_only):
+        return "quoted key"
+    text = WORKFLOW_EXPRESSION.sub("", code_only)
+    text = WORKFLOW_QUOTED_SCALAR.sub("x", text)
+    for feature, pattern in WORKFLOW_BANNED:
+        if pattern.search(text):
+            return feature
+    # Allowed flow sequences of scalars are removed; any other bracket or
+    # brace left is a flow mapping or a nested flow collection.
+    for sequence in WORKFLOW_FLOW_SEQUENCE.finditer(text):
+        if ":" in sequence.group(1):
+            return "flow mapping inside a flow sequence"
+    remainder = WORKFLOW_FLOW_SEQUENCE.sub("x", text)
+    if "{" in remainder or "}" in remainder:
+        return "flow mapping ('{ }')"
+    if "[" in remainder or "]" in remainder:
+        return "nested or multi-line flow sequence"
+    return None
+
+
 def _strip_yaml_comment(line: str) -> str:
     """Strip a trailing YAML `# ...` comment outside single or double quotes."""
     in_single = False
@@ -457,6 +503,14 @@ def workflow_action_pin_issues(root: Path) -> list[str]:
                 continue
 
             code_only = _strip_yaml_comment(line)
+            if not WORKFLOW_RUN_INLINE.match(code_only):
+                feature = workflow_syntax_issue(code_only)
+                if feature is not None:
+                    issues.append(
+                        f"unsupported YAML in {relative}:{line_no}: {feature}; "
+                        "workflows use plain 'key: value' lines only"
+                    )
+                    continue
             if not WORKFLOW_RUN_INLINE.match(code_only) and WORKFLOW_ANY_USES_KEY.search(code_only):
                 issues.append(
                     f"unsupported uses syntax in {relative}:{line_no}: {stripped} "
