@@ -555,17 +555,21 @@ func checkSetStateWriteFailure(
 	provider.reset()
 }
 
-// gatedStateProvider holds the first Snapshot open until released, and
-// reports when any later Snapshot starts, so a check can see whether a
-// second SetState runs while the first is still inside its sequence.
+// gatedStateProvider pauses the first SetState after its Snapshot has
+// returned and before its Write takes effect, until the check releases it,
+// and reports when a second Snapshot starts. A Tx that holds one lock
+// across snapshot, write and receipt keeps the second call out of Snapshot
+// for as long as the first is paused; a Tx that locks each provider call on
+// its own lets the second Snapshot run at once.
 type gatedStateProvider struct {
 	*FakeStateProvider
 
-	mu      sync.Mutex
-	count   int
-	entered chan struct{}
-	second  chan struct{}
-	release chan struct{}
+	mu        sync.Mutex
+	snapshots int
+	writes    int
+	paused    chan struct{}
+	second    chan struct{}
+	release   chan struct{}
 }
 
 func newGatedStateProvider(initial contract.State) *gatedStateProvider {
@@ -573,7 +577,7 @@ func newGatedStateProvider(initial contract.State) *gatedStateProvider {
 		FakeStateProvider: NewFakeStateProvider(contract.ProviderHostname, map[contract.StateKey]contract.State{
 			declaredState: initial,
 		}),
-		entered: make(chan struct{}, 1),
+		paused:  make(chan struct{}, 1),
 		second:  make(chan struct{}, 1),
 		release: make(chan struct{}),
 	}
@@ -581,13 +585,10 @@ func newGatedStateProvider(initial contract.State) *gatedStateProvider {
 
 func (p *gatedStateProvider) Snapshot(ctx context.Context) (contract.Snapshot, error) {
 	p.mu.Lock()
-	p.count++
-	n := p.count
+	p.snapshots++
+	n := p.snapshots
 	p.mu.Unlock()
-	if n == 1 {
-		p.entered <- struct{}{}
-		<-p.release
-	} else {
+	if n > 1 {
 		select {
 		case p.second <- struct{}{}:
 		default:
@@ -596,15 +597,30 @@ func (p *gatedStateProvider) Snapshot(ctx context.Context) (contract.Snapshot, e
 	return p.FakeStateProvider.Snapshot(ctx)
 }
 
+func (p *gatedStateProvider) Write(ctx context.Context, key contract.StateKey, want contract.State) error {
+	p.mu.Lock()
+	p.writes++
+	n := p.writes
+	p.mu.Unlock()
+	if n == 1 {
+		p.paused <- struct{}{}
+		<-p.release
+	}
+	return p.FakeStateProvider.Write(ctx, key, want)
+}
+
 const (
 	serialGateTimeout = 5 * time.Second
-	serialProbeWait   = 100 * time.Millisecond
+	// serialProbeWait is how long the check waits, with the first call
+	// paused, for a second Snapshot that a per-call lock would allow at
+	// once. A correct Tx always uses the whole wait.
+	serialProbeWait = time.Second
 )
 
 // checkSetStateSerialized runs two SetState calls on one key with the first
-// held inside its Snapshot. The second must not reach its Snapshot until the
-// first has written and recorded its receipt, and each receipt's backup
-// must be the value just before its own write.
+// paused between its Snapshot and its Write. The second must not reach its
+// Snapshot while the first is paused, and each receipt's backup must be the
+// value just before its own write.
 func checkSetStateSerialized(ctx context.Context, r reporter, tx contract.Tx, inspector TxInspector) {
 	r.Helper()
 
@@ -623,15 +639,15 @@ func checkSetStateSerialized(ctx context.Context, r reporter, tx contract.Tx, in
 	errs := make(chan error, 2)
 	go func() { errs <- tx.SetState(ctx, p, declaredState, contract.State{Value: "value-a"}) }()
 	select {
-	case <-p.entered:
+	case <-p.paused:
 	case <-time.After(serialGateTimeout):
-		r.Errorf("SetState never called StateProvider.Snapshot")
+		r.Errorf("SetState never reached StateProvider.Write")
 		return
 	}
 	go func() { errs <- tx.SetState(ctx, p, declaredState, contract.State{Value: "value-b"}) }()
 	select {
 	case <-p.second:
-		r.Errorf("a second SetState took its Snapshot while the first was between its Snapshot and its receipt; SetState must hold one lock across snapshot, write and receipt")
+		r.Errorf("a second SetState took its Snapshot while the first was paused between its Snapshot and its Write; SetState must hold one lock across snapshot, write and receipt")
 	case <-time.After(serialProbeWait):
 	}
 	releaseOnce()

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -952,4 +953,117 @@ func TestFakeTxSetStateReportsRestoreFailure(t *testing.T) {
 	if n := len(tx.Changes()); n != 0 {
 		t.Errorf("SetState recorded %d receipt rows for a failed Write, want 0", n)
 	}
+}
+
+// perCallLockTx does everything FakeTx.SetState does, but locks provider
+// calls one at a time instead of across the whole sequence, so two calls
+// can interleave Snapshot A, Snapshot B, Write A, Write B. With
+// snapshotOnly it locks only around Snapshot; otherwise it gives Snapshot
+// and Write each their own lock.
+type perCallLockTx struct {
+	*FakeTx
+	snapshotOnly bool
+	snapMu       sync.Mutex
+	writeMu      sync.Mutex
+}
+
+func (b *perCallLockTx) lockedSnapshot(fn func() error) error {
+	b.snapMu.Lock()
+	defer b.snapMu.Unlock()
+	return fn()
+}
+
+func (b *perCallLockTx) lockedWrite(fn func() error) error {
+	if b.snapshotOnly {
+		return fn()
+	}
+	b.writeMu.Lock()
+	defer b.writeMu.Unlock()
+	return fn()
+}
+
+func (b *perCallLockTx) SetState(ctx context.Context, p contract.StateProvider, key contract.StateKey, want contract.State) error {
+	b.mu.Lock()
+	allowed := b.ownedStates[key]
+	b.mu.Unlock()
+	if !allowed {
+		return &contract.UndeclaredTargetError{Kind: contract.TargetStateKey, Target: string(key)}
+	}
+
+	var snap contract.Snapshot
+	if err := b.lockedSnapshot(func() error {
+		var err error
+		snap, err = p.Snapshot(ctx)
+		return err
+	}); err != nil {
+		return err
+	}
+	if err := b.lockedWrite(func() error { return p.Write(ctx, key, want) }); err != nil {
+		restoreCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), stateRestoreTimeout)
+		defer cancel()
+		if restoreErr := p.Restore(restoreCtx, snap); restoreErr != nil {
+			return errors.Join(err, restoreErr)
+		}
+		return err
+	}
+
+	b.mu.Lock()
+	backup := b.recordBackupLocked(snap.Data)
+	b.changes = append(b.changes, contract.AppliedChange{
+		Change: contract.Change{
+			Target: string(p.Name()) + ":" + string(key),
+			Action: contract.ActionSet,
+			After:  digestBytes([]byte(want.Value)),
+			Risk:   contract.RiskMedium,
+		},
+		Backup: backup,
+	})
+	b.mu.Unlock()
+	return nil
+}
+
+func TestSerializedCheckRejectsPerCallLock(t *testing.T) {
+	t.Parallel()
+
+	t.Run("whole-sequence lock passes", func(t *testing.T) {
+		t.Parallel()
+		rep := &fakeReporter{}
+		tx := NewFakeTx(standardTestDescription(), nil)
+		checkSetStateSerialized(context.Background(), rep, tx, tx)
+		if len(rep.errors) != 0 {
+			t.Fatalf("FakeTx failed the serialized check: %v", rep.errors)
+		}
+	})
+
+	for _, tc := range []struct {
+		name         string
+		snapshotOnly bool
+	}{
+		{name: "lock around Snapshot only fails", snapshotOnly: true},
+		{name: "separate Snapshot and Write locks fail", snapshotOnly: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rep := &fakeReporter{}
+			tx := &perCallLockTx{FakeTx: NewFakeTx(standardTestDescription(), nil), snapshotOnly: tc.snapshotOnly}
+			checkSetStateSerialized(context.Background(), rep, tx, tx)
+			if !rep.hasErrorContaining("must hold one lock") {
+				t.Fatalf("per-call lock passed the serialized check: %v", rep.errors)
+			}
+			if !rep.hasErrorContaining("want the value just before its own write") {
+				t.Fatalf("per-call lock backups passed the pre-image check: %v", rep.errors)
+			}
+		})
+	}
+
+	t.Run("per-call lock fails the full Tx check", func(t *testing.T) {
+		t.Parallel()
+		rep := &fakeReporter{}
+		checkTx(rep, func(d contract.Description) contract.Tx {
+			return &perCallLockTx{FakeTx: NewFakeTx(d, nil), snapshotOnly: true}
+		})
+		if !rep.hasErrorContaining("must hold one lock") {
+			t.Fatalf("expected the serialization failure, got %v", rep.errors)
+		}
+	})
 }
