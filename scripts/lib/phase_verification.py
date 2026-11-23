@@ -264,6 +264,16 @@ def ufw_allows_in(status, rule, interface):
     return False
 
 
+RESOURCE_INT_FLAGS = {
+    "--memory-reserve-percent": (5, 50),
+    "--memory-high-percent": (10, 90),
+    "--memory-max-percent": (20, 95),
+    "--swap-max-percent": (0, 50),
+    "--oomd-pressure-percent": (10, 99),
+    "--cpu-weight": (1, 10000),
+    "--reserve-cores": (0, 1024),
+    "--zram-percent": (0, 100),
+}
 RESOURCE_DEFAULTS = {
     "--memory-reserve-percent": None,
     "--reserve-fixed-gib": None,
@@ -271,11 +281,31 @@ RESOURCE_DEFAULTS = {
     "--memory-max-percent": None,
     "--swap-max-percent": None,
     "--oomd-pressure-percent": 60,
-    "--cpu-weight": 50,
+    "--cpu-weight": None,
     "--reserve-cores": None,
+    "--swappiness": "auto",
+    "--zram-percent": 0,
+    "--tmp": "auto",
 }
+# Receipt input keys, in the order apply-resource-policy-linux.sh records them.
+RESOURCE_INPUT_KEYS = (
+    ("reserve_fixed_gib", "--reserve-fixed-gib"),
+    ("memory_reserve_percent", "--memory-reserve-percent"),
+    ("memory_high_percent", "--memory-high-percent"),
+    ("memory_max_percent", "--memory-max-percent"),
+    ("swap_max_percent", "--swap-max-percent"),
+    ("cpu_weight", "--cpu-weight"),
+    ("reserve_cores", "--reserve-cores"),
+    ("oomd_pressure_percent", "--oomd-pressure-percent"),
+    ("swappiness", "--swappiness"),
+    ("zram_percent", "--zram-percent"),
+    ("tmp", "--tmp"),
+    ("allow_small_reserve", "--allow-small-reserve"),
+)
 AGENT_SLICE = Path("/etc/systemd/user/agent-work.slice")
+AGENT_PARENT_SLICE = Path("/etc/systemd/user/agent.slice")
 RESOURCE_RECEIPT = Path("/var/lib/agent-workstation-kit/resource-policy/receipt.tsv")
+CGROUP_CONTROLLERS = Path("/sys/fs/cgroup/cgroup.controllers")
 OOMD_BINARIES = (Path("/usr/lib/systemd/systemd-oomd"), Path("/lib/systemd/systemd-oomd"))
 DISPLAY_MANAGERS = (
     "display-manager.service",
@@ -284,35 +314,85 @@ DISPLAY_MANAGERS = (
     "sddm.service",
     "lightdm.service",
 )
+_WHOLE_NUMBER = re.compile(r"(0|[1-9][0-9]{0,5})")
+_GIB_NUMBER = re.compile(r"(0|[1-9][0-9]{0,5})(?:\.([0-9]{1,6}))?")
+
+
+def strict_int(name, raw, lower, upper):
+    """Mirror normalize_int in common.sh: check the text before arithmetic.
+
+    At most six digits and no leading zero, so 18446744073709551666, -1, 08,
+    abc and '' are refused; a bool is never a number.
+    """
+    if isinstance(raw, bool) or not _WHOLE_NUMBER.fullmatch(str(raw)):
+        raise ValueError(name + " must be a whole number with at most six digits and no leading zeros")
+    value = int(str(raw))
+    if not lower <= value <= upper:
+        raise ValueError(name + " must be from " + str(lower) + " through " + str(upper))
+    return value
+
+
+def strict_gib(name, raw):
+    """Mirror normalize_gib in common.sh; return the normalised text (6.50 -> 6.5)."""
+    match = None if isinstance(raw, bool) else _GIB_NUMBER.fullmatch(str(raw))
+    if not match:
+        raise ValueError(name + " must be a positive number with at most six digits before and after the point")
+    whole, fraction = match.group(1), (match.group(2) or "").rstrip("0")
+    if whole == "0" and not fraction:
+        raise ValueError(name + " must be a positive number")
+    return whole + ("." + fraction if fraction else "")
 
 
 def resource_options(command=(), profile=None):
-    """Return the resource flags of a resources phase command, with the script defaults."""
+    """Return the resource flags of a resources phase command, with the script defaults.
+
+    Profile fields and flags are checked as the script checks them, before any
+    arithmetic; an invalid value raises ValueError so the verifier fails closed.
+    """
     options = dict(RESOURCE_DEFAULTS)
     options["--measure"] = False
+    options["--allow-small-reserve"] = False
     resources = (profile or {}).get("resources", {})
-    if "os_memory_reserve_percent" in resources:
-        options["--memory-reserve-percent"] = int(resources["os_memory_reserve_percent"])
-    if "reserve_fixed_gib" in resources:
-        options["--reserve-fixed-gib"] = float(resources["reserve_fixed_gib"])
-    if "reserve_cores" in resources:
-        options["--reserve-cores"] = int(resources["reserve_cores"])
-    if "cpu_weight" in resources:
-        options["--cpu-weight"] = int(resources["cpu_weight"])
+    for field, flag in (("os_memory_reserve_percent", "--memory-reserve-percent"), ("reserve_fixed_gib", "--reserve-fixed-gib"),
+                        ("reserve_cores", "--reserve-cores"), ("cpu_weight", "--cpu-weight")):
+        if field in resources:
+            raw = resources[field]
+            # fleetctl passes str(value); a float such as 8.0 arrives as "8.0".
+            options[flag] = strict_gib("resources." + field, raw) if flag == "--reserve-fixed-gib" else strict_int("resources." + field, raw, *RESOURCE_INT_FLAGS[flag])
     args = list(command or ())
     index = 0
     while index < len(args):
         arg = args[index]
-        if arg == "--measure":
-            options["--measure"] = True
+        if arg in ("--measure", "--allow-small-reserve"):
+            options[arg] = True
             index += 1
         elif arg in RESOURCE_DEFAULTS and index + 1 < len(args):
             raw = args[index + 1]
-            options[arg] = float(raw) if arg == "--reserve-fixed-gib" else int(raw)
+            if arg == "--reserve-fixed-gib":
+                options[arg] = strict_gib(arg, raw)
+            elif arg == "--tmp":
+                if raw not in ("auto", "disk", "keep"):
+                    raise ValueError("--tmp must be auto, disk or keep")
+                options[arg] = raw
+            elif arg == "--swappiness" and raw in ("auto", "keep"):
+                options[arg] = raw
+            elif arg == "--swappiness":
+                options[arg] = strict_int(arg, raw, 0, 200)
+            else:
+                options[arg] = strict_int(arg, raw, *RESOURCE_INT_FLAGS[arg])
             index += 2
         else:
             index += 1
     return options
+
+
+def resource_receipt_inputs(options):
+    """Return the receipt's input lines (key -> text) that these options imply."""
+    inputs = {}
+    for key, flag in RESOURCE_INPUT_KEYS:
+        value = options[flag]
+        inputs[key] = "-" if value is None else ("true" if value is True else "false" if value is False else str(value))
+    return inputs
 
 
 def host_swap_total_kib(swaps_path=Path("/proc/swaps")):
@@ -348,28 +428,41 @@ def host_desktop_present(run=None):
     return any(run(["systemctl", "is-active", "--quiet", dm]).returncode == 0 for dm in DISPLAY_MANAGERS)
 
 
-def measured_non_agent_kib(cgroup_root=Path("/sys/fs/cgroup")):
-    """Return 1.5x current memory (KiB) of system.slice plus session and app slices."""
+def measured_non_agent_kib(uid, cgroup_root=Path("/sys/fs/cgroup")):
+    """Return 1.5x the memory (KiB) in use outside the agent's agent.slice.
+
+    Sums memory.current of every top-level cgroup (init.scope included) and
+    subtracts the agent.slice subtree. Informational only: never sizes a value.
+    """
     root = Path(cgroup_root)
-    system_file = root / "system.slice/memory.current"
-    total_bytes = int(system_file.read_text().strip())
-    for pattern in (
-        "user.slice/user-*.slice/session-*.scope/memory.current",
-        "user.slice/user-*.slice/user@*.service/session.slice/memory.current",
-        "user.slice/user-*.slice/user@*.service/app.slice/memory.current",
-    ):
-        for candidate in root.glob(pattern):
-            try:
-                text = candidate.read_text().strip()
-                if text.isdigit():
-                    total_bytes += int(text)
-            except OSError:
-                continue
+    total_bytes = 0
+    found = False
+    for candidate in sorted(root.glob("*/memory.current")):
+        try:
+            text = candidate.read_text().strip()
+        except OSError:
+            continue
+        if text.isdigit():
+            total_bytes += int(text)
+            found = True
+    if not found:
+        raise ValueError("no top-level cgroup memory.current is readable")
+    agent = root / ("user.slice/user-%d.slice/user@%d.service/agent.slice/memory.current" % (uid, uid))
+    try:
+        text = agent.read_text().strip()
+        if text.isdigit() and int(text) <= total_bytes:
+            total_bytes -= int(text)
+    except OSError:
+        pass
     return (total_bytes * 3) // 2048
 
 
-def resource_values(profile, total, command=(), *, swap_total_kib=None, cpu_cores=None, desktop=None, measured_scaled_kib=None):
-    """Mirror reserve-based sizing in common.sh and apply-resource-policy-linux.sh."""
+def resource_values(profile, total, command=(), *, swap_total_kib=None, cpu_cores=None, desktop=None, planned_zram_kib=0):
+    """Mirror reserve-based sizing in common.sh and apply-resource-policy-linux.sh.
+
+    swap_total_kib is the active swap; planned_zram_kib is the zram the apply
+    configured that was not active yet, which counts toward the swap total.
+    """
     gib = 1024 * 1024
     min_slice = 2 * gib
     options = resource_options(command, profile)
@@ -389,11 +482,7 @@ def resource_values(profile, total, command=(), *, swap_total_kib=None, cpu_core
     else:
         role_default_kib = (8 if desktop else 2) * gib
         if options["--reserve-fixed-gib"] is not None:
-            fixed_kib = int(options["--reserve-fixed-gib"] * gib + 0.5)
-        elif options["--measure"]:
-            if measured_scaled_kib is None:
-                measured_scaled_kib = measured_non_agent_kib()
-            fixed_kib = max(role_default_kib, measured_scaled_kib)
+            fixed_kib = int(float(options["--reserve-fixed-gib"]) * gib + 0.5)
         else:
             fixed_kib = role_default_kib
         reserve_kib = max(fixed_kib, fixed_kib + total * 2 // 100)
@@ -402,10 +491,11 @@ def resource_values(profile, total, command=(), *, swap_total_kib=None, cpu_core
     high_pct = options["--memory-high-percent"]
     if max_pct is not None:
         maximum = total * max_pct // 100
-        if reserve_pct is not None and total - maximum < reserve_kib:
-            raise ValueError("the agent memory ceiling leaves less than the reviewed reserve")
         if maximum < min_slice:
             raise ValueError("the agent memory ceiling is below 2 GiB")
+        outside = total - maximum
+        if (outside < reserve_kib or outside < min_slice) and not options["--allow-small-reserve"]:
+            raise ValueError("the agent memory ceiling leaves less than the reserve or 2 GiB without --allow-small-reserve")
     else:
         if total - reserve_kib < min_slice:
             raise ValueError("host RAM minus reserve is below 2 GiB")
@@ -422,12 +512,13 @@ def resource_values(profile, total, command=(), *, swap_total_kib=None, cpu_core
             raise ValueError("MemoryHigh must be positive and below MemoryMax")
 
     swap_pct = options["--swap-max-percent"]
+    swap_basis = swap_total_kib + planned_zram_kib
     if swap_pct is not None:
         swap_max = total * swap_pct // 100
-    elif swap_total_kib == 0:
+    elif swap_basis == 0:
         swap_max = 0
     else:
-        swap_max = min(swap_total_kib * 25 // 100, 8 * gib)
+        swap_max = min(swap_basis * 25 // 100, 8 * gib)
 
     if options["--reserve-cores"] is not None:
         reserved_cores = options["--reserve-cores"]
@@ -439,15 +530,123 @@ def resource_values(profile, total, command=(), *, swap_total_kib=None, cpu_core
             reserved_cores = cpu_cores - 1
     cpu_quota = (cpu_cores - reserved_cores) * 100
 
+    cpu_weight = options["--cpu-weight"]
     return {
-        "CPUWeight": str(options["--cpu-weight"]),
+        "CPUWeight": str(50 if cpu_weight is None else cpu_weight),
         "CPUQuota": str(cpu_quota) + "%",
         "TasksMax": str(max(4096, min(16384, total // gib * 128))),
         "MemoryHigh": str(high) + "K",
         "MemoryMax": str(maximum) + "K",
         "MemorySwapMax": str(swap_max) + "K",
         "ManagedOOMMemoryPressureLimit": str(options["--oomd-pressure-percent"]) + "%",
+        "reserve_kib": str(reserve_kib),
     }
+
+
+def read_resource_receipt(path=RESOURCE_RECEIPT):
+    """Parse a version 2 resource-policy receipt into its recorded parts."""
+    path = Path(path)
+    # The receipt, its folder and the kit's state folder; /var and /var/lib too
+    # for the installed location.
+    checked = [path, path.parent, path.parent.parent] + ([Path("/var/lib"), Path("/var")] if path == RESOURCE_RECEIPT else [])
+    if any(item.is_symlink() for item in checked):
+        raise ValueError("the resource receipt or a parent is a symbolic link")
+    lines = path.read_text().splitlines()
+    if lines[:1] != ["version\t2"] or len(lines) < 2 or not lines[1].startswith("agent\t"):
+        raise ValueError("unsupported resource receipt format")
+    receipt = {"agent": lines[1].split("\t", 1)[1], "input": {}, "reading": {}, "value": {}, "complete": False}
+    for line in lines[2:]:
+        fields = line.split("\t")
+        if fields[0] in ("input", "reading", "value") and len(fields) == 3:
+            receipt[fields[0]][fields[1]] = fields[2]
+        elif fields == ["state", "complete"]:
+            receipt["complete"] = True
+    return receipt
+
+
+def receipt_resource_values(receipt, profile, command, agent):
+    """Derive the slice values from the receipt's approved inputs and readings.
+
+    The verifier never re-reads RAM, swap or cores: it checks that the receipt
+    belongs to this agent and plan, then recomputes from the recorded readings
+    and requires the recorded values to match.
+    """
+    if not receipt["complete"]:
+        raise ValueError("the resource apply did not finish")
+    if receipt["agent"] != agent:
+        raise ValueError("the resource receipt belongs to another account")
+    options = resource_options(command, profile)
+    if receipt["input"] != resource_receipt_inputs(options):
+        raise ValueError("the resource receipt's approved inputs differ from the plan")
+    reading = receipt["reading"]
+    if reading.get("role") not in ("desktop", "headless"):
+        raise ValueError("the resource receipt lacks the host role")
+    numbers = {key: strict_reading(reading.get(key)) for key in ("ram_kib", "swap_kib", "zram_planned_kib", "cpu_cores")}
+    values = resource_values(profile, numbers["ram_kib"], command, swap_total_kib=numbers["swap_kib"], cpu_cores=numbers["cpu_cores"],
+                             desktop=reading["role"] == "desktop", planned_zram_kib=numbers["zram_planned_kib"])
+    recorded = receipt["value"]
+    expected = {
+        "reserve_kib": values["reserve_kib"],
+        "memory_max_kib": values["MemoryMax"][:-1],
+        "memory_high_kib": values["MemoryHigh"][:-1],
+        "swap_max_kib": values["MemorySwapMax"][:-1],
+        "cpu_weight": values["CPUWeight"],
+        "cpu_quota_percent": values["CPUQuota"][:-1],
+        "tasks_max": values["TasksMax"],
+        "oomd_pressure_percent": values["ManagedOOMMemoryPressureLimit"][:-1],
+    }
+    for key, value in expected.items():
+        if recorded.get(key) != value:
+            raise ValueError("the resource receipt value " + key + " does not match its inputs")
+    return values
+
+
+def strict_reading(text):
+    if text is None or not re.fullmatch(r"[0-9]{1,15}", text):
+        raise ValueError("the resource receipt has an unreadable reading")
+    return int(text)
+
+
+def effective_resource_problems(agent, uid, values, run=None, controllers_path=CGROUP_CONTROLLERS):
+    """Compare the values systemd holds for both slices with the expected ones.
+
+    Requires the cpu and memory controllers to be available and delegated to
+    the agent's user manager, then reads the effective properties.
+    """
+    run = run or probe
+    problems = []
+    try:
+        available = Path(controllers_path).read_text().split()
+    except OSError:
+        available = []
+    delegated = run(["systemctl", "show", "--property=DelegateControllers", "--value", "user@%d.service" % uid])
+    delegated_names = delegated.stdout.split() if delegated.returncode == 0 else []
+    for controller in ("cpu", "memory"):
+        if controller not in available:
+            problems.append("the cgroup v2 " + controller + " controller is not available")
+        if controller not in delegated_names:
+            problems.append("user@%d.service does not delegate the %s controller" % (uid, controller))
+    user = ["systemctl", "--user", "--machine=" + agent + "@", "show"]
+    expected = {
+        "agent-work.slice": {
+            "MemoryHigh": str(int(values["MemoryHigh"][:-1]) * 1024),
+            "MemoryMax": str(int(values["MemoryMax"][:-1]) * 1024),
+            "MemorySwapMax": str(int(values["MemorySwapMax"][:-1]) * 1024),
+            "TasksMax": values["TasksMax"],
+            "CPUQuotaPerSecUSec": str(int(values["CPUQuota"][:-1]) // 100) + "s",
+        },
+        "agent.slice": {"CPUWeight": values["CPUWeight"]},
+    }
+    for unit, properties in expected.items():
+        result = run([*user, unit, "--property=" + ",".join(properties)])
+        if result.returncode:
+            problems.append("cannot read the effective settings of " + unit)
+            continue
+        effective = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+        for key, value in properties.items():
+            if effective.get(key) != value:
+                problems.append("%s effective %s is %s, expected %s" % (unit, key, effective.get(key, "unset"), value))
+    return problems
 
 
 def agent_processes_outside_slice(root, uid, proc_root="/proc"):
@@ -464,9 +663,15 @@ def agent_processes_outside_slice(root, uid, proc_root="/proc"):
 def agent_slice_text(agent, values, oomd):
     """Render agent-work.slice exactly as apply-resource-policy-linux.sh writes it."""
     lines = ["# Managed by agent-workstation-kit apply-resource-policy-linux.sh; undo with --revert.", "[Unit]", "Description=Agent work ceiling for " + agent, "ConditionUser=" + agent, "", "[Slice]"]
-    lines += [key + "=" + values[key] for key in ("CPUWeight", "CPUQuota", "TasksMax", "MemoryHigh", "MemoryMax", "MemorySwapMax")]
+    lines += [key + "=" + values[key] for key in ("CPUQuota", "TasksMax", "MemoryHigh", "MemoryMax", "MemorySwapMax")]
     if oomd:
         lines += ["ManagedOOMMemoryPressure=kill", "ManagedOOMMemoryPressureLimit=" + values["ManagedOOMMemoryPressureLimit"]]
+    return "\n".join(lines) + "\n"
+
+
+def agent_parent_slice_text(agent, values):
+    """Render agent.slice, which holds the agent's CPUWeight, as apply writes it."""
+    lines = ["# Managed by agent-workstation-kit apply-resource-policy-linux.sh; undo with --revert.", "[Unit]", "Description=Agent work CPU share for " + agent, "ConditionUser=" + agent, "", "[Slice]", "CPUWeight=" + values["CPUWeight"]]
     return "\n".join(lines) + "\n"
 
 
@@ -542,21 +747,33 @@ def verify_phase(plan, name, root):
             ok = ok and tailscale.returncode == 0 and json.loads(tailscale.stdout).get("BackendState") == "Running"
             ok = ok and (probe(["systemctl", "is-active", "--quiet", "ssh.service"]).returncode == 0 or probe(["systemctl", "is-active", "--quiet", "ssh.socket"]).returncode == 0)
         elif name == "resources":
-            path = AGENT_SLICE
-            total = int(next(line.split()[1] for line in Path("/proc/meminfo").read_text().splitlines() if line.startswith("MemTotal:")))
+            # Values come from the receipt's approved inputs and readings, never
+            # from a fresh reading of RAM, swap or cores.
+            values = receipt_resource_values(read_resource_receipt(), profile, command, agent)
+            uid = pwd.getpwnam(agent).pw_uid
             oomd = any(item.exists() for item in OOMD_BINARIES)
-            expected = agent_slice_text(agent, resource_values(profile, total, command), oomd)
-            ok = not path.is_symlink() and path.stat().st_uid == 0 and stat.S_IMODE(path.stat().st_mode) == 0o644 and path.read_text() == expected
-            ok = ok and RESOURCE_RECEIPT.is_file() and Path("/var/lib/systemd/linger/" + agent).exists()
-            outside = agent_processes_outside_slice(root, pwd.getpwnam(agent).pw_uid)
+            problems = []
+            for path, expected in ((AGENT_SLICE, agent_slice_text(agent, values, oomd)), (AGENT_PARENT_SLICE, agent_parent_slice_text(agent, values))):
+                if path.is_symlink() or not path.is_file() or path.stat().st_uid != 0 or stat.S_IMODE(path.stat().st_mode) != 0o644 or path.read_text() != expected:
+                    problems.append(str(path) + " is missing, not root-owned 0644, or differs from the receipt")
+            problems += effective_resource_problems(agent, uid, values)
+            if not Path("/var/lib/systemd/linger/" + agent).exists():
+                problems.append("lingering is not enabled for " + agent)
+            outside = agent_processes_outside_slice(root, uid)
+            if outside is None:
+                problems.append("cannot inspect agent process placement")
             for line in outside or []:
-                print("REASON resources: agent process outside agent-work.slice: " + line)
-            ok = ok and outside == []
+                problems.append("agent process outside agent-work.slice: " + line)
             # The agent's own user configuration outranks /etc/systemd/user.
             config = Path(pwd.getpwnam(agent).pw_dir) / ".config/systemd"
-            ok = ok and not any(item.exists() for item in (config / "user/agent-work.slice", config / "user/agent-work.slice.d", config / "user.control/agent-work.slice.d"))
-            if oomd:
-                ok = ok and probe(["systemctl", "is-active", "--quiet", "systemd-oomd.service"]).returncode == 0
+            for unit in ("agent-work.slice", "agent.slice"):
+                if any(item.exists() for item in (config / "user" / unit, config / "user" / (unit + ".d"), config / "user.control" / (unit + ".d"))):
+                    problems.append("the agent account overrides " + unit)
+            if oomd and probe(["systemctl", "is-active", "--quiet", "systemd-oomd.service"]).returncode != 0:
+                problems.append("systemd-oomd is not active")
+            for problem in problems:
+                print("REASON resources: " + problem)
+            ok = not problems
         elif name == "audit":
             # The executor always runs the read-only host audit once per audit
             # invocation, then verifies these extra declared-profile conditions.

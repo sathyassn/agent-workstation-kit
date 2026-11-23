@@ -2,15 +2,17 @@
 
 # Fixture tests for apply-resource-policy-linux.sh. Every host path the script
 # reads or writes is redirected into a fixture tree through
-# AWK_RESOURCE_TEST_ROOT, and systemctl, loginctl, id and uname are stubs, so
-# nothing on the machine running the tests is read or changed.
+# AWK_RESOURCE_TEST_ROOT, and systemctl, loginctl, id, uname, flock, mv and
+# sync are stubs, so nothing on the machine running the tests is read or
+# changed.
 
 set -Eeuo pipefail
 
 repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 script="$repo_dir/scripts/apply-resource-policy-linux.sh"
 work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
+lock_pid=''
+trap '[[ -z "$lock_pid" ]] || kill "$lock_pid" 2>/dev/null || true; rm -rf "$work"' EXIT
 
 fail() {
   printf 'test_resource_policy: %s\n' "$*" >&2
@@ -18,7 +20,7 @@ fail() {
 }
 
 stubs="$work/stubs"
-mkdir -p "$stubs"
+mkdir -p "$stubs" "$work/tmp"
 cat >"$stubs/uname" <<'EOF'
 #!/bin/sh
 if [ "${1:-}" = "-s" ]; then echo Linux; else /usr/bin/uname "$@"; fi
@@ -59,7 +61,38 @@ case "$1" in
   disable-linger) rm -f "$AWK_RESOURCE_TEST_ROOT/var/lib/systemd/linger/$2" ;;
 esac
 EOF
+# flock [-n] FD: lock an inherited descriptor as util-linux flock does (macOS
+# has no flock command). The lock stays with the caller's open descriptor.
+cat >"$stubs/flock" <<'EOF'
+#!/bin/sh
+exec python3 -c '
+import fcntl, sys
+args = sys.argv[1:]
+flags = fcntl.LOCK_EX
+if args and args[0] == "-n":
+    flags |= fcntl.LOCK_NB
+    args = args[1:]
+try:
+    fcntl.flock(int(args[0]), flags)
+except BlockingIOError:
+    sys.exit(1)
+' "$@"
+EOF
+# mv -T SOURCE DEST where mv lacks -T (macOS): never move into a directory.
+# GNU mv (Linux) runs as it is.
+if ! mv --version >/dev/null 2>&1; then
+  cat >"$stubs/mv" <<'EOF'
+#!/bin/sh
+[ "${1:-}" = -T ] || exec /bin/mv "$@"
+shift
+[ "$1" = -- ] && shift
+if [ -d "$2" ] && [ ! -L "$2" ]; then echo "mv: $2 is a directory" >&2; exit 1; fi
+exec /bin/mv -f -- "$1" "$2"
+EOF
+fi
 chmod 0755 "$stubs"/*
+# sync FILE: a flush cannot be observed in a fixture; skip the host-wide sync.
+ln -s /usr/bin/true "$stubs/sync"
 
 # make_host DIR MEM_GIB [SWAP_GIB] [CORES]: a fixture host with configurable
 # RAM, swap and CPU cores, tmpfs /tmp from the packaged tmp.mount, oomd
@@ -93,6 +126,12 @@ make_host() {
   chmod 0640 "$root/etc/sysctl.d/60-agent-workstation-swap.conf"
 }
 
+add_zram_generator() {
+  mkdir -p "$1/usr/lib/systemd/system-generators"
+  printf '#!/bin/sh\n' >"$1/usr/lib/systemd/system-generators/zram-generator"
+  chmod 0755 "$1/usr/lib/systemd/system-generators/zram-generator"
+}
+
 # snapshot DIR: every path with its type, mode and content checksum or link.
 snapshot() {
   (
@@ -114,7 +153,7 @@ snapshot() {
 policy() {
   local root=$1
   shift
-  STUB_STATE="$root.state" AWK_RESOURCE_TEST_ROOT="$root" PATH="${EXTRA_STUBS:+$EXTRA_STUBS:}$stubs:$PATH" \
+  TMPDIR="$work/tmp" STUB_STATE="$root.state" AWK_RESOURCE_TEST_ROOT="$root" PATH="${EXTRA_STUBS:+$EXTRA_STUBS:}$stubs:$PATH" \
     "$BASH" "$script" --agent agent-01 "$@"
 }
 
@@ -125,25 +164,58 @@ new_host() {
   printf '%s\n' "$root"
 }
 
+receipt_of() {
+  printf '%s/var/lib/agent-workstation-kit/resource-policy/receipt.tsv' "$1"
+}
+
+# verify_slice_matches_verifier SLICE TOTAL SWAP CORES DESKTOP [FLAGS...]:
+# the phase verifier renders agent-work.slice and its parent agent.slice
+# (next to SLICE) exactly as apply wrote them. PLANNED_ZRAM_KIB adds zram.
 verify_slice_matches_verifier() {
   local slice=$1 total=$2 swap_kib=$3 cores=$4 desktop=$5
   shift 5
-  python3 - "$repo_dir/scripts/lib" "$slice" "$total" "$swap_kib" "$cores" "$desktop" "$@" <<'EOF' || fail "phase verifier disagrees with $slice"
+  python3 - "$repo_dir/scripts/lib" "$slice" "$total" "$swap_kib" "$cores" "$desktop" "${PLANNED_ZRAM_KIB:-0}" "$@" <<'EOF' || fail "phase verifier disagrees with $slice"
 import sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
-from phase_verification import agent_slice_text, resource_values
+from phase_verification import agent_parent_slice_text, agent_slice_text, resource_values
 slice_path = Path(sys.argv[2])
 total = int(sys.argv[3])
 swap_kib = int(sys.argv[4])
 cores = int(sys.argv[5])
 desktop = sys.argv[6] == "1"
-command = ["apply-resource-policy-linux.sh", "--agent", "agent-01", *sys.argv[7:]]
-values = resource_values({"resources": {}}, total, command, swap_total_kib=swap_kib, cpu_cores=cores, desktop=desktop)
-expected = agent_slice_text("agent-01", values, True)
-if slice_path.read_text() != expected:
-    sys.stderr.write("EXPECTED:\n" + expected + "\nACTUAL:\n" + slice_path.read_text())
-    raise SystemExit(1)
+zram = int(sys.argv[7])
+command = ["apply-resource-policy-linux.sh", "--agent", "agent-01", *sys.argv[8:]]
+values = resource_values({"resources": {}}, total, command, swap_total_kib=swap_kib, cpu_cores=cores, desktop=desktop, planned_zram_kib=zram)
+for path, expected in ((slice_path, agent_slice_text("agent-01", values, True)),
+                       (slice_path.parent / "agent.slice", agent_parent_slice_text("agent-01", values))):
+    if path.read_text() != expected:
+        sys.stderr.write("EXPECTED:\n" + expected + "\nACTUAL:\n" + path.read_text())
+        raise SystemExit(1)
+EOF
+}
+
+# verify_receipt_matches_verifier ROOT [FLAGS...]: the phase verifier derives
+# both slices from the receipt's approved inputs and readings, never from a
+# fresh host reading.
+verify_receipt_matches_verifier() {
+  local root=$1
+  shift
+  python3 - "$repo_dir/scripts/lib" "$root" "$@" <<'EOF' || fail "receipt verifier disagrees with $root"
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from phase_verification import agent_parent_slice_text, agent_slice_text, read_resource_receipt, receipt_resource_values
+root = Path(sys.argv[2])
+command = ["apply-resource-policy-linux.sh", "--agent", "agent-01", *sys.argv[3:]]
+receipt = read_resource_receipt(root / "var/lib/agent-workstation-kit/resource-policy/receipt.tsv")
+values = receipt_resource_values(receipt, {"resources": {}}, command, "agent-01")
+for name, expected in (("agent-work.slice", agent_slice_text("agent-01", values, True)),
+                       ("agent.slice", agent_parent_slice_text("agent-01", values))):
+    actual = (root / "etc/systemd/user" / name).read_text()
+    if actual != expected:
+        sys.stderr.write("EXPECTED:\n" + expected + "\nACTUAL:\n" + actual)
+        raise SystemExit(1)
 EOF
 }
 
@@ -163,8 +235,10 @@ for expected in \
   'MemoryMax:          50.8 GiB = 60.0 GiB RAM - 9.2 GiB reserve (8 GiB desktop default + 2% of RAM)' \
   'MemoryHigh:         45.7 GiB = 50.8 GiB MemoryMax - 5.1 GiB (min(10% of MemoryMax, 8 GiB))' \
   'MemorySwapMax:      4.0 GiB = min(25% of 16.0 GiB swap, 8 GiB)' \
-  'CPUWeight:          50 (default: 50 (system and desktop keep 100))' \
+  'Outside the slice:  9.2 GiB (reserve 9.2 GiB: 8 GiB desktop default + 2% of RAM)' \
+  'CPUWeight:          50 on agent.slice (default: 50; app.slice and session.slice keep 100)' \
   'CPUQuota:           3000% = (32 cores - 2 reserved) x 100% (formula: clamp(ceil(32 x 0.05), 2, 4))' \
+  'Would create /etc/systemd/user/agent.slice' \
   'Would create /etc/systemd/user/agent-work.slice' \
   'Would replace /etc/sysctl.d/60-agent-workstation-swap.conf' \
   'Would remove /etc/systemd/system/user-1001.slice.d/50-agent-workstation.conf' \
@@ -183,16 +257,23 @@ APPLY_CHANGES=true policy "$host" >/dev/null
 [[ "$(snapshot "$host")" == "$before" ]] || fail 'inherited APPLY_CHANGES changed the fixture host'
 
 # 2. Formula matrix: 16, 60, 128, 512 GiB desktop and 16 GiB headless.
+# CPUWeight sits on agent.slice, the parent beside app.slice and session.slice.
 check_formula_case() {
   local label=$1 mem_gib=$2 swap_gib=$3 cores=$4 desktop=$5
   local exp_max=$6 exp_high=$7 exp_swap=$8 exp_quota=$9 exp_tasks=${10}
-  local root slice
+  local root slice parent
   root=$(new_host "matrix-$label" "$mem_gib" "$swap_gib" "$cores")
   STUB_GRAPHICAL_TARGET=$desktop policy "$root" --apply >/dev/null
   slice="$root/etc/systemd/user/agent-work.slice"
+  parent="$root/etc/systemd/user/agent.slice"
+  for line in 'ConditionUser=agent-01' 'CPUWeight=50'; do
+    grep -Fxq "$line" "$parent" || fail "matrix $label agent.slice missing: $line (got: $(cat "$parent"))"
+  done
+  if grep -q '^CPUWeight=' "$slice"; then
+    fail "matrix $label agent-work.slice still sets CPUWeight"
+  fi
   for line in \
     'ConditionUser=agent-01' \
-    'CPUWeight=50' \
     "CPUQuota=${exp_quota}%" \
     "TasksMax=${exp_tasks}" \
     "MemoryHigh=${exp_high}K" \
@@ -203,6 +284,7 @@ check_formula_case() {
     grep -Fxq "$line" "$slice" || fail "matrix $label slice missing: $line (got: $(cat "$slice"))"
   done
   verify_slice_matches_verifier "$slice" $((mem_gib * 1048576)) $((swap_gib * 1048576)) "$cores" "$desktop"
+  verify_receipt_matches_verifier "$root"
 }
 
 # 16 GiB desktop: reserve = 8 GiB + 2%(16 GiB) = 8724152 K; max = 8053064 K; high = 7247758 K; swap = 2 GiB; 16 cores -> 1400%
@@ -222,43 +304,61 @@ dm_preview=$(STUB_GRAPHICAL_TARGET=0 STUB_DISPLAY_MANAGER=gdm3.service policy "$
 grep -Fq 'Host role:          desktop (gdm3.service active)' <<<"$dm_preview" || fail 'display manager was not detected as desktop'
 grep -Fq '8 GiB desktop default + 2% of RAM' <<<"$dm_preview" || fail 'display manager did not use 8 GiB desktop default'
 
-# 3. --measure reads system + session + app slices (ignoring agent-work.slice), multiplies by 1.5, and shows both.
-host=$(new_host measure-large 60 8 16)
-mkdir -p "$host/sys/fs/cgroup/system.slice" \
-  "$host/sys/fs/cgroup/user.slice/user-1001.slice/session-1.scope" \
-  "$host/sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/session.slice" \
-  "$host/sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/app.slice" \
-  "$host/sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/agent.slice/agent-work.slice"
-# 3 + 1 + 1 + 1 = 6 GiB outside agent-work.slice -> 1.5x = 9 GiB (> 8 GiB desktop default).
-# Put 20 GiB in agent-work.slice to prove it is excluded.
-printf '%d\n' $((3 * 1024 * 1024 * 1024)) >"$host/sys/fs/cgroup/system.slice/memory.current"
-printf '%d\n' $((1 * 1024 * 1024 * 1024)) >"$host/sys/fs/cgroup/user.slice/user-1001.slice/session-1.scope/memory.current"
-printf '%d\n' $((1 * 1024 * 1024 * 1024)) >"$host/sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/session.slice/memory.current"
-printf '%d\n' $((1 * 1024 * 1024 * 1024)) >"$host/sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/app.slice/memory.current"
-printf '%d\n' $((20 * 1024 * 1024 * 1024)) >"$host/sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/agent.slice/agent-work.slice/memory.current"
-measured_preview=$(policy "$host" --measure --apply)
-grep -Fq 'Measured baseline:  6.0 GiB current x 1.5 = 9.0 GiB (role default: 8.0 GiB desktop)' <<<"$measured_preview" ||
-  fail "measured baseline line missing: $measured_preview"
-grep -Fq '9.0 GiB measured baseline (1.5x 6.0 GiB > 8 GiB desktop default) + 2% of RAM' <<<"$measured_preview" ||
-  fail "measured derivation missing: $measured_preview"
-# 60 GiB - (9 GiB + 2% of 60 GiB) = 62914560 - (9437184 + 1258291) = 52219085 K
-grep -Fxq 'MemoryMax=52219085K' "$host/etc/systemd/user/agent-work.slice" || fail 'measured reserve not applied'
+# On 1 or 2 CPUs the core reserve is lowered below the clamp, and the preview says so.
+host=$(new_host two-cores 16 8 2)
+out=$(STUB_GRAPHICAL_TARGET=0 policy "$host")
+grep -Fq 'CPUQuota:           100% = (2 cores - 1 reserved) x 100% (formula: clamp(ceil(2 x 0.05), 2, 4), lowered to 1 so agent work keeps one core)' <<<"$out" ||
+  fail "2-core preview does not name the lowered clamp: $(grep CPUQuota <<<"$out")"
+host=$(new_host one-core 16 8 1)
+out=$(STUB_GRAPHICAL_TARGET=0 policy "$host")
+grep -Fq 'lowered to 0 so agent work keeps one core' <<<"$out" || fail '1-core preview does not name the lowered clamp'
 
-# When 1.5x measured is smaller than the role default, the role default wins and both appear in preview.
+# 3. --measure is informational: it reads every top-level cgroup (init.scope
+# included) minus the agent's agent.slice subtree, shows 1.5x next to the role
+# default, and never changes the reserve, whether larger or smaller.
+cg=/sys/fs/cgroup
+manager=user.slice/user-1001.slice/user@1001.service
+host=$(new_host measure-large 60 8 16)
+mkdir -p "$host$cg/init.scope" "$host$cg/system.slice" "$host$cg/$manager/agent.slice/agent-work.slice"
+# init 1 + system 3 + user.slice 22 (20 of it in agent.slice) - 20 = 6 GiB -> 1.5x = 9 GiB (> 8 GiB default).
+printf '%d\n' $((1 << 30)) >"$host$cg/init.scope/memory.current"
+printf '%d\n' $((3 << 30)) >"$host$cg/system.slice/memory.current"
+printf '%d\n' $((22 << 30)) >"$host$cg/user.slice/memory.current"
+printf '%d\n' $((20 << 30)) >"$host$cg/$manager/agent.slice/memory.current"
+measured_preview=$(policy "$host" --measure --apply)
+grep -Fq 'Measured baseline:  6.0 GiB in use outside agent work x 1.5 = 9.0 GiB (informational, not applied; role default: 8 GiB desktop)' <<<"$measured_preview" ||
+  fail "measured baseline line missing: $measured_preview"
+grep -Fq '8 GiB desktop default + 2% of RAM' <<<"$measured_preview" || fail 'a larger measured value changed the reserve derivation'
+# 60 GiB desktop default: 62914560 - (8388608 + 1258291) = 53267661 K, as without --measure.
+grep -Fxq 'MemoryMax=53267661K' "$host/etc/systemd/user/agent-work.slice" || fail 'a larger measured value changed MemoryMax'
+verify_receipt_matches_verifier "$host" --measure
+
 host=$(new_host measure-small 60 8 16)
-mkdir -p "$host/sys/fs/cgroup/system.slice"
-printf '%d\n' $((2 * 1024 * 1024 * 1024)) >"$host/sys/fs/cgroup/system.slice/memory.current"
-measured_small=$(policy "$host" --measure)
-grep -Fq 'Measured baseline:  2.0 GiB current x 1.5 = 3.0 GiB (role default: 8.0 GiB desktop)' <<<"$measured_small" ||
+mkdir -p "$host$cg/system.slice"
+printf '%d\n' $((2 << 30)) >"$host$cg/system.slice/memory.current"
+measured_small=$(policy "$host" --measure --apply)
+grep -Fq 'Measured baseline:  2.0 GiB in use outside agent work x 1.5 = 3.0 GiB (informational, not applied; role default: 8 GiB desktop)' <<<"$measured_small" ||
   fail 'small measured baseline line missing'
-grep -Fq '8 GiB desktop default (>= 3.0 GiB measured 1.5x of 2.0 GiB) + 2% of RAM' <<<"$measured_small" ||
-  fail 'role default did not win over smaller measured baseline'
+grep -Fxq 'MemoryMax=53267661K' "$host/etc/systemd/user/agent-work.slice" || fail 'a smaller measured value changed MemoryMax'
 
 # 4. No swap gives MemorySwapMax=0K.
 host=$(new_host no-swap 64 0 16)
 no_swap_out=$(policy "$host" --apply)
 grep -Fxq 'MemorySwapMax=0K' "$host/etc/systemd/user/agent-work.slice" || fail 'no swap did not produce MemorySwapMax=0K'
 grep -Fq 'no swap configured' <<<"$no_swap_out" || fail 'no swap derivation missing from preview'
+
+# Planned zram counts toward the swap total: 8 GiB disk swap + 25% of 64 GiB
+# zram = 24 GiB -> MemorySwapMax = 6 GiB (6291456 K), not 2 GiB.
+host=$(new_host zram-swap 64 8 16)
+add_zram_generator "$host"
+zram_out=$(policy "$host" --zram-percent 25 --apply)
+grep -Fxq 'MemorySwapMax=6291456K' "$host/etc/systemd/user/agent-work.slice" ||
+  fail "planned zram was not counted in the swap total: $(grep MemorySwapMax "$host/etc/systemd/user/agent-work.slice")"
+grep -Fq 'MemorySwapMax:      6.0 GiB = min(25% of (8.0 GiB swap + 16.0 GiB planned zram at 25% of RAM), 8 GiB)' <<<"$zram_out" ||
+  fail "planned zram is not named in the derivation: $(grep MemorySwapMax <<<"$zram_out")"
+PLANNED_ZRAM_KIB=$((16 * 1048576)) verify_slice_matches_verifier "$host/etc/systemd/user/agent-work.slice" \
+  $((64 * 1048576)) $((8 * 1048576)) 16 1 --zram-percent 25
+verify_receipt_matches_verifier "$host" --zram-percent 25
 
 # 5. Apply writes backups and receipt; repeat apply changes nothing; revert restores byte-identical state.
 host=$(new_host apply 64 8 16)
@@ -278,11 +378,25 @@ grep -Fxq '[Slice]' "$host/etc/systemd/system/-.slice.d/10-oomd-root-slice-defau
 [[ -f "$host.state/oomd-enabled" ]] || fail 'systemd-oomd was not enabled'
 grep -Fxq 'daemon-reload' "$host.state/systemctl.log" || fail 'systemd was not reloaded'
 grep -Fxq -- '--user --machine=agent-01@ daemon-reload' "$host.state/systemctl.log" || fail 'user manager was not reloaded'
-receipt="$host/var/lib/agent-workstation-kit/resource-policy/receipt.tsv"
+receipt=$(receipt_of "$host")
 grep -Fq $'file\t/etc/sysctl.d/60-agent-workstation-swap.conf\treplaced' "$receipt" || fail 'receipt lacks the replaced file'
+grep -Fq $'file\t/etc/systemd/user/agent.slice\tcreated' "$receipt" || fail 'receipt lacks agent.slice'
 grep -Fq $'sysctl\tvm.swappiness\t60\t10' "$receipt" || fail 'receipt lacks the swappiness change'
+# The receipt keeps the approved inputs, the readings and every written value.
+for line in $'input\tcpu_weight\t-' $'input\tmemory_max_percent\t-' $'input\tzram_percent\t0' \
+  $'reading\tram_kib\t67108864' $'reading\tswap_kib\t8388608' $'reading\tzram_planned_kib\t0' \
+  $'reading\tcpu_cores\t16' $'reading\trole\tdesktop' $'value\tmemory_max_kib\t57378079' \
+  $'value\tcpu_weight\t50' $'value\tcpu_quota_percent\t1400' $'value\tswap_max_kib\t2097152' \
+  $'value\tswappiness\t10' $'state\tcomplete'; do
+  grep -Fxq "$line" "$receipt" || fail "receipt lacks: ${line//$'\t'/ }"
+done
+# Every recorded intent has its completion.
+[[ $(grep -c '^begin' "$receipt") -eq $(grep -c '^done' "$receipt") ]] || fail 'receipt has an intent without its completion'
 cmp -s "$host/var/lib/agent-workstation-kit/resource-policy/backups/_etc_sysctl.d_60-agent-workstation-swap.conf" \
   "$work/preview/etc/sysctl.d/60-agent-workstation-swap.conf" || fail 'backup differs from the original file'
+if find "$host" -name '*.agent-workstation-tmp' | grep -q .; then
+  fail 'apply left a temporary file behind'
+fi
 
 # A repeat apply changes nothing.
 after=$(snapshot "$host")
@@ -291,9 +405,10 @@ grep -Fq 'already applied' <<<"$repeat" || fail 'repeat apply did not report an 
 [[ "$(snapshot "$host")" == "$after" ]] || fail 'repeat apply changed the fixture host'
 
 # A different policy over an existing receipt is refused.
-if policy "$host" --memory-max-percent 85 --apply >/dev/null 2>&1; then
+if output=$(policy "$host" --memory-max-percent 85 --apply 2>&1); then
   fail 'expected a changed policy over an existing receipt to be refused'
 fi
+grep -Fq 'differ from the approved inputs' <<<"$output" || fail "changed policy printed: $output"
 
 # Revert preview changes nothing; revert apply restores byte-identical files.
 policy "$host" --revert >/dev/null
@@ -305,6 +420,24 @@ policy "$host" --revert --apply >/dev/null
 }
 [[ ! -f "$host.state/oomd-enabled" ]] || fail 'revert left systemd-oomd enabled'
 grep -Fxq 'disable-linger agent-01' "$host.state/loginctl.log" || fail 'revert did not disable linger'
+
+# Changed memory and swap readings between apply, repeat apply and verify: the
+# repeat apply reuses the approved readings and changes nothing, and the
+# verifier derives the values from the receipt instead of the host.
+host=$(new_host reread 64 8 16)
+policy "$host" --apply >/dev/null
+printf 'MemTotal:       %d kB\nMemFree:        1024 kB\n' $((63 * 1024 * 1024 + 4321)) >"$host/proc/meminfo"
+printf 'Filename\tType\tSize\tUsed\tPriority\n/swap.img\tfile\t%d\t0\t-2\n' $((4 * 1024 * 1024)) >"$host/proc/swaps"
+after=$(snapshot "$host")
+if ! repeat=$(policy "$host" --apply 2>&1); then
+  fail "repeat apply after a changed memory reading was refused: $repeat"
+fi
+grep -Fq 'already applied' <<<"$repeat" || fail 'repeat apply after a changed reading did not report an applied policy'
+grep -Fq 'the approved reading 67108864 from the receipt is kept' <<<"$repeat" || fail 'changed memory reading was not reported'
+grep -Fq 'Host memory:        64.0 GiB' <<<"$repeat" || fail 'repeat apply did not reuse the approved memory reading'
+[[ "$(snapshot "$host")" == "$after" ]] || fail 'repeat apply after a changed reading changed the fixture host'
+printf 'MemTotal:       %d kB\n' $((65 * 1024 * 1024)) >"$host/proc/meminfo"
+verify_receipt_matches_verifier "$host"
 
 # A revert is refused when a managed file changed after apply.
 host=$(new_host edited 64)
@@ -318,16 +451,14 @@ fi
 
 # 6. Overrides win and are labelled; zram planning switches swappiness to 100.
 host=$(new_host overrides-pct 128 32 16)
-mkdir -p "$host/usr/lib/systemd/system-generators"
-printf '#!/bin/sh\n' >"$host/usr/lib/systemd/system-generators/zram-generator"
-chmod 0755 "$host/usr/lib/systemd/system-generators/zram-generator"
+add_zram_generator "$host"
 out=$(policy "$host" --memory-high-percent 60 --memory-max-percent 75 --swap-max-percent 0 \
   --cpu-weight 75 --reserve-cores 4 --zram-percent 25 --tmp keep --apply)
 total=$((128 * 1024 * 1024))
 grep -Fxq "MemoryHigh=$((total * 60 / 100))K" "$host/etc/systemd/user/agent-work.slice" || fail 'flag share not used for MemoryHigh'
 grep -Fxq "MemoryMax=$((total * 75 / 100))K" "$host/etc/systemd/user/agent-work.slice" || fail 'flag share not used for MemoryMax'
 grep -Fxq 'MemorySwapMax=0K' "$host/etc/systemd/user/agent-work.slice" || fail 'flag share not used for MemorySwapMax'
-grep -Fxq 'CPUWeight=75' "$host/etc/systemd/user/agent-work.slice" || fail '--cpu-weight override not written'
+grep -Fxq 'CPUWeight=75' "$host/etc/systemd/user/agent.slice" || fail '--cpu-weight override not written to agent.slice'
 grep -Fxq 'CPUQuota=1200%' "$host/etc/systemd/user/agent-work.slice" || fail '--reserve-cores override not written'
 grep -Fxq 'zram-size = ram * 25 / 100' "$host/etc/systemd/zram-generator.conf" || fail 'zram size not written'
 grep -Fxq 'vm.swappiness = 100' "$host/etc/sysctl.d/60-agent-workstation-swap.conf" || fail 'zram swappiness not used'
@@ -337,20 +468,25 @@ for label in \
   '(override: --memory-high-percent)' \
   '(override: --swap-max-percent)' \
   '(override: --cpu-weight 75)' \
-  '(override: --reserve-cores 4)'; do
+  '(override: --reserve-cores 4)' \
+  'reserve overridden by --memory-max-percent'; do
   grep -Fq "$label" <<<"$out" || fail "override label missing from preview: $label"
 done
-verify_slice_matches_verifier "$host/etc/systemd/user/agent-work.slice" "$total" $((32 * 1048576)) 16 1 \
+PLANNED_ZRAM_KIB=$((total / 4)) verify_slice_matches_verifier "$host/etc/systemd/user/agent-work.slice" "$total" $((32 * 1048576)) 16 1 \
   --memory-high-percent 60 --memory-max-percent 75 --swap-max-percent 0 --cpu-weight 75 --reserve-cores 4
+verify_receipt_matches_verifier "$host" --memory-high-percent 60 --memory-max-percent 75 --swap-max-percent 0 \
+  --cpu-weight 75 --reserve-cores 4 --zram-percent 25 --tmp keep
 
-# --reserve-fixed-gib (including decimal GiB) and --memory-reserve-percent overrides win and are labelled.
+# --reserve-fixed-gib (decimal GiB, normalised) and --memory-reserve-percent overrides win and are labelled.
 host=$(new_host override-fixed 60 8 16)
-out=$(policy "$host" --reserve-fixed-gib 6.5 --apply)
+out=$(policy "$host" --reserve-fixed-gib 6.50 --apply)
 grep -Fq '6.5 GiB override (--reserve-fixed-gib) + 2% of RAM' <<<"$out" || fail 'fixed reserve override not labelled'
+grep -Fxq $'input\treserve_fixed_gib\t6.5' "$(receipt_of "$host")" || fail '--reserve-fixed-gib 6.50 was not normalised to 6.5'
 # 60 GiB - (6.5 GiB + 2% of 60 GiB) = 62914560 - (6815744 + 1258291) = 54840525 K
 grep -Fxq 'MemoryMax=54840525K' "$host/etc/systemd/user/agent-work.slice" || fail '--reserve-fixed-gib not applied'
 verify_slice_matches_verifier "$host/etc/systemd/user/agent-work.slice" $((60 * 1048576)) $((8 * 1048576)) 16 1 \
   --reserve-fixed-gib 6.5
+verify_receipt_matches_verifier "$host" --reserve-fixed-gib 6.50
 
 # Partial override: --memory-max-percent alone wins for MemoryMax while MemoryHigh stays on formula.
 host=$(new_host override-partial 60 8 41)
@@ -369,6 +505,16 @@ grep -Fq '15% of RAM (override: --memory-reserve-percent)' <<<"$out" || fail '--
 grep -Fxq 'MemoryMax=53477376K' "$host/etc/systemd/user/agent-work.slice" || fail '--memory-reserve-percent not applied'
 verify_slice_matches_verifier "$host/etc/systemd/user/agent-work.slice" $((60 * 1048576)) $((8 * 1048576)) 16 1 \
   --memory-reserve-percent 15
+
+# A --memory-max-percent that leaves less than the reserve applies only with
+# --allow-small-reserve, and the preview says so. 64 GiB desktop at 90%
+# leaves 6.4 GiB, below the 9.3 GiB reserve: MemoryMax = 60397977 K.
+host=$(new_host small-reserve-allowed 64 8 16)
+out=$(policy "$host" --memory-max-percent 90 --allow-small-reserve --apply)
+grep -Fxq 'MemoryMax=60397977K' "$host/etc/systemd/user/agent-work.slice" || fail '--allow-small-reserve did not apply the ceiling'
+grep -Fq 'Outside the slice:  6.4 GiB (reserve overridden by --memory-max-percent; the reserve would be 9.3 GiB: 8 GiB desktop default + 2% of RAM; less than the reserve, accepted with --allow-small-reserve)' <<<"$out" ||
+  fail "small reserve not labelled: $(grep 'Outside the slice' <<<"$out")"
+verify_receipt_matches_verifier "$host" --memory-max-percent 90 --allow-small-reserve
 
 # Without oomd, the slice carries no ManagedOOM keys and the preview says why.
 host=$(new_host no-oomd 64)
@@ -394,14 +540,20 @@ refuses() {
 REFUSE_GIB=8 refuses tiny-desktop 'below 2.0 GiB'
 REFUSE_GIB=4 REFUSE_DESKTOP=0 refuses tiny-headless 'below 2.0 GiB'
 refuses reserve-conflict 'Cannot combine --reserve-fixed-gib with --memory-reserve-percent' --reserve-fixed-gib 8 --memory-reserve-percent 10
-refuses reserve-pct 'leaves less than the 10% reserve' --memory-max-percent 95 --memory-reserve-percent 10
+refuses reserve-pct 'less than the reserve (6.4 GiB: 10% of RAM' --memory-max-percent 95 --memory-reserve-percent 10
+# Override safety: the ceiling may not eat the formula reserve or the last 2 GiB.
+refuses max-over-reserve 'A 90% ceiling leaves 6.4 GiB outside agent work, less than the reserve (9.3 GiB' --memory-max-percent 90
+REFUSE_GIB=16 REFUSE_DESKTOP=0 refuses max-over-2gib 'A 95% ceiling leaves 0.8 GiB outside agent work' --memory-max-percent 95
 refuses reserve-gib 'replaced by --reserve-fixed-gib' --memory-reserve-gib 8
 refuses high-over-max 'must be greater than' --memory-high-percent 80 --memory-max-percent 80
 refuses too-many-reserved-cores 'must be less than host CPU cores' --reserve-cores 16
 STUB_SYSTEMD_VERSION=245 refuses old-systemd 'too old'
 cgroup_v1() { rm "$1/sys/fs/cgroup/cgroup.controllers"; }
 REFUSE_SETUP=cgroup_v1 refuses cgroup-v1 'cgroup v2'
+no_cpu_controller() { printf 'cpuset io memory hugetlb pids rdma misc\n' >"$1/sys/fs/cgroup/cgroup.controllers"; }
+REFUSE_SETUP=no_cpu_controller refuses no-cpu-controller 'cpu controller is not available'
 STUB_DELEGATE='pids' refuses no-delegation 'does not delegate the memory controller'
+STUB_DELEGATE='memory pids' refuses memory-only-delegation 'does not delegate the cpu controller'
 fstab_tmp() { printf 'tmpfs /tmp tmpfs defaults 0 0\n' >>"$1/etc/fstab"; }
 REFUSE_SETUP=fstab_tmp refuses fstab-tmp 'tmpfs from fstab' --tmp disk
 refuses no-zram-generator 'systemd-zram-generator' --zram-percent 25
@@ -416,6 +568,23 @@ if output=$(STUB_STATE="$work" PATH="$stubs:$PATH" "$BASH" "$script" --agent age
   fail 'expected a non-root apply without a fixture root to be refused'
 fi
 grep -Fq 'requires root' <<<"$output" || fail "non-root apply printed: $output"
+
+# Integer flags are checked as text before any arithmetic: an overflowing
+# value, a negative, letters, a leading zero and an empty value are refused.
+host=$(new_host bad-integers 64)
+for flag in --cpu-weight --reserve-cores --memory-reserve-percent --memory-high-percent --memory-max-percent \
+  --swap-max-percent --oomd-pressure-percent --swappiness --zram-percent --reserve-fixed-gib; do
+  for bad in 18446744073709551666 -1 abc 08 ''; do
+    pattern='must be a whole number'
+    [[ "$flag" != --reserve-fixed-gib ]] || pattern='must be a positive number'
+    [[ -n "$bad" ]] || pattern='needs a value'
+    if output=$(policy "$host" "$flag" "$bad" --apply 2>&1); then
+      fail "expected $flag '$bad' to be refused"
+    fi
+    grep -Fq -- "$flag $pattern" <<<"$output" || fail "$flag '$bad' printed: $output"
+  done
+done
+[[ ! -e "$host/var/lib/agent-workstation-kit" ]] || fail 'a refused integer flag wrote a receipt'
 
 # 8. oomd states static, alias and enabled-runtime count as enabled.
 for state in static alias enabled-runtime; do
@@ -448,6 +617,108 @@ interrupt() {
 interrupt mask ln
 # lingering is recorded, then loginctl fails, after most files changed.
 interrupt linger loginctl
+
+# Fault injection: kill the apply (SIGKILL, so no trap runs) right after each
+# change to the host in turn, before its completion is recorded. A new apply
+# refuses the half-applied receipt, and revert restores the original bytes.
+stop=1
+while :; do
+  root=$(new_host "stop-apply-$stop" 64)
+  before=$(snapshot "$root")
+  if AWK_RESOURCE_TEST_STOP_AFTER=$stop policy "$root" --apply >/dev/null 2>&1; then
+    break
+  fi
+  ! grep -Fxq $'state\tcomplete' "$(receipt_of "$root")" || fail "a stop after change $stop left a complete receipt"
+  if ((stop == 3)); then
+    if output=$(policy "$root" --apply 2>&1); then
+      fail 'expected an apply over a half-applied receipt to be refused'
+    fi
+    grep -Fq 'stopped part way' <<<"$output" || fail "apply over a half-applied receipt printed: $output"
+  fi
+  policy "$root" --revert --apply >/dev/null 2>&1 || fail "revert after a stop at change $stop failed"
+  [[ "$(snapshot "$root")" == "$before" ]] || {
+    diff <(printf '%s\n' "$before") <(snapshot "$root") >&2 || true
+    fail "revert after a stop at change $stop did not restore the host"
+  }
+  [[ ! -f "$root.state/oomd-enabled" ]] || fail "revert after a stop at change $stop left systemd-oomd enabled"
+  stop=$((stop + 1))
+done
+((stop > 12)) || fail "fault injection covered only $((stop - 1)) changes"
+
+# A revert killed after a restore can be run again to finish. Sampled at the
+# first, a middle and the last of the 13 restores to keep the run short.
+for stop in 1 5 9 13; do
+  root=$(new_host "stop-revert-$stop" 64)
+  before=$(snapshot "$root")
+  policy "$root" --apply >/dev/null
+  if AWK_RESOURCE_TEST_STOP_AFTER=$stop policy "$root" --revert --apply >/dev/null 2>&1; then
+    fail "revert was not stopped after restore $stop"
+  fi
+  policy "$root" --revert --apply >/dev/null 2>&1 || fail "revert after a revert stopped at restore $stop failed"
+  [[ "$(snapshot "$root")" == "$before" ]] || {
+    diff <(printf '%s\n' "$before") <(snapshot "$root") >&2 || true
+    fail "revert after a revert stopped at restore $stop did not restore the host"
+  }
+done
+
+# The state directory is locked for the whole apply and revert.
+hold_lock() {
+  local dir=$1 ready="$work/lock-ready"
+  rm -f "$ready"
+  python3 -c 'import fcntl, os, sys, time
+fd = os.open(sys.argv[1], os.O_RDONLY)
+fcntl.flock(fd, fcntl.LOCK_EX)
+open(sys.argv[2], "w").close()
+time.sleep(120)' "$dir" "$ready" &
+  lock_pid=$!
+  until [[ -e "$ready" ]]; do sleep 0.1; done
+}
+release_lock() {
+  kill "$lock_pid" 2>/dev/null || true
+  wait "$lock_pid" 2>/dev/null || true
+  lock_pid=''
+}
+host=$(new_host locked-apply 64)
+mkdir -p "$host/var/lib/agent-workstation-kit/resource-policy"
+hold_lock "$host/var/lib/agent-workstation-kit/resource-policy"
+before=$(snapshot "$host")
+if output=$(policy "$host" --apply 2>&1); then
+  fail 'expected an apply to wait for the lock'
+fi
+release_lock
+grep -Fq 'holds the lock' <<<"$output" || fail "locked apply printed: $output"
+[[ ! -e "$(receipt_of "$host")" ]] || fail 'a locked apply wrote a receipt'
+host=$(new_host locked-revert 64)
+policy "$host" --apply >/dev/null
+hold_lock "$host/var/lib/agent-workstation-kit/resource-policy"
+before=$(snapshot "$host")
+if output=$(policy "$host" --revert --apply 2>&1); then
+  fail 'expected a revert to wait for the lock'
+fi
+release_lock
+grep -Fq 'holds the lock' <<<"$output" || fail "locked revert printed: $output"
+[[ "$(snapshot "$host")" == "$before" ]] || fail 'a locked revert changed the fixture host'
+
+# A symbolic link in the state path (a parent directory or the receipt) is refused.
+host=$(new_host state-link 64)
+mkdir -p "$work/state-elsewhere"
+ln -s "$work/state-elsewhere" "$host/var/lib/agent-workstation-kit"
+if output=$(policy "$host" --apply 2>&1); then
+  fail 'expected a symlinked state directory to be refused'
+fi
+grep -Fq '/var/lib/agent-workstation-kit is a symbolic link' <<<"$output" || fail "symlinked state printed: $output"
+[[ -z "$(ls -A "$work/state-elsewhere")" ]] || fail 'apply wrote through a symlinked state directory'
+host=$(new_host receipt-link 64)
+policy "$host" --apply >/dev/null
+receipt=$(receipt_of "$host")
+mv "$receipt" "$work/receipt-elsewhere.tsv"
+ln -s "$work/receipt-elsewhere.tsv" "$receipt"
+before=$(snapshot "$host")
+if output=$(policy "$host" --revert --apply 2>&1); then
+  fail 'expected a symlinked receipt to be refused'
+fi
+grep -Fq 'receipt.tsv is a symbolic link' <<<"$output" || fail "symlinked receipt printed: $output"
+[[ "$(snapshot "$host")" == "$before" ]] || fail 'a refused revert through a symlinked receipt changed the host'
 
 # 10. Agent processes outside agent-work.slice are found; others are not.
 # make_proc DIR PID UID COMM CGROUP [ARGV...]
@@ -490,6 +761,31 @@ root = Path(sys.argv[1])
 assert agent_processes_outside_slice(root, 1001, sys.argv[2]) == []
 assert len(agent_processes_outside_slice(root, 1001, sys.argv[3])) == 3
 EOF
+
+# The host audit (validate-host.sh) checks both slices through
+# resource_slice_problems: an applied host passes, and each unsafe value fails.
+applied="$work/matrix-desktop-16/etc/systemd/user"
+[[ -z "$(resource_slice_problems "$applied/agent-work.slice" "$applied/agent.slice" agent-01)" ]] ||
+  fail "an applied host has slice problems: $(resource_slice_problems "$applied/agent-work.slice" "$applied/agent.slice" agent-01)"
+slice_problem() {
+  local label=$1 pattern=$2 edit=$3 target=${4:-work} dir="$work/audit-$1"
+  mkdir -p "$dir"
+  cp "$applied/agent-work.slice" "$applied/agent.slice" "$dir/"
+  if [[ "$target" == work ]]; then
+    sed "$edit" "$applied/agent-work.slice" >"$dir/agent-work.slice"
+  else
+    sed "$edit" "$applied/agent.slice" >"$dir/agent.slice"
+  fi
+  grep -Fq "$pattern" <<<"$(resource_slice_problems "$dir/agent-work.slice" "$dir/agent.slice" agent-01)" ||
+    fail "audit $label did not report: $pattern"
+}
+slice_problem max-below-2gib 'MemoryMax is missing or below 2 GiB' 's/^MemoryMax=.*/MemoryMax=1048576K/'
+slice_problem high-equals-max 'MemoryHigh is missing or not below MemoryMax' 's/^MemoryHigh=.*/MemoryHigh=8053064K/'
+slice_problem quota-below-100 'CPUQuota is missing or below 100%' 's/^CPUQuota=.*/CPUQuota=50%/'
+slice_problem quota-overflow 'CPUQuota is missing or below 100%' 's/^CPUQuota=.*/CPUQuota=18446744073709551666%/'
+slice_problem no-swap-max 'MemorySwapMax is missing' '/^MemorySwapMax=/d'
+slice_problem weight-on-work 'sets CPUWeight, which belongs on agent.slice' 's/^ManagedOOMMemoryPressure=kill$/CPUWeight=50/'
+slice_problem no-parent-weight 'agent.slice CPUWeight is missing' '/^CPUWeight=/d' parent
 
 # 11. The terminal wrapper runs the shell directly when the policy is absent,
 # and falls back to the plain shell with a warning when the scope fails.
