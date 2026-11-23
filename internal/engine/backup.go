@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -15,6 +16,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/sathyassn/agent-workstation-kit/internal/contract"
+	"github.com/sathyassn/agent-workstation-kit/internal/platform"
 )
 
 // EntryKind is what a declared path was before the apply.
@@ -251,4 +253,69 @@ func cleanPath(p string) (string, error) {
 		return "", &contract.UndeclaredTargetError{Kind: contract.TargetPath, Target: p}
 	}
 	return p, nil
+}
+
+// removeOrphanBackups removes backup folders that no run refers to: a kill
+// during the backup, before the intent record, leaves one behind. A folder
+// is kept when it belongs to the record's run or has a receipt. Call it
+// under the host lock and the journal lock, with an idle record.
+func (e *Engine) removeOrphanBackups(rec *Record) error {
+	dir, err := openDir(filepath.Join(e.opts.JournalDir, backupsDir))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = dir.Close() }()
+	names, err := listDir(dir)
+	if err != nil {
+		return err
+	}
+	removed := false
+	for _, n := range names {
+		id := contract.RunID(n)
+		if platform.ValidateRunID(id) != nil || (rec != nil && id == rec.RunID) {
+			continue
+		}
+		receipt, err := e.readReceipt(id)
+		if err != nil {
+			return err
+		}
+		if receipt != nil {
+			continue
+		}
+		if err := removeFlatDir(dir, n); err != nil {
+			return err
+		}
+		removed = true
+	}
+	if !removed {
+		return nil
+	}
+	if err := dir.Sync(); err != nil {
+		return fmt.Errorf("fsync folder %q: %w", dir.Name(), err)
+	}
+	return nil
+}
+
+// removeFlatDir removes the folder name inside parent and the files in it,
+// without following links. A backup folder holds only files.
+func removeFlatDir(parent *os.File, name string) error {
+	fd, err := unix.Openat(int(parent.Fd()), name, dirFlags, 0)
+	if err != nil {
+		return fmt.Errorf("open backup folder %q: %w", name, err)
+	}
+	d := os.NewFile(uintptr(fd), filepath.Join(parent.Name(), name))
+	defer func() { _ = d.Close() }()
+	files, err := listDir(d)
+	if err != nil {
+		return err
+	}
+	for _, f := range files {
+		if err := unix.Unlinkat(fd, f, 0); err != nil && !errors.Is(err, unix.ENOENT) {
+			return fmt.Errorf("remove %q in orphan backup %q: %w", f, name, err)
+		}
+	}
+	if err := unix.Unlinkat(int(parent.Fd()), name, unix.AT_REMOVEDIR); err != nil && !errors.Is(err, unix.ENOENT) {
+		return fmt.Errorf("remove orphan backup %q: %w", name, err)
+	}
+	return nil
 }

@@ -216,8 +216,10 @@ func (e *Engine) Apply(ctx context.Context, u contract.Unit, p contract.Plan) er
 		if err := e.prepareJournal(); err != nil {
 			return err
 		}
-		rec, err = e.readRecord()
-		return err
+		if rec, err = e.readRecord(); err != nil || rec.unfinished() {
+			return err
+		}
+		return e.removeOrphanBackups(rec)
 	}); err != nil {
 		return err
 	}

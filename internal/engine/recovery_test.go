@@ -271,3 +271,45 @@ func TestResumeRefusesChangedPlan(t *testing.T) {
 		t.Fatalf("record = %+v, want idle", r)
 	}
 }
+
+// TestApplyRemovesOrphanBackups is the LOW finding: a kill during the backup,
+// before the intent record, leaves a backup folder nothing refers to. The
+// next apply, under the host lock and with an idle record, removes it and
+// keeps every run that has a receipt.
+func TestApplyRemovesOrphanBackups(t *testing.T) {
+	w := newWorld(t)
+	u := &testUnit{root: w.root}
+	e, _ := w.engine(t)
+	if err := e.Apply(context.Background(), u, testPlan()); err != nil {
+		t.Fatal(err)
+	}
+	kept := w.record(t).RunID
+	restoreOriginal(t, w)
+	w.abandon(t, engine.PointBackupEntry, u)
+	if n := len(backupDirs(t, w)); n != 2 {
+		t.Fatalf("%d backup folders before the next apply, want the kept run and an orphan", n)
+	}
+
+	e, _ = w.engine(t)
+	if err := e.Apply(context.Background(), u, testPlan()); err != nil {
+		t.Fatal(err)
+	}
+	got := backupDirs(t, w)
+	want := map[string]bool{string(kept): true, string(w.record(t).RunID): true}
+	if len(got) != 2 || !want[got[0]] || !want[got[1]] {
+		t.Fatalf("backup folders = %v, want only runs with receipts %v", got, want)
+	}
+}
+
+func backupDirs(t *testing.T, w *world) []string {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(w.journal, "backups"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, e := range entries {
+		out = append(out, e.Name())
+	}
+	return out
+}
