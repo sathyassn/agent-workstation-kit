@@ -1,0 +1,159 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/sathyassn/agent-workstation-kit/schema/json/status.schema.json",
+  "title": "Unit Status",
+  "description": "A unit's current state on the machine, including drift and its latest receipt.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "unit",
+    "applied",
+    "drift"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "unit": {
+      "$ref": "#/$defs/unit_id"
+    },
+    "applied": {
+      "type": "boolean"
+    },
+    "drift": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "last_receipt": {
+      "$ref": "#/$defs/receipt"
+    }
+  },
+  "$defs": {
+    "unit_id": {
+      "type": "string",
+      "enum": [
+        "baseline",
+        "packages-user",
+        "packages",
+        "machine-identity",
+        "accounts",
+        "agentctl",
+        "workloads",
+        "firewall",
+        "ssh",
+        "mesh-vpn",
+        "remote-desktop",
+        "vpn",
+        "shell",
+        "git-identity",
+        "runtimes",
+        "tools",
+        "agent-settings",
+        "mcp",
+        "browser-tunnel",
+        "workspace",
+        "resource-limits",
+        "indexing",
+        "snapshots",
+        "doctor",
+        "audit-agent"
+      ]
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "applied_change": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target",
+        "action",
+        "risk"
+      ],
+      "properties": {
+        "target": {
+          "type": "string",
+          "minLength": 1
+        },
+        "action": {
+          "type": "string",
+          "enum": [
+            "create",
+            "replace",
+            "remove",
+            "set",
+            "none"
+          ]
+        },
+        "before": {
+          "$ref": "#/$defs/digest"
+        },
+        "after": {
+          "$ref": "#/$defs/digest"
+        },
+        "risk": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ]
+        },
+        "backup": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run_id",
+        "unit",
+        "plan_digest",
+        "changes",
+        "time",
+        "outcome"
+      ],
+      "properties": {
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "unit": {
+          "$ref": "#/$defs/unit_id"
+        },
+        "plan_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "changes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/applied_change"
+          }
+        },
+        "time": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "verified",
+            "skipped",
+            "deferred",
+            "failed",
+            "stale"
+          ]
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "machine": "lab-ws-01",
+  "account": "admin-01",
+  "step": "Approve root firewall and SSH changes",
+  "command": {
+    "argv": [
+      "sudo",
+      "/opt/agent-workstation-kit/bin/wskit",
+      "setup",
+      "--stage",
+      "remote",
+      "--apply"
+    ],
+    "display": "sudo /opt/agent-workstation-kit/bin/wskit setup --stage remote --apply --approve-plan SHORT-DIGEST"
+  },
+  "why": "Previous approval attempt was declined; operator confirmation is required before retrying.",
+  "verify": {
+    "argv": [
+      "wskit",
+      "status",
+      "--json"
+    ]
+  },
+  "undo": null,
+  "probe": null,
+  "status": "blocked"
+}

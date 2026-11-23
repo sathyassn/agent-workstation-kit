@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/sathyassn/agent-workstation-kit/schema/json/plan.schema.json",
+  "title": "Unit Plan",
+  "description": "What a unit would do, fixed by its canonical JSON digest before approval.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "id",
+    "unit",
+    "digest",
+    "changes",
+    "non_defaults",
+    "blocked_by",
+    "cannot_undo",
+    "outcome"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "unit": {
+      "$ref": "#/$defs/unit_id"
+    },
+    "digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "changes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/change"
+      }
+    },
+    "non_defaults": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "blocked_by": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "cannot_undo": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "outcome": {
+      "enum": [
+        "verified",
+        "skipped",
+        "deferred",
+        "failed",
+        "stale",
+        null
+      ]
+    }
+  },
+  "$defs": {
+    "unit_id": {
+      "type": "string",
+      "enum": [
+        "baseline",
+        "packages-user",
+        "packages",
+        "machine-identity",
+        "accounts",
+        "agentctl",
+        "workloads",
+        "firewall",
+        "ssh",
+        "mesh-vpn",
+        "remote-desktop",
+        "vpn",
+        "shell",
+        "git-identity",
+        "runtimes",
+        "tools",
+        "agent-settings",
+        "mcp",
+        "browser-tunnel",
+        "workspace",
+        "resource-limits",
+        "indexing",
+        "snapshots",
+        "doctor",
+        "audit-agent"
+      ]
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "change": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target",
+        "action",
+        "risk"
+      ],
+      "properties": {
+        "target": {
+          "type": "string",
+          "minLength": 1
+        },
+        "action": {
+          "type": "string",
+          "enum": [
+            "create",
+            "replace",
+            "remove",
+            "set",
+            "none"
+          ]
+        },
+        "before": {
+          "$ref": "#/$defs/digest"
+        },
+        "after": {
+          "$ref": "#/$defs/digest"
+        },
+        "risk": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ]
+        }
+      }
+    }
+  }
+}

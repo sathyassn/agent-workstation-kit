@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "id": "plan-acme-ws-001-ssh-001",
+  "unit": "ssh",
+  "digest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "changes": [
+    {
+      "target": "/etc/ssh/sshd_config.d/50-agent-workstation-kit.conf",
+      "action": "replace",
+      "before": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "after": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "risk": "high"
+    },
+    {
+      "target": "/etc/ssh/sshd_config.d/90-lab.conf",
+      "action": "create",
+      "after": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "risk": "low"
+    }
+  ],
+  "non_defaults": [
+    "network.ssh.port"
+  ],
+  "blocked_by": [],
+  "cannot_undo": [],
+  "outcome": null
+}

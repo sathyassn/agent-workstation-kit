@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "subject": "ssh",
+  "what": "Hardens the OpenSSH daemon for named-user key-only login over the mesh VPN.",
+  "why": "Prevents password guessing and restricts administrative access to explicit human accounts.",
+  "options": [
+    "enabled",
+    "disabled"
+  ],
+  "default": "enabled",
+  "risk": "high: misconfiguration can lock out remote logins; guarded by a dead-man timer.",
+  "undo": "Run wskit ssh revert --apply to restore the backed-up sshd drop-in and firewall rules.",
+  "manual_equivalent": "Install /etc/ssh/sshd_config.d/50-agent-workstation-kit.conf, run sshd -t and reload ssh.",
+  "sources": [
+    {
+      "url": "https://man.openbsd.org/sshd_config",
+      "purpose": "Authoritative OpenSSH server configuration manual",
+      "last_verified": "2026-11-22"
+    }
+  ]
+}

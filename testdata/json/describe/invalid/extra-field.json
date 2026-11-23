@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "unit": "shell",
+  "scope": "user",
+  "depends_on": [],
+  "capabilities": [],
+  "owned_paths": [],
+  "owned_state_keys": [],
+  "irreversible": [],
+  "declared_env": [],
+  "unexpected": true
+}

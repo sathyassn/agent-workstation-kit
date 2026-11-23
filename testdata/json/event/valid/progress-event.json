@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "seq": 5,
+  "time": "2026-11-23T12:20:02Z",
+  "run_id": "run-acme-ws-001-20261123T122000Z",
+  "unit": "packages",
+  "step": "apply",
+  "kind": "progress",
+  "text": "installing packages (3/10)",
+  "data": {
+    "count": "3"
+  }
+}

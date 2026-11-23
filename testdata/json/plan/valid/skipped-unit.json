@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "id": "plan-lab-ws-01-snapshots-002",
+  "unit": "snapshots",
+  "digest": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+  "changes": [],
+  "non_defaults": [],
+  "blocked_by": [
+    "unsupported on darwin"
+  ],
+  "cannot_undo": [],
+  "outcome": "skipped"
+}

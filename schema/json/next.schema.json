@@ -1,0 +1,166 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/sathyassn/agent-workstation-kit/schema/json/next.schema.json",
+  "title": "Next Action",
+  "description": "The next step returned by wskit next --json for the conductor loop.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_id",
+    "stage",
+    "unit",
+    "owner",
+    "root",
+    "gate",
+    "preview_argv",
+    "apply_argv",
+    "handover",
+    "probe",
+    "log_path",
+    "blocked_by",
+    "outcome"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "stage": {
+      "enum": [
+        "baseline",
+        "packages-user",
+        "packages",
+        "identity",
+        "services",
+        "agent",
+        "remote",
+        "resources",
+        "audit",
+        "audit-agent",
+        null
+      ]
+    },
+    "unit": {
+      "enum": [
+        "baseline",
+        "packages-user",
+        "packages",
+        "machine-identity",
+        "accounts",
+        "agentctl",
+        "workloads",
+        "firewall",
+        "ssh",
+        "mesh-vpn",
+        "remote-desktop",
+        "vpn",
+        "shell",
+        "git-identity",
+        "runtimes",
+        "tools",
+        "agent-settings",
+        "mcp",
+        "browser-tunnel",
+        "workspace",
+        "resource-limits",
+        "indexing",
+        "snapshots",
+        "doctor",
+        "audit-agent",
+        null
+      ]
+    },
+    "owner": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "root": {
+      "type": "boolean"
+    },
+    "gate": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "preview_argv": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "apply_argv": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "handover": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "handover.schema.json"
+        }
+      ]
+    },
+    "probe": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "handover.schema.json#/$defs/probe"
+        }
+      ]
+    },
+    "log_path": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "blocked_by": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "outcome": {
+      "enum": [
+        "verified",
+        "skipped",
+        "deferred",
+        "failed",
+        "stale",
+        null
+      ]
+    }
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "subject": "ssh",
+  "what": "Hardens the OpenSSH daemon.",
+  "why": "Restricts remote access.",
+  "options": [],
+  "default": null,
+  "risk": "high",
+  "undo": "Revert ssh unit.",
+  "manual_equivalent": "Edit sshd_config.",
+  "sources": [
+    {
+      "url": "https://man.openbsd.org/sshd_config",
+      "purpose": "OpenSSH manual",
+      "last_verified": "23/11/2026"
+    }
+  ]
+}

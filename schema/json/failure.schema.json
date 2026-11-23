@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/sathyassn/agent-workstation-kit/schema/json/failure.schema.json",
+  "title": "Failure Record",
+  "description": "Structured record of a failed unit step, with recovery guidance, log path and backup reference.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "unit",
+    "step",
+    "error_class",
+    "message",
+    "suggested",
+    "log",
+    "backup"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "unit": {
+      "type": "string",
+      "enum": [
+        "baseline",
+        "packages-user",
+        "packages",
+        "machine-identity",
+        "accounts",
+        "agentctl",
+        "workloads",
+        "firewall",
+        "ssh",
+        "mesh-vpn",
+        "remote-desktop",
+        "vpn",
+        "shell",
+        "git-identity",
+        "runtimes",
+        "tools",
+        "agent-settings",
+        "mcp",
+        "browser-tunnel",
+        "workspace",
+        "resource-limits",
+        "indexing",
+        "snapshots",
+        "doctor",
+        "audit-agent"
+      ]
+    },
+    "step": {
+      "type": "string",
+      "enum": [
+        "describe",
+        "plan",
+        "backup",
+        "intent",
+        "apply",
+        "verify",
+        "receipt",
+        "revert"
+      ]
+    },
+    "error_class": {
+      "type": "string",
+      "minLength": 1
+    },
+    "message": {
+      "type": "string",
+      "minLength": 1
+    },
+    "suggested": {
+      "type": "string",
+      "minLength": 1
+    },
+    "log": {
+      "type": "string",
+      "minLength": 1
+    },
+    "backup": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  }
+}

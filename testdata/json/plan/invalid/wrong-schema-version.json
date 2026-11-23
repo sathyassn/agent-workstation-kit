@@ -1,0 +1,11 @@
+{
+  "schema_version": 2,
+  "id": "plan-lab-ws-01-ssh-005",
+  "unit": "ssh",
+  "digest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "changes": [],
+  "non_defaults": [],
+  "blocked_by": [],
+  "cannot_undo": [],
+  "outcome": null
+}

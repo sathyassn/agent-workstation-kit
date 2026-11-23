@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/sathyassn/agent-workstation-kit/schema/json/event.schema.json",
+  "title": "Run Event",
+  "description": "One line of a run's redacted, ordered event stream.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "seq",
+    "time",
+    "run_id",
+    "unit",
+    "step",
+    "kind",
+    "text",
+    "data"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615
+    },
+    "time": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "unit": {
+      "type": "string",
+      "enum": [
+        "baseline",
+        "packages-user",
+        "packages",
+        "machine-identity",
+        "accounts",
+        "agentctl",
+        "workloads",
+        "firewall",
+        "ssh",
+        "mesh-vpn",
+        "remote-desktop",
+        "vpn",
+        "shell",
+        "git-identity",
+        "runtimes",
+        "tools",
+        "agent-settings",
+        "mcp",
+        "browser-tunnel",
+        "workspace",
+        "resource-limits",
+        "indexing",
+        "snapshots",
+        "doctor",
+        "audit-agent"
+      ]
+    },
+    "step": {
+      "type": "string",
+      "enum": [
+        "describe",
+        "plan",
+        "backup",
+        "intent",
+        "apply",
+        "verify",
+        "receipt",
+        "revert"
+      ]
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "step-start",
+        "step-end",
+        "change",
+        "backup",
+        "command",
+        "output",
+        "warning",
+        "handover",
+        "failure",
+        "coalesced",
+        "progress"
+      ]
+    },
+    "text": {
+      "type": "string",
+      "pattern": "^[^\\r\\n]*$"
+    },
+    "data": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "propertyNames": {
+            "enum": [
+              "path",
+              "action",
+              "digest",
+              "backup",
+              "argv0",
+              "exit_code",
+              "count"
+            ]
+          },
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      ]
+    }
+  }
+}

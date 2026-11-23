@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "code": 2,
+  "class": "refused",
+  "message": "refusals must name the rule that refused the request"
+}

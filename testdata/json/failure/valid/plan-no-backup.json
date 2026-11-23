@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "unit": "packages",
+  "step": "plan",
+  "error_class": "precondition",
+  "message": "root baseline receipt is missing",
+  "suggested": "Run wskit setup --stage baseline --apply first.",
+  "log": "/var/log/agent-workstation-kit/run-lab-ws-01-packages.jsonl",
+  "backup": null
+}

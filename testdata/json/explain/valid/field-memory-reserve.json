@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "subject": "resources.os_memory_reserve_percent",
+  "what": "Percentage of system RAM reserved for the OS and desktop outside agent-work.slice.",
+  "why": "Keeps the desktop, SSH and system services responsive when coding agents spike memory.",
+  "options": [
+    "integer percentage between 10 and 80"
+  ],
+  "default": 20,
+  "risk": "medium: setting the reserve too low can starve system services under heavy agent load.",
+  "undo": "Reset resources.os_memory_reserve_percent in the profile and re-apply resource-limits.",
+  "manual_equivalent": "Edit /etc/systemd/user/agent-work.slice.d/50-agent-workstation-kit.conf and reload systemd.",
+  "sources": [
+    {
+      "url": "https://www.freedesktop.org/software/systemd/man/latest/systemd.resource-control.html",
+      "purpose": "systemd cgroup v2 memory and CPU control reference",
+      "last_verified": "2026-11-22"
+    }
+  ]
+}

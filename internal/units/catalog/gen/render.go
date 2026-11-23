@@ -88,6 +88,13 @@ func contractEnumDefs() []enumSpec {
 // reservedGoNames returns every top-level Go identifier emitted or referenced
 // by the generator (types, helper functions, and any constants or table
 // variables). Both Validate and the renderer draw from the same symbol table.
+// contractErrUnknownValue is the sentinel error the generated contract file
+// declares and every enum decoder wraps.
+const (
+	contractErrUnknownValue  = "ErrUnknownValue"
+	contractUnknownValueType = "UnknownValueError"
+)
+
 func reservedGoNames() map[string]bool {
 	reserved := map[string]bool{
 		catalogTypeCondition:      true,
@@ -98,6 +105,8 @@ func reservedGoNames() map[string]bool {
 		catalogTypeConstructor:    true,
 		catalogFuncEntries:        true,
 		catalogFuncLookup:         true,
+		contractErrUnknownValue:   true,
+		contractUnknownValueType:  true,
 	}
 	for _, spec := range contractEnumDefs() {
 		reserved[spec.typeName] = true
@@ -229,7 +238,14 @@ func RenderContractEnums(cat Catalog) ([]byte, error) {
 
 	var b bytes.Buffer
 	b.WriteString(generatedHeader)
-	b.WriteString("\npackage contract\n\n")
+	b.WriteString("\npackage contract\n\nimport (\n\t\"encoding/json\"\n\t\"fmt\"\n)\n\n")
+	b.WriteString("// " + contractUnknownValueType + " is the type of " + contractErrUnknownValue + ". A constant\n")
+	b.WriteString("// sentinel cannot be reassigned, and errors.Is matches it by value.\n")
+	b.WriteString("type " + contractUnknownValueType + " string\n\n")
+	b.WriteString("// Error returns the error text.\n")
+	b.WriteString("func (e " + contractUnknownValueType + ") Error() string { return string(e) }\n\n")
+	b.WriteString("// " + contractErrUnknownValue + " is returned when decoding a value an enum does not define.\n")
+	b.WriteString("const " + contractErrUnknownValue + " " + contractUnknownValueType + " = \"unknown enum value\"\n\n")
 
 	for _, spec := range contractEnumDefs() {
 		spec.values = valuesByType[spec.typeName]
@@ -287,6 +303,27 @@ func writeEnum(b *bytes.Buffer, spec enumSpec) {
 		b.WriteString(goIdent(spec.prefix, v))
 	}
 	b.WriteString(":\n\t\treturn true\n\tdefault:\n\t\treturn false\n\t}\n}\n\n")
+
+	writef(b, "// UnmarshalText decodes a %s and rejects unknown values.\n", spec.typeName)
+	writef(b, "func (%s *%s) UnmarshalText(b []byte) error {\n", spec.recv, spec.typeName)
+	writef(b, "\tv := %s(b)\n", spec.typeName)
+	writef(b, "\tif !v.Valid() {\n")
+	writef(b, "\t\treturn fmt.Errorf(\"%%w: %s %%q\", ErrUnknownValue, string(b))\n", spec.typeName)
+	writef(b, "\t}\n")
+	writef(b, "\t*%s = v\n", spec.recv)
+	writef(b, "\treturn nil\n")
+	writef(b, "}\n\n")
+	writef(b, "// UnmarshalJSON decodes a %s and rejects null and unknown values.\n", spec.typeName)
+	writef(b, "func (%s *%s) UnmarshalJSON(b []byte) error {\n", spec.recv, spec.typeName)
+	writef(b, "\tif string(b) == \"null\" {\n")
+	writef(b, "\t\treturn fmt.Errorf(\"%%w: %s is null\", ErrUnknownValue)\n", spec.typeName)
+	writef(b, "\t}\n")
+	writef(b, "\tvar raw string\n")
+	writef(b, "\tif err := json.Unmarshal(b, &raw); err != nil {\n")
+	writef(b, "\t\treturn fmt.Errorf(\"%s: %%w\", err)\n", spec.typeName)
+	writef(b, "\t}\n")
+	writef(b, "\treturn %s.UnmarshalText([]byte(raw))\n", spec.recv)
+	writef(b, "}\n\n")
 
 	if len(spec.scopeCases) > 0 {
 		writef(b, "// Scope returns the execution Scope for %s, or an empty Scope when invalid.\n", spec.recv)

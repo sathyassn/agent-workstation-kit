@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/sathyassn/agent-workstation-kit/schema/json/explain.schema.json",
+  "title": "Explain Subject",
+  "description": "Structured explanation for a unit or configuration field returned by wskit explain --json.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "subject",
+    "what",
+    "why",
+    "options",
+    "default",
+    "risk",
+    "undo",
+    "manual_equivalent",
+    "sources"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "subject": {
+      "type": "string",
+      "minLength": 1
+    },
+    "what": {
+      "type": "string",
+      "minLength": 1
+    },
+    "why": {
+      "type": "string",
+      "minLength": 1
+    },
+    "options": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "default": {
+      "type": [
+        "string",
+        "boolean",
+        "number",
+        "array",
+        "object",
+        "null"
+      ]
+    },
+    "risk": {
+      "type": "string",
+      "minLength": 1
+    },
+    "undo": {
+      "type": "string",
+      "minLength": 1
+    },
+    "manual_equivalent": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/source"
+      }
+    }
+  },
+  "$defs": {
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "url",
+        "purpose",
+        "last_verified"
+      ],
+      "properties": {
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://"
+        },
+        "purpose": {
+          "type": "string",
+          "minLength": 1
+        },
+        "last_verified": {
+          "type": "string",
+          "format": "date"
+        }
+      }
+    }
+  }
+}

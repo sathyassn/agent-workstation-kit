@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "unit": "ssh",
+  "step": "apply",
+  "error_class": "io",
+  "message": "disk full while writing drop-in",
+  "log": "/var/log/agent-workstation-kit/run-lab-ws-01-ssh.jsonl",
+  "backup": null
+}

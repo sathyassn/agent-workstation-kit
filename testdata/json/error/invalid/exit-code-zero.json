@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "code": 0,
+  "class": "failed",
+  "message": "exit code zero is not an error"
+}

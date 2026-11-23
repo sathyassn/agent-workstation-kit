@@ -1,0 +1,12 @@
+{
+  "unit": "ssh",
+  "scope": "root",
+  "depends_on": [],
+  "capabilities": [],
+  "owned_paths": [
+    "/etc/ssh/sshd_config.d/50-agent-workstation-kit.conf"
+  ],
+  "owned_state_keys": [],
+  "irreversible": [],
+  "declared_env": []
+}
