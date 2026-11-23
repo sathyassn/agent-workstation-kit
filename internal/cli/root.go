@@ -381,10 +381,9 @@ func newCompletionCommand(flags *sharedFlags) *cobra.Command {
 }
 
 // writeCompletion prints sh's completion script. The man page ADR 0005
-// section 2b asks for alongside completions is deferred: no task owns it yet
-// (EPC-025 holds the generated docs), and its generator, mango-cobra or
-// cobra/doc with go-md2man, needs a registry entry before it can be a
-// direct dependency.
+// section 2b asks for alongside completions is deferred to TSK-039 under
+// EPC-025, the generated reference, which adds its generator to the
+// registry.
 func writeCompletion(root *cobra.Command, sh Shell, w io.Writer) error {
 	var err error
 	switch sh {
