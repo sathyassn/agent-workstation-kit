@@ -621,6 +621,13 @@ const (
 // paused between its Snapshot and its Write. The second must not reach its
 // Snapshot while the first is paused, and each receipt's backup must be the
 // value just before its own write.
+//
+// Limit: the provider can pause only inside one of its own calls. A Tx that
+// wraps every provider call in one shared mutex holds that mutex during the
+// pause, so this check cannot tell it apart from a lock across the whole
+// sequence. It catches a Tx with no lock, a lock around Snapshot only, and
+// separate locks per call. Catching the shared per-call mutex would need a
+// hook inside the Tx between calls, which the contract does not have.
 func checkSetStateSerialized(ctx context.Context, r reporter, tx contract.Tx, inspector TxInspector) {
 	r.Helper()
 
