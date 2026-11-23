@@ -1,0 +1,11 @@
+id = "TSK-034"
+uid = "6f371b90-2914-4748-bb92-5f5a0b20a31c"
+kind = "TSK"
+title = "Reserve-based sizing in the frozen resource script"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-23T05:01:50Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
