@@ -135,7 +135,15 @@ func (t *tx) WriteFile(ctx context.Context, path string, data []byte, perm fs.Fi
 	if err != nil {
 		return err
 	}
-	if err := t.e.atomicWrite(t.e.real(path), fileSpec{data: data, perm: perm, owner: &owner}); err != nil {
+	p, err := openParent(t.e.real(path))
+	if err != nil {
+		return err
+	}
+	defer p.close()
+	if err := p.refuseMetadata(); err != nil {
+		return err
+	}
+	if err := t.e.atomicWriteAt(p, fileSpec{data: data, perm: perm, owner: &owner}); err != nil {
 		return err
 	}
 	action := contract.ActionReplace
@@ -184,6 +192,10 @@ func (t *tx) editBlock(ctx context.Context, path string, edit func(string) (stri
 		if err != nil {
 			return err
 		}
+		if err := checkMetadata(f); err != nil {
+			_ = f.Close()
+			return err
+		}
 		cur, err = io.ReadAll(f)
 		_ = f.Close()
 		if err != nil {
@@ -227,6 +239,9 @@ func (t *tx) Remove(ctx context.Context, path string) error {
 	}
 	if st.Mode&unix.S_IFMT == unix.S_IFDIR {
 		return fmt.Errorf("%w: %q is a folder", ErrUnsupportedTarget, path)
+	}
+	if err := p.refuseMetadata(); err != nil {
+		return err
 	}
 	if err := unix.Unlinkat(p.fd(), p.name, 0); err != nil {
 		return fmt.Errorf("remove %q: %w", path, err)

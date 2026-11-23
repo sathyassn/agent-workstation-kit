@@ -99,6 +99,39 @@ func (p parent) open() (*os.File, error) {
 	return os.NewFile(uintptr(fd), p.path()), nil
 }
 
+// refuseMetadata fails with ErrUnsupportedMetadata when the name is a
+// regular file carrying an ACL or extended attributes. A missing name or a
+// link has nothing to check.
+func (p parent) refuseMetadata() error {
+	st, err := p.lstat()
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if st.Mode&unix.S_IFMT != unix.S_IFREG {
+		return nil
+	}
+	f, err := p.open()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	return checkMetadata(f)
+}
+
+func checkMetadata(f *os.File) error {
+	what, err := extendedMetadata(f)
+	if err != nil {
+		return err
+	}
+	if what != "" {
+		return fmt.Errorf("%w: %q has %s; a full metadata backup is not built yet", ErrUnsupportedMetadata, f.Name(), what)
+	}
+	return nil
+}
+
 func (p parent) readlink() (string, error) {
 	buf := make([]byte, unix.PathMax)
 	n, err := unix.Readlinkat(p.fd(), p.name, buf)

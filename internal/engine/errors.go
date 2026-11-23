@@ -85,3 +85,8 @@ func ExitCode(err error) contract.ExitCode {
 		return contract.ExitFailed
 	}
 }
+
+// ErrUnsupportedMetadata reports a target that carries an ACL or extended
+// attributes. The backup cannot keep them yet, so the engine refuses rather
+// than drop them. It is a sentinel for errors.Is and is never reassigned.
+var ErrUnsupportedMetadata = errors.New("target has an ACL or extended attributes, which the backup cannot keep yet")

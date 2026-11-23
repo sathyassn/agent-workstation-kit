@@ -110,6 +110,10 @@ func (e *Engine) backupOne(dir, name, path string) (ManifestEntry, error) {
 		if err != nil {
 			return ManifestEntry{}, err
 		}
+		if err := checkMetadata(f); err != nil {
+			_ = f.Close()
+			return ManifestEntry{}, err
+		}
 		data, err := io.ReadAll(f)
 		_ = f.Close()
 		if err != nil {
