@@ -1391,6 +1391,14 @@ hours, while a guard that watched load and available memory stayed green.
 - **The session side** (a runner that caps each heavy job, and a scheduled
   sweep) belongs to the agent tooling, not the kit. The kit installs the
   machine-wide part and checks for it.
+- **Reserve-based sizing (amendment from the pilot hosts, 2026-11-23).**
+  Memory, agent-work swap and CPU are sized from a reserve, not from plain
+  shares of RAM: the reserve is a fixed part plus about 2% of RAM, and
+  agent work gets the rest. This replaces "Budgets are relative" for those
+  values; PSI thresholds stay percentages. TSK-034 implemented the Linux
+  formula in the frozen script, and EPC-010 ports it to the Go unit, with
+  the doctor measuring the non-agent baseline and `plan` showing each
+  derivation.
 
 ### 7b. Indexing on macOS development volumes
 
@@ -1409,6 +1417,22 @@ and Spotlight use CPU and memory for days.
   on-disk log.
 - The previous state is recorded and revert restores it exactly. The
   removed index store is in the cannot-undo list: macOS rebuilds it.
+- **Indexing decision (amendment from the macOS test hosts, 2026-11-23).**
+  - The default target is a dedicated APFS development volume in the same
+    container, created on approval or adopted. Per-volume settings apply
+    only there.
+  - Volumes holding File Provider data (`.CloudStorage` or a registered
+    File Provider domain) are refused for volume-level settings, and the
+    preview lists every cloud sync root found.
+  - Without a dedicated volume, nothing changes at volume level. The unit
+    hands over a System Settings step listing the development folders for
+    the Spotlight privacy list, and uses `.noindex` only for kit-owned
+    caches and build output.
+  - FSEvents history cannot be turned off per folder; this limit is
+    recorded.
+  - Revert restores the state before the first apply; a re-apply never
+    overwrites the first receipt.
+  - EPC-033 holds the criteria.
 
 ### 8. One schema (T1), interview and capabilities (T5)
 
@@ -1468,12 +1492,42 @@ and Spotlight use CPU and memory for days.
 - **Capability matrix.** `registry/capabilities.toml` gives, per capability:
   the Linux and macOS means, how to verify it, its status per OS and its gaps.
   A component that is unsupported on the target OS is `skipped` by `plan`,
-  with the reason and any equivalent, never refused or failed.
+  with the reason and any equivalent, never refused or failed. Until that
+  file exists, section 8a is the record of the macOS and Linux equivalents.
 - **Root acts only on the approved plan.** `wskit plan` resolves the
   profile, the platform table, the schema and the registries into one JSON
   plan with a digest. A root step reads only that plan, staged root-owned,
   and refuses one whose digest was not approved. It never re-reads the
   user's TOML.
+
+### 8a. Capability matrix: macOS and Linux equivalents
+
+This table records the macOS and Linux equivalents found on the pilot hosts
+(2026-11-22 and 2026-11-23). It is the record until the capabilities task
+builds `registry/capabilities.toml` from it.
+
+| Capability | Linux | macOS | Gap | Mitigation |
+|---|---|---|---|---|
+| Memory ceiling | cgroup slice and `systemd-oomd` | no per-group cap | macOS cannot cap a group's memory or swap | background or utility QoS, and the runner watches the memory-pressure level |
+| Reserve sizing | same formula; baseline from cgroups | same formula; baseline from process footprints | macOS baseline without root is approximate | `footprint` in the root audit step; `ps` RSS for the user-level estimate, labelled approximate |
+| CPU | `CPUWeight` and reserved cores through `CPUQuota` | QoS and `nice` | no CPU quota on macOS | runner concurrency limit |
+| `/tmp` | policy applied (tmpfs on recent Ubuntu) | on disk | none | macOS: report only |
+| File indexing | GNOME localsearch (tracker3) checked and reported; development roots are ignored only when they lack `.git` | Spotlight and FSEvents | FSEvents history cannot be turned off per folder | dedicated APFS development volume; otherwise a System Settings hand-over and `.noindex` for kit-owned caches (section 7b) |
+| Agent sandboxes | Claude Code uses bubblewrap and leaves placeholders; agy Auto needs the AppArmor user-namespace profile | Claude Code uses Seatbelt with no placeholders; agy Auto works as installed | Linux placeholders and AppArmor restriction | doctor detects placeholders, removal on demand (EPC-009); AppArmor profile in the agy entry (EPC-011) |
+| Secrets | `secret-tool` and gnome-keyring | Keychain | agy over SSH uses a file store on both | sign in from the context the agents use; the doctor checks auth there |
+| Codex trust, agent modes, MCP | same per config home; agent-manager homes under `~/.config/orca` | same per config home; agent-manager homes under `~/Library/Application Support/orca` | none | none |
+| Upkeep | at triggers, no timers | at triggers, no timers | none | none |
+
+Open on macOS, and where each stands:
+
+| Open item | State |
+|---|---|
+| Per-folder Spotlight and FSEvents exclusion | decided: dedicated development volume by default, hand-over otherwise; FSEvents per folder is not possible (section 7b) |
+| QoS level choice | decided: utility by default unless the measurements on Apple silicon say otherwise; measurement pending (EPC-010) |
+| Baseline measurement without root | decided: `footprint` in the root audit step, `ps` RSS labelled approximate |
+| Wrapper to start agent terminals at the chosen QoS | decided: built in the resources unit (EPC-010) |
+| agy Auto on macOS | verified on a macOS test host, 2026-11-22 |
+| Linux agent-manager path | verified at `~/.config/orca` on the Linux pilot host |
 
 ### 9. Platforms, tool registry and staging (T1, T6)
 
@@ -1692,12 +1746,22 @@ What revert cannot undo, listed in every revert preview:
   - the OS end-of-support date, from 90 days ahead;
   - a missing or unmanaged shell baseline, and the interactive-only guard
     (section 7);
-  - tmpfs use and the resource reserve (section 7a);
+  - tmpfs use and the resource reserve (section 7a), including a reserve
+    below the measured need or far above it;
+  - from the pilot hosts (EPC-022): project-level settings that override
+    the user-level agent mode, repositories untrusted in a Codex home,
+    Claude Code sandbox placeholders, and agent CLI auth checked from the
+    context the agents use;
   - the earlier doctor items.
 
   `--admin` runs the root-only checks from the staged root and writes their
   non-secret result to the public export. A fleet passes `--inputs FILE` with
   expected values, which takes over the fleet's interim checks.
+- **Upkeep at triggers, not timers (amendment, 2026-11-23).** Agent
+  settings are kept current at triggers only: kit setup and clone steps
+  run the Codex trust sync, the doctor reports what has drifted, and the
+  installed agent guidance names the triggers. No unit installs a timer
+  for this upkeep (EPC-009).
 
 ### 10a. Browser sign-in tunnel (first unit, after T1)
 

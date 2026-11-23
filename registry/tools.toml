@@ -4,6 +4,10 @@
 # identifier and review dates. Indirect modules are not listed: go.sum
 # integrity and govulncheck hold that graph. internal/registry checks this.
 # Managed workstation CLIs join this registry in EPC-011 / T6.
+# - The `go` line in go.mod is a security pin: CI's setup-go reads it, so it
+#   decides the toolchain CI runs. Raise it when govulncheck reports a
+#   reachable standard-library fix in a newer patch release, in the PR that
+#   makes the path reachable or in its own build PR when found on main.
 
 schema_version = 1
 

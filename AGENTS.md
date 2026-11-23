@@ -345,6 +345,23 @@ verify command passes.
   `-beta.N`, `-rc.N`, then `1.0.0`. Note every change to the unit catalog,
   registries and presets in `CHANGELOG.md`.
 - Every pull request meets the [engineering standard](docs/standards/engineering.md).
+- An Orca worker branch starts as `OWNER/name`, which the branch policy
+  refuses: rename it to `TYPE/name` right after launch, before the first
+  commit.
+- Each task PR carries its own completion record as its last commit
+  (`codeflow task status TSK-NNN complete --acceptance`), and the PR body's
+  `## Reviews` row names that same full SHA. Completing a task after merge
+  fails once a later PR touches the task's files.
+- Strict up-to-date checks put other PRs behind after a merge. Bring them
+  current without force pushes (a merge, or a replacement branch whose tree
+  hash matches), wait for the checks, then merge with `--match-head-commit`.
+- After merges, fast-forward the root checkout, so pushes from it run the
+  current gates.
+- When adopting CodeFlow in a repository, the PR that first adds it
+  fails "codeflow gates" because `main` has no `project.toml` yet; say so
+  in that PR. `.codeflow/policy.json` must hold every key the
+  security-review job needs (`git.security_review`, `git.dep_audit`);
+  validate it against the pinned CodeFlow schema before the PR opens.
 - A person reviews and merges every pull request.
 
 ## Stack standards

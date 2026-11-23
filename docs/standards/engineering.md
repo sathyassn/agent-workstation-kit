@@ -35,6 +35,11 @@ practice, relayed by the supervisor and approved as a process change.
   `engine.Tx`. Only `cmd/` writes to the terminal or maps errors to exit
   codes.
 - Platform differences sit behind interfaces, not scattered OS branches.
+- The `go` line in `go.mod` is a security pin, not only a minimum: CI's
+  `setup-go` reads it, so it decides the toolchain CI runs. Raise it when
+  `govulncheck` reports a reachable standard-library vulnerability fixed in
+  a newer patch release, in the PR that makes the path reachable, or in
+  its own build PR when the finding is on `main`.
 
 ## Tests
 
