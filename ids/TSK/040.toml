@@ -1,0 +1,11 @@
+id = "TSK-040"
+uid = "49197f2c-51e5-472c-a17b-21abc7ec6b97"
+kind = "TSK"
+title = "Two-step repository owner setup"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-23T22:15:51Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
