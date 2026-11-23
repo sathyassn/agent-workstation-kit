@@ -9,3 +9,6 @@ func (s *Sink) UIWaitingLen() int {
 	defer s.mu.Unlock()
 	return len(s.uiWaiting)
 }
+
+// SkippedText exports the skipped marker's text format.
+const SkippedText = skippedText

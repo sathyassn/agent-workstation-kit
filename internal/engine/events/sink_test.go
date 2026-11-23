@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -153,7 +154,7 @@ func compileEventSchema(t *testing.T) *jsonschema.Schema {
 
 func count(t *testing.T, e contract.Event) uint64 {
 	t.Helper()
-	if e.Kind != contract.EventCoalesced && !isSkipped(e) {
+	if e.Kind != contract.EventCoalesced {
 		return 1
 	}
 	n, err := strconv.ParseUint(e.Data[contract.DataCount], 10, 64)
@@ -163,11 +164,16 @@ func count(t *testing.T, e contract.Event) uint64 {
 	return n
 }
 
-// isSkipped reports whether e is the UI's marker for progress updates
-// skipped while the UI was stalled: a progress event with a count.
+// isSkipped reports whether e is the sink's marker for progress updates
+// skipped while the UI was stalled: a coalesced event, which only the sink
+// writes, with the marker's text. A unit's progress event with a count of its
+// own is never one.
 func isSkipped(e contract.Event) bool {
-	_, ok := e.Data[contract.DataCount]
-	return e.Kind == contract.EventProgress && ok
+	if e.Kind != contract.EventCoalesced {
+		return false
+	}
+	n, err := strconv.ParseUint(e.Data[contract.DataCount], 10, 64)
+	return err == nil && e.Text == fmt.Sprintf(events.SkippedText, n)
 }
 
 // sameEvent compares events, treating nil and empty Data as equal: the run
@@ -252,9 +258,9 @@ func checkOrder(t *testing.T, where string, got, sent []contract.Event) {
 }
 
 // drainUI reads ui until it has seen every non-progress event of sent and
-// progress counts that add up to the progress events in sent, then checks
-// the order with checkOrder. It fails on a stall.
-func drainUI(t *testing.T, ui <-chan contract.Event, sent []contract.Event) {
+// progress counts that add up to the progress events in sent, checks the
+// order with checkOrder, and returns what the UI got. It fails on a stall.
+func drainUI(t *testing.T, ui <-chan contract.Event, sent []contract.Event) []contract.Event {
 	t.Helper()
 	var wantNonProgress int
 	var wantProgress uint64
@@ -285,6 +291,7 @@ func drainUI(t *testing.T, ui <-chan contract.Event, sent []contract.Event) {
 		}
 	}
 	checkOrder(t, "UI", got, sent)
+	return got
 }
 
 func TestNewRejectsMissingOptions(t *testing.T) {
@@ -865,8 +872,105 @@ func TestStalledUIBoundsWaitingProgress(t *testing.T) { //nolint:paralleltest //
 		t.Fatal("no progress ever waited for the UI: the test did not stall it")
 	}
 
-	drainUI(t, ui, sent)
+	// Every skipped marker is a valid run event.
+	schema := compileEventSchema(t)
+	markers := 0
+	for _, e := range drainUI(t, ui, sent) {
+		if !isSkipped(e) {
+			continue
+		}
+		markers++
+		var buf bytes.Buffer
+		if err := json.NewEncoder(&buf).Encode(struct {
+			SchemaVersion int `json:"schema_version"`
+			contract.Event
+		}{1, e}); err != nil {
+			t.Fatalf("encode marker: %v", err)
+		}
+		inst, err := jsonschema.UnmarshalJSON(&buf)
+		if err != nil {
+			t.Fatalf("marker is not JSON: %v", err)
+		}
+		if err := schema.Validate(inst); err != nil {
+			t.Fatalf("skipped marker %+v fails event.schema.json: %v", e, err)
+		}
+	}
+	if markers == 0 {
+		t.Fatal("the UI got no skipped marker: the cap was never reached")
+	}
 	if err := s.Close(context.Background()); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
+}
+
+// unitCounter is a unit's own progress event with a count, as in
+// testdata/json/event/valid/progress-event.json.
+func unitCounter(seq uint64, done int) contract.Event {
+	e := event(seq, contract.EventProgress)
+	e.Unit = contract.UnitPackages
+	e.Text = fmt.Sprintf("installing packages (%d/10)", done)
+	e.Data = map[contract.DataKey]string{contract.DataCount: strconv.Itoa(done)}
+	return e
+}
+
+// TestUnitProgressCountIsNotASkip delivers a unit's progress events that
+// carry a count of their own. The UI shows each as progress, unchanged, and
+// counts it once. When a stalled UI skips updates, the marker is never shaped
+// like a unit's progress event: every progress event the UI gets is one the
+// sink was given.
+func TestUnitProgressCountIsNotASkip(t *testing.T) {
+	t.Parallel()
+	t.Run("UI keeps up", func(t *testing.T) {
+		t.Parallel()
+		log, open, _ := fileLog(t)
+		ui := make(chan contract.Event, 8)
+		s := newSink(t, events.Options{Log: log, OpenLog: open, UI: ui})
+		sent := []contract.Event{
+			event(1, contract.EventStepStart),
+			unitCounter(2, 3),
+			unitCounter(3, 4),
+			event(4, contract.EventStepEnd),
+		}
+		for _, e := range sent {
+			s.Deliver(e)
+		}
+		got := drainUI(t, ui, sent)
+		for i, e := range got {
+			if !sameEvent(e, sent[i]) {
+				t.Fatalf("UI event %d = %+v, want %+v unchanged", i, e, sent[i])
+			}
+		}
+	})
+	t.Run("UI stalled past the cap", func(t *testing.T) {
+		t.Parallel()
+		runLog := &memLog{}
+		open := func() (io.ReadCloser, error) { return io.NopCloser(&liveReader{log: runLog}), nil }
+		ui := make(chan contract.Event, 1)
+		s := newSink(t, events.Options{Log: runLog, OpenLog: open, UI: ui})
+		var sent []contract.Event
+		given := map[uint64]contract.Event{}
+		for seq := uint64(1); seq <= uint64(8*events.MaxUIWaiting); seq++ {
+			e := event(seq, contract.EventWarning)
+			if seq%2 == 1 {
+				e = unitCounter(seq, int(seq%10))
+				given[seq] = e
+			}
+			sent = append(sent, e)
+			s.Deliver(e)
+		}
+		markers := 0
+		for _, e := range drainUI(t, ui, sent) {
+			switch {
+			case e.Kind == contract.EventProgress:
+				if want, ok := given[e.Seq]; !ok || !sameEvent(e, want) {
+					t.Fatalf("UI progress event %+v is not a unit's event unchanged", e)
+				}
+			case isSkipped(e):
+				markers++
+			}
+		}
+		if markers == 0 {
+			t.Fatal("the UI got no skipped marker: the cap was never reached")
+		}
+	})
 }
