@@ -83,7 +83,6 @@ SYNTHETIC_CLEAN_FIXTURE_PATH = Path("tests/fixtures/public_scan/clean_fixture.tx
 KEY_ENV_VAR = "PUBLIC_SCAN_HMAC_KEY"
 KEY_FILE_ENV_VAR = "PUBLIC_SCAN_HMAC_KEY_FILE"
 SYNTHETIC_ENV_VAR = "PUBLIC_SCAN_SYNTHETIC"
-GITHUB_ACTIONS_ENV_VAR = "GITHUB_ACTIONS"
 
 KEY_BYTES = 32
 KEY_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -723,12 +722,6 @@ def load_key_from_file(
     return _parse_key_text(raw_text)
 
 
-def is_github_actions(environ: Mapping[str, str]) -> bool:
-    """Return True when GITHUB_ACTIONS indicates a GitHub Actions runner."""
-    value = environ.get(GITHUB_ACTIONS_ENV_VAR, "").strip().lower()
-    return value not in ("", "0", "false")
-
-
 def resolve_key_material(
     root: Path,
     *,
@@ -778,7 +771,10 @@ def resolve_key_material(
         if default_path.exists() or default_path.is_symlink():
             key_bytes = load_key_from_file(default_path, root=root, tracked=tracked)
             source = str(DEFAULT_LOCAL_KEY_PATH)
-        elif allow_local_fallback and not is_github_actions(env):
+        elif allow_local_fallback:
+            # Outside the keyed workflow (`--tree`, which never falls back),
+            # every run without a key uses the public synthetic key: such a
+            # run, local or in CI, executes code that must never hold the key.
             return KeyMaterial(
                 key=load_synthetic_key(root),
                 synthetic=True,
@@ -1519,7 +1515,7 @@ def _select_rules(
 def _report(failures: list[str], key_material: KeyMaterial | None, passed: str) -> int:
     local = key_material is not None and key_material.local_fallback
     if local:
-        print("WARNING: keyed private-name rules not checked locally; CI runs them.")
+        print("WARNING: keyed private-name rules not checked here; the public-scan workflow runs them.")
     if failures:
         print("Public release checks failed:")
         for failure in failures:

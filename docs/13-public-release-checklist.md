@@ -132,7 +132,7 @@ Where the scan runs:
 |---|---|---|
 | `public-scan / keyed scan` (`.github/workflows/public-scan.yml`), on every pull request into `main`, including retargets and edits, and every push to `main` | `PUBLIC_SCAN_HMAC_KEY`, an environment secret of the `public-scan` environment, passed only to the scan step | From `main`'s current commit. The head is fetched as git data and scanned with `--tree`; its code never runs. |
 | `CI / repository-validation`, `make ci-check`, `make public-check` | None: the public synthetic key | From the checkout. This job runs pull request code, so it never receives the key. |
-| A local run without a key | None: falls back to synthetic, printing `WARNING: keyed private-name rules not checked locally; CI runs them.` | From the checkout. |
+| Any other run without a key: local runs, `make ci-check`, and CI jobs that run pull request code | None: falls back to synthetic, printing `WARNING: keyed private-name rules not checked here; the public-scan workflow runs them.` | From the checkout. |
 
 In keyed mode every rule must hold at least one digest; an empty or partly
 empty rule file fails with `no keyed rules populated for: ...`. Synthetic runs

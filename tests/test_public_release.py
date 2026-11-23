@@ -318,8 +318,6 @@ class PublicReleaseTests(unittest.TestCase):
             root = Path(directory)
             tracked = self.make_repository(root, include_license=True)
             cases = [
-                (["--root", str(root)], {"GITHUB_ACTIONS": "true"}),
-                (["--root", str(root), "--allow-missing-license"], {"GITHUB_ACTIONS": "true"}),
                 (["--root", str(root)], {"GITHUB_ACTIONS": "true", "PUBLIC_SCAN_HMAC_KEY": ""}),
                 (["--root", str(root)], {"PUBLIC_SCAN_HMAC_KEY": ""}),
                 (["--root", str(root)], {"PUBLIC_SCAN_HMAC_KEY": "   \n"}),
@@ -333,7 +331,7 @@ class PublicReleaseTests(unittest.TestCase):
                     code, output = self.run_main(argv, tracked=tracked, env=env)
                     self.assertEqual(1, code, output)
                     self.assertNotIn(
-                        "keyed private-name rules not checked locally; CI runs them",
+                        "keyed private-name rules not checked here; the public-scan workflow runs them",
                         output,
                     )
 
@@ -349,7 +347,7 @@ class PublicReleaseTests(unittest.TestCase):
                     code, output = self.run_main(argv, tracked=tracked, env={})
                     self.assertEqual(0, code, output)
                     self.assertIn(
-                        "keyed private-name rules not checked locally; CI runs them",
+                        "keyed private-name rules not checked here; the public-scan workflow runs them",
                         output,
                     )
 
@@ -397,30 +395,33 @@ class PublicReleaseTests(unittest.TestCase):
                 )
             self.assertEqual(1, hash_code, stdout.getvalue())
 
-    def test_github_actions_same_repo_without_key_fails_closed(self) -> None:
+    def test_ci_without_key_runs_synthetic_and_only_the_tree_scan_requires_the_key(self) -> None:
+        # A CI job that runs pull request code never holds the key, so it
+        # falls back to the synthetic scan like a local run does.
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             tracked = self.make_repository(root, include_license=True)
-            cases = [
-                (["--root", str(root)], {"GITHUB_ACTIONS": "true"}),
-                (["--root", str(root), "--allow-missing-license"], {"GITHUB_ACTIONS": "true"}),
-                (
-                    ["--root", str(root)],
-                    {"GITHUB_ACTIONS": "true", "PUBLIC_SCAN_HMAC_KEY": ""},
-                ),
-                (
-                    ["--root", str(root)],
-                    {"GITHUB_ACTIONS": "1"},
-                ),
-            ]
-            for argv, env in cases:
-                with self.subTest(argv=argv, env=env):
-                    code, output = self.run_main(argv, tracked=tracked, env=env)
-                    self.assertEqual(1, code, output)
-                    self.assertNotIn(
-                        "keyed private-name rules not checked locally; CI runs them",
-                        output,
-                    )
+            for env in ({"GITHUB_ACTIONS": "true"}, {"GITHUB_ACTIONS": "1"}):
+                with self.subTest(env=env):
+                    code, output = self.run_main(["--root", str(root)], tracked=tracked, env=env)
+                    self.assertEqual(0, code, output)
+                    self.assertIn("keyed private-name rules not checked here; the public-scan workflow runs them", output)
+        # The keyed workflow's `--tree` mode never falls back: no key is a failure.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_repository(root, include_license=True)
+            git_env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
+                       "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid"}
+            for args in (["init", "-q", "-b", "main"], ["add", "-A"], ["commit", "-q", "-m", "c"]):
+                subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, env=git_env)
+            head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, check=True, capture_output=True, text=True).stdout.strip()
+            for env in ({}, {"GITHUB_ACTIONS": "true"}):
+                with self.subTest(tree_env=env):
+                    stdout = io.StringIO()
+                    with mock.patch.dict(os.environ, env, clear=True), contextlib.redirect_stdout(stdout):
+                        code = public_release.main(["--root", str(root), "--tree", head])
+                    self.assertEqual(1, code, stdout.getvalue())
+                    self.assertIn("HMAC scan key is missing", stdout.getvalue())
 
     def test_github_actions_fork_synthetic_exits_zero(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -435,7 +436,7 @@ class PublicReleaseTests(unittest.TestCase):
             self.assertIn("synthetic", output.lower())
             self.assertIn("public-scan workflow", output.lower())
             self.assertNotIn(
-                "keyed private-name rules not checked locally; CI runs them",
+                "keyed private-name rules not checked here; the public-scan workflow runs them",
                 output,
             )
 
