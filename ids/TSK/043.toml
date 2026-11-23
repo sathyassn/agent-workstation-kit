@@ -1,0 +1,11 @@
+id = "TSK-043"
+uid = "7165eeff-92a4-49eb-901c-c24b51744b00"
+kind = "TSK"
+title = "macOS containment without a GUI session"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-23T23:14:50Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
