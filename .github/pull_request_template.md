@@ -21,6 +21,9 @@ Describe the problem and the smallest change that addresses it.
 - [ ] `AGENTS.md` is updated if a command, flag or file location changed.
 - [ ] `make ci-check` passes (including ShellCheck).
 - [ ] Live-machine gaps or assumptions are listed below.
+- [ ] The [engineering standard](../docs/standards/engineering.md) holds, and the [review checklist](../docs/standards/review-checklist.md) was used.
+- [ ] Each definition has one source, and generated output is current.
+- [ ] Core or safety change: a cross-lineage review and stress evidence are linked.
 
 ## Live-machine gaps
 

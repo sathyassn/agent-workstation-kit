@@ -1,0 +1,72 @@
+# Grok Build as a CodeFlow host
+
+On-demand detail for a Grok Build (`grok` CLI) host. Durable duties stay in
+`SKILL.md`, `current-ensemble.json`, and `routing-policy.json`.
+
+## In-session guards
+
+CodeFlow binds `codeflow hook git-guard` / `exec-guard` on PreToolUse via
+`.grok/hooks/codeflow.json`. Grok drops event output: after a compaction,
+run `codeflow orient`.
+The guard parser accepts Grok's camelCase stdin (`toolName`, `toolInput`,
+`run_terminal_command`) as well as Claude/Codex snake_case, and both at
+once as Grok 1.0.46 sends them; a refusal also returns Grok's deny
+decision on stdout, since Grok shows only the first stderr line. Grok also
+scans `.claude/settings.json` when compat is on. Project hooks load only
+after `/hooks-trust` or `--trust`; `grok inspect` is the local proof of
+discovery and trust. Grok expands `$name` and `${...}` in a hook command
+itself and skips, failing open, a hook whose variable is unset, so
+CodeFlow's hook commands carry no `$`. `codeflow doctor --check grok` names
+a CodeFlow hook command Grok would skip and judges a fixed canary with the
+shipped shell guard's handler in its own process under the
+catastrophic-command floor, reading no policy or repository and executing
+nothing; a live session's hook lines are the proof that Grok ran it.
+Git hooks and CI remain the enforcement floor. This is not a Grok schema-v2
+Stop-hook lifecycle; Claude turn completion still uses schema-v2 when Grok
+hosts Claude.
+
+## Launch
+
+Before a Grok seat takes work, `grok --version` succeeds and a short
+**interactive** Grok canary authenticates; an authentication failure stops
+for operator action. Take selector and effort from the current ensemble
+record:
+
+```text
+grok --model <selector> --reasoning-effort <effort> <posture flags>
+```
+
+The posture flags are the Grok row of
+[cross-family transport](routing/transport.md), which also rules out every
+headless form and holds the Grok builder's unqualified sandboxed route
+(ADR-0075 D3). `grok --help` exposes `--sandbox <PROFILE>`; the Grok Build
+user guide names `workspace` / `read-only` / `strict`. Profile names are
+VERIFY-ON-INSTALL against the installed CLI.
+
+## Peer lanes
+
+A Grok host reaches Claude and Codex through the interactive seats that
+[cross-family transport](routing/transport.md) names. Do not install
+third-party Grok Codex plugins; the Codex plugin fallback belongs to a Claude
+Code host only. Neither seat is claimed complete until its own canary
+succeeds on this host.
+
+Grok-started Claude schema-v2 (Herdr `send-text` of the armed file) and
+Codex Herdr consult canaries are recorded in the CodeFlow repository under
+`docs/verification/`. Consuming scaffolds do not ship that file. Those
+records are consult-posture, host-specific, and not a qualified
+`grok-engineering-primary` binding or a full promotion suite. Doctor does
+not claim the lanes.
+
+## Duties
+
+Host is not duty. Apply the responsibility-versus-execution rules in the seat
+section of `SKILL.md` and the plan's assignment line, and the route status
+rules in `capability-routing.md`; this adapter does not redefine them.
+The Claude design owner produces direction and real design execution in its
+native session unless the plan records an explicit task-specific operator
+override; Claude absence alone is not one. A Grok high host stays the
+orchestrator and may use its own permitted routes. Catalog Grok may execute or
+take named extra-family review when a documented trigger fires and it is
+available; actual authored lineage determines independent review, and the
+assignment is never a silent third vote.

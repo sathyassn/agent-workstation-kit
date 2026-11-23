@@ -1,0 +1,139 @@
+# Contextual editorial smells
+
+Use these as diagnostic prompts, not a checklist or blacklist. A pattern is a
+problem only when it weakens this artifact in its actual context. The one
+exception is project policy: the characters and shapes ADR-0067 names are
+defects in new text on the surfaces it names, except a dash that is really
+needed, such as a quoted title or a numeric range in data.
+
+## Credibility
+
+- Praise or agreement substitutes for analysis, evidence, or a clear decision.
+- Certainty exceeds the evidence, or a limitation is buried after the claim.
+- Routine work is inflated with grand claims, superlatives, or ceremonial
+  framing.
+- The text invents personal experience, emotion, intimacy, personality, or
+  colloquial language the author or project never established.
+- Chatbot openers or closers ("great question", "I hope this helps", "let me
+  know if") substitute for the answer.
+- Stock puffery ("pivotal", "evolving landscape", "testament to") inflates
+  routine work.
+- Vague attribution ("experts believe", "industry reports suggest") names no
+  source.
+- Contrast crutches ("not just X, but Y") add a frame without a fact.
+
+## Meaning and structure
+
+- The reader lacks the subject, stakes, prior decision, or requested action.
+- A summary repeats headings instead of giving the outcome.
+- A summary does not anchor the reader: after it, the reader cannot tell what
+  this is, why it matters or where it stands, because the anchor is missing or
+  buried in detail. A key number, file name or caveat that is part of that
+  context is not a smell.
+- A reply or report opens with steps, gates, counts or tooling before the
+  result it serves and where the work stands, or forces status labels onto a
+  short answer.
+- Bullets alone, or a table alone, stand where a summary should open.
+- Details sit in prose paragraphs after the summary where bullets, one point
+  each in a logical order, would carry them.
+- Paragraphs mix decisions, evidence, instructions, and caveats without a
+  usable order.
+- Compression removes a necessary qualifier; expansion adds no new context.
+- Terminology drifts across sections or replaces an exact domain term with a
+  smoother but less precise synonym.
+
+## Delivery
+
+- Sentence fragments, excessive parentheticals, or uniform sentence shapes
+  make the text harder to follow.
+- Lists split a single thought into fragments, or prose hides genuinely
+  enumerable material.
+- A reply or summary runs as a paragraph wall: one block of many sentences
+  where a few anchoring lines and then bullets or a table would carry the
+  facts.
+- New prose uses an em or en dash where a comma, colon, full stop or hyphen
+  serves. A quoted title or a numeric range in data keeps its dash.
+- Headings, bold text, tables, or callouts compete for attention instead of
+  exposing hierarchy.
+- Titles, navigation, or action labels hide the actual subject or action behind
+  a riddle, slogan, or clever phrase unsupported by the product voice.
+- A title, heading, navigation label, or pull request title is a bare stable
+  identifier (`TSK-066`, `ADR-0032`, `CAP-003`) or an unexpanded all-caps
+  acronym. The words name the subject; the identifier stays in the body, the
+  link, or the frontmatter. An identifier followed by words is fine.
+- Emoji, jokes, slogans, or rhetorical flourishes conflict with the medium,
+  policy, gravity, or documented voice.
+- Interface words and visual treatment imply conflicting levels of urgency,
+  trust, playfulness, or certainty.
+
+## Meaning taken
+
+A reader takes what the text can plausibly mean. A reading that is wrong,
+unsafe, alarming, offensive or a false promise is a material finding,
+whatever its size; a plainer word with no such reading is a nit
+(`.codeflow/rules/writing.md` "Meaning the reader takes").
+
+- A word, name, image, colour or icon suggests something beyond what is
+  meant, and a reader who does not know the intent would take that
+  suggestion.
+- A sentence, label or name has more than one reasonable reading, and the
+  readings lead to different actions.
+- A name promises what the code does not do (`verify` that only formats,
+  `safe` that only skips a prompt) or softens what it does (`cleanup` for a
+  deletion).
+- A message, log line or notification alarms or blames: a word stronger
+  than the fact, a cause laid on the reader, or silence about what did not
+  happen where a reader would fear worse.
+- A term reads as a slur to a plausible reader, or carries an association
+  the subject lacks.
+- An example, placeholder or test value names a real person, company,
+  credential or in-joke, or carries an association the subject lacks.
+- A figure implies an order, cause, certainty, urgency or completeness the
+  sources do not state; an arrow, a weight or a colour is decoration.
+- Colour or an icon is used against the meaning the audience already gives
+  it (red for an ordinary state where red marks an error, a warning sign for
+  a tip), or a state is carried by hue alone.
+- A claim reads as larger than its evidence to a reader who skims, or a
+  sentence depends on an idiom, a pun or a culture-bound reference that a
+  non-native speaker or a screen-reader user misses.
+
+## Mannered prose
+
+Mannered prose performs instead of informing. It is a defect in any
+operator-facing text, a chat reply included, not only in substantial
+documents. Each pattern below pairs a mannered example with its plain
+rewrite; the rewrite keeps the fact and drops the performance.
+
+| Pattern | Mannered | Plain |
+|---|---|---|
+| Slogan | "Evidence over vibes." | "Every claim cites its evidence." |
+| Contrast turn | "This is not a linter, it is a discipline." | "The check reads two characters; review reads meaning." |
+| Rhetorical triplet | "Fast, safe, and boring." | "The check runs in under a second and edits nothing." |
+| Dramatic fragment | "One rule. No exceptions." | "The rule has no exceptions." |
+| Stacked hedges | "It might perhaps be worth possibly considering a cap." | "Cap the file at 31 KiB." |
+| Colon reveal | "The result: nothing changed." | "Nothing changed." |
+| Self-narration | "Let me walk you through what I did next." | "Next, the hook was installed." |
+| Ceremonial framing | "It is worth noting that the tests pass." | "The tests pass." |
+| Dash as drama | a pause marked with U+2014 before the point | a comma, a colon, or a new sentence |
+| Paragraph wall | eight sentences in one block carrying three facts | two sentences, then a three-row table |
+| Buried anchor | four sentences of mechanism before the reader learns what changed | one line on the result and where it stands, then one bullet per detail |
+
+The shape alone is not the smell. A list of three facts, a negation that
+draws a real distinction ("missing evidence, not a failed test"), or a colon
+that introduces a list or an explanation stays. The smell is the same shape
+used for effect, where the fact is missing, buried, or replaced by the
+performance.
+
+## False positives to avoid
+
+Do not rewrite merely because text uses an em dash on a line that predates
+ADR-0067, or a semicolon, colon, heading, bold phrase, technical term,
+transition, list, or occasional emoji. Preserve such choices when they are
+grammatically sound and useful for this audience and medium. In new prose
+(commit messages, pull request bodies, added lines under `docs/`,
+`project-management/` and the skill trees, and operator-facing replies), an
+em or en dash is not a protected choice: replace it on the line being
+written unless it is really needed, such as a quoted title or a numeric
+range in data, and leave unchanged lines alone. Do not replace an established
+project voice with generic corporate prose, forced informality, or a model's
+preferred cadence.

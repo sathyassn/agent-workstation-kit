@@ -1,0 +1,26 @@
+# codeflow:managed:begin
+# secrets, never tracked
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*credentials*
+
+# os / editor
+.DS_Store
+*.swp
+
+# local-only claude settings and the Claude Code write journal
+.claude/settings.local.json
+.claude/.cc-writes/
+
+# linked worktree checkouts (not git's .git/worktrees/ metadata)
+.worktrees/
+
+# crash-recovery/locking state for opt-in portal reconciliation
+.codeflow/.docs-portal.lock
+.codeflow/.docs-portal-transaction/
+.codeflow/.docs-portal-transaction-stage-*/
+# codeflow:managed:end

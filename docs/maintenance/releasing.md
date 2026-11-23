@@ -82,23 +82,36 @@ gh release create v0.3.0-rc.1 --verify-tag --prerelease \
   not commit it.
 - Use `--prerelease` for every `-rc.N` version and omit it for a final version.
 
-## Criteria for 0.2.0
+## Versions
 
-`0.2.0-rc.7` is the first tagged release. The final `0.2.0` is cut only when
-all of these hold:
+- **The Python line is frozen.** `0.2.0-rc.7` is the last planned release of
+  the Python and shell kit. It gets fixes only (`0.2.0-rc.8` and on) and is
+  never released as a final `0.2.0`.
+- **The Go `wskit` is 1.0.0**, a new major version (ADR 0005 and the
+  [roadmap](../plan/roadmap.md)). Pre-releases:
+  - `1.0.0-alpha.N` from P1 through P2, whose waves run in parallel;
+  - `1.0.0-beta.N` during P3, composition;
+  - `1.0.0-rc.N` during P4, acceptance;
+  - then `1.0.0`.
+- **From 1.0.0,** releases follow Semantic Versioning. Breaking config or CLI
+  changes come only in a major version, after one minor release of
+  deprecation warnings, and `wskit migrate` moves configs between schema
+  versions.
+- Every release is signed: the owner signs the checksum file with the
+  release key when publishing.
 
-- [ ] Configuration is consolidated into the profile, with its `[components]`
-      table (plan PR 2 and PR 2a on issue #5).
-- [ ] The `agent-settings` component is merged: one declarative profile section
-      for Claude, Codex and Orca agent settings, named presets, and a checked
-      applier.
-- [ ] One clean setup run on a real machine, from a fresh account to `doctor`
-      reporting no failures, with its evidence recorded in the release pull
-      request.
+## Criteria for 1.0.0
+
+The final `1.0.0` is cut only when all of these hold (EPC-030):
+
+- [ ] The epics for 1.0.0 in the roadmap are merged, each with its evidence.
+- [ ] An agent conducts one clean setup on a supported Linux machine and one
+      on a supported macOS machine, from the interview to the stable point,
+      with one deliberate interrupt it diagnoses and resumes, covering both
+      account topologies and a `developer` run on a portable Mac.
+- [ ] `revert --to baseline` passes the match digest on each.
+- [ ] The doctor is green, and a docs-only walkthrough passes.
 - [ ] The [release checklist](../13-public-release-checklist.md) is complete.
-
-Until then, each further release is the next candidate (`0.2.0-rc.8`, and so
-on).
 
 ## After the release
 
