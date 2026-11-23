@@ -1,0 +1,11 @@
+id = "TSK-038"
+uid = "41312772-0c4b-4ff3-9357-dc7feb89e0cc"
+kind = "TSK"
+title = "mDNS as a firewall setting"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-23T21:31:02Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
