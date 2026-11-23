@@ -1,0 +1,140 @@
+# Tool and dependency registry (ADR 0005 section 2b and section 13).
+# Every Go library and build tool pinned in go.mod is recorded here with its
+# exact version, canonical source, SPDX licence identifier and review dates.
+# Managed workstation CLIs join this registry in EPC-011 / T6.
+
+schema_version = 1
+
+[[tool]]
+id = "toml"
+kind = "go-library"
+module = "github.com/BurntSushi/toml"
+version = "v1.6.0"
+source = "https://github.com/BurntSushi/toml"
+licence = "MIT"
+last_review = "2026-11-22"
+next_review = "2027-05-22"
+purpose = "TOML v1.0 parser and encoder for schemas, registries and machine profiles"
+
+[[tool]]
+id = "jcs"
+kind = "go-library"
+module = "github.com/gowebpki/jcs"
+version = "v1.0.2"
+source = "https://github.com/gowebpki/jcs"
+licence = "Apache-2.0"
+last_review = "2026-11-22"
+next_review = "2027-05-22"
+purpose = "RFC 8785 canonical JSON serialisation for plan digests"
+
+[[tool]]
+id = "cobra"
+kind = "go-library"
+module = "github.com/spf13/cobra"
+version = "v1.10.2"
+source = "https://github.com/spf13/cobra"
+licence = "Apache-2.0"
+last_review = "2026-11-22"
+next_review = "2027-05-22"
+purpose = "CLI command tree, shared flags, completions and man-page generation"
+
+[[tool]]
+id = "fang"
+kind = "go-library"
+module = "charm.land/fang/v2"
+version = "v2.0.1"
+source = "https://github.com/charmbracelet/fang"
+licence = "MIT"
+last_review = "2026-11-22"
+next_review = "2027-05-22"
+purpose = "Lip Gloss styled CLI help and error presentation for Cobra"
+
+[[tool]]
+id = "bubbletea"
+kind = "go-library"
+module = "charm.land/bubbletea/v2"
+version = "v2.1.2"
+source = "https://github.com/charmbracelet/bubbletea"
+licence = "MIT"
+last_review = "2026-11-22"
+next_review = "2027-05-22"
+purpose = "Interactive terminal UI runtime for human-driven setup screens"
+
+[[tool]]
+id = "huh"
+kind = "go-library"
+module = "charm.land/huh/v2"
+version = "v2.0.3"
+source = "https://github.com/charmbracelet/huh"
+licence = "MIT"
+last_review = "2026-11-22"
+next_review = "2027-05-22"
+purpose = "Interactive terminal interview forms and confirmation prompts"
+
+[[tool]]
+id = "bubbles"
+kind = "go-library"
+module = "charm.land/bubbles/v2"
+version = "v2.2.2"
+source = "https://github.com/charmbracelet/bubbles"
+licence = "MIT"
+last_review = "2026-11-22"
+next_review = "2027-05-22"
+purpose = "Terminal UI components: spinners, progress bars and lists"
+
+[[tool]]
+id = "lipgloss"
+kind = "go-library"
+module = "charm.land/lipgloss/v2"
+version = "v2.1.1"
+source = "https://github.com/charmbracelet/lipgloss"
+licence = "MIT"
+last_review = "2026-11-22"
+next_review = "2027-05-22"
+purpose = "Terminal layout and styling primitives"
+
+[[tool]]
+id = "glamour"
+kind = "go-library"
+module = "charm.land/glamour/v2"
+version = "v2.0.1"
+source = "https://github.com/charmbracelet/glamour"
+licence = "MIT"
+last_review = "2026-11-22"
+next_review = "2027-05-22"
+purpose = "Markdown rendering for explain and inline documentation views"
+
+[[tool]]
+id = "x-sys"
+kind = "go-library"
+module = "golang.org/x/sys"
+version = "v0.50.0"
+source = "https://go.googlesource.com/sys"
+licence = "BSD-3-Clause"
+last_review = "2026-11-22"
+next_review = "2027-05-22"
+purpose = "Low-level OS system calls and locking on Linux and macOS"
+
+[[tool]]
+id = "golangci-lint"
+kind = "go-tool"
+module = "github.com/golangci/golangci-lint/v2"
+tool_path = "github.com/golangci/golangci-lint/v2/cmd/golangci-lint"
+version = "v2.15.0"
+source = "https://github.com/golangci/golangci-lint"
+licence = "GPL-3.0-only"
+last_review = "2026-11-22"
+next_review = "2027-05-22"
+purpose = "Static analysis and formatting gate configured by .golangci.yml (build tool only, not linked into binaries)"
+
+[[tool]]
+id = "govulncheck"
+kind = "go-tool"
+module = "golang.org/x/vuln"
+tool_path = "golang.org/x/vuln/cmd/govulncheck"
+version = "v1.10.0"
+source = "https://go.googlesource.com/vuln"
+licence = "BSD-3-Clause"
+last_review = "2026-11-22"
+next_review = "2027-05-22"
+purpose = "Known-vulnerability scanner for Go modules and call graphs (build tool only)"

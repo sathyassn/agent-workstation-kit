@@ -13,6 +13,7 @@ step is in [docs/maintenance/releasing.md](docs/maintenance/releasing.md).
 
 ### Added
 
+- Go module (`go.mod`, `go.sum`), package layout under `cmd/` and `internal/`, root data embedding (`assets.go`), stub `wskit` and `agentctl` binaries, and `registry/tools.toml` pinning the Go libraries and build tools.
 - CodeFlow full tier, on the released CodeFlow 3.1.1 with its digests pinned: skills, project records (`project-management/`), product, capabilities and architecture pages, and the Go roadmap with its 32 epics (`docs/plan/roadmap.md`).
 - `.golangci.yml`, the lint configuration the Go code will be held to.
 - The unit catalog, `registry/units.toml`, with a check that keeps the shared tables in the roadmap, the core spec and ADR 0005 current, and that finds cycles and dangling edges per OS.
