@@ -359,8 +359,8 @@ func TestDeliverNeverBlocksOnStalledUI(t *testing.T) {
 }
 
 // TestFullUICoalescesOnlyProgress fills the UI queue, then checks that the
-// progress events became one coalesced event and the non-progress event that
-// followed arrived unchanged after it.
+// progress events were coalesced and the non-progress event that followed
+// arrived unchanged after them.
 func TestFullUICoalescesOnlyProgress(t *testing.T) {
 	t.Parallel()
 	log, open, _ := fileLog(t)
@@ -384,9 +384,21 @@ func TestFullUICoalescesOnlyProgress(t *testing.T) {
 			return contract.Event{}
 		}
 	}
-	co := recv()
-	if co.Kind != contract.EventCoalesced || co.Seq != 10 || count(t, co) != 9 {
-		t.Fatalf("second UI event = %+v, want progress 2-10 coalesced into seq 10 with count 9", co)
+	// The worker may take progress 2, alone or with a few after it, before
+	// the rest arrive; it blocks on the full queue, so the rest coalesce.
+	var progress, shown uint64
+	var last contract.Event
+	for progress < 9 {
+		last = recv()
+		if last.Kind != contract.EventProgress && last.Kind != contract.EventCoalesced {
+			t.Fatalf("UI got %+v before progress 2-10 were all shown", last)
+		}
+		progress += count(t, last)
+		shown++
+	}
+	if progress != 9 || shown > 2 || last.Seq != 10 {
+		t.Fatalf("UI showed progress 2-10 as %d events counting %d, ending at seq %d; want at most 2 events counting 9, ending at seq 10",
+			shown, progress, last.Seq)
 	}
 	warn := recv()
 	if !sameEvent(warn, event(11, contract.EventWarning)) {
