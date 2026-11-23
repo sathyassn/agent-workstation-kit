@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -34,27 +35,38 @@ func expectedSchemas() []string {
 func compileEmbeddedSchema(t *testing.T, name string) *jsonschema.Schema {
 	t.Helper()
 
-	schemaPath := path.Join("schema/json", name+".schema.json")
-	raw, err := fs.ReadFile(wskit.SchemaFS(), schemaPath)
-	if err != nil {
-		t.Fatalf("read embedded schema %s: %v", schemaPath, err)
-	}
-	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(raw))
-	if err != nil {
-		t.Fatalf("unmarshal schema %s: %v", schemaPath, err)
-	}
-
 	compiler := jsonschema.NewCompiler()
 	compiler.DefaultDraft(jsonschema.Draft2020)
 	compiler.AssertFormat()
 
-	url := "https://github.com/sathyassn/agent-workstation-kit/" + schemaPath
-	if err := compiler.AddResource(url, doc); err != nil {
-		t.Fatalf("add resource %s: %v", url, err)
-	}
-	schema, err := compiler.Compile(url)
+	entries, err := fs.ReadDir(wskit.SchemaFS(), "schema/json")
 	if err != nil {
-		t.Fatalf("compile schema %s: %v", schemaPath, err)
+		t.Fatalf("read embedded schema/json: %v", err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".schema.json") {
+			continue
+		}
+		schemaPath := path.Join("schema/json", entry.Name())
+		raw, err := fs.ReadFile(wskit.SchemaFS(), schemaPath)
+		if err != nil {
+			t.Fatalf("read embedded schema %s: %v", schemaPath, err)
+		}
+		doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(raw))
+		if err != nil {
+			t.Fatalf("unmarshal schema %s: %v", schemaPath, err)
+		}
+		url := "https://github.com/sathyassn/agent-workstation-kit/" + schemaPath
+		if err := compiler.AddResource(url, doc); err != nil {
+			t.Fatalf("add resource %s: %v", url, err)
+		}
+	}
+
+	targetPath := path.Join("schema/json", name+".schema.json")
+	targetURL := "https://github.com/sathyassn/agent-workstation-kit/" + targetPath
+	schema, err := compiler.Compile(targetURL)
+	if err != nil {
+		t.Fatalf("compile schema %s: %v", targetPath, err)
 	}
 	return schema
 }
@@ -416,6 +428,111 @@ func TestMarshalledGoStructsValidateAgainstSchemas(t *testing.T) {
 				},
 			},
 		},
+		{
+			name:   "Event_progress",
+			schema: "event",
+			value: versionedEvent{
+				SchemaVersion: 1,
+				Event: contract.Event{
+					Seq:   8,
+					Time:  ts,
+					RunID: contract.RunID("run-lab-ws-01-02"),
+					Unit:  contract.UnitPackages,
+					Step:  contract.StepApply,
+					Kind:  contract.EventProgress,
+					Text:  "installing packages",
+					Data: map[contract.DataKey]string{
+						contract.DataCount: "3",
+					},
+				},
+			},
+		},
+		{
+			name:   "Handover_open",
+			schema: "handover",
+			value: contract.Handover{
+				SchemaVersion: 1,
+				Machine:       "acme-ws-001",
+				Account:       "admin-01",
+				Step:          "Apply root packages",
+				Command: contract.HandoverCommand{
+					Argv:    []string{"sudo", "/opt/agent-workstation-kit/bin/wskit", "setup", "--stage", "packages", "--apply"},
+					Display: "sudo /opt/agent-workstation-kit/bin/wskit setup --stage packages --apply --approve-plan SHORT-DIGEST",
+				},
+				Why:    "Root packages require approval.",
+				Verify: contract.HandoverVerify{Argv: []string{"wskit", "status", "--json"}},
+				Undo:   ptrString("Run sudo /opt/agent-workstation-kit/bin/wskit revert --to baseline --apply"),
+				Probe:  &contract.Probe{Argv: []string{"wskit", "next", "--json"}},
+				Status: contract.HandoverOpen,
+			},
+		},
+		{
+			name:   "Next_user_step",
+			schema: "next",
+			value: contract.Next{
+				SchemaVersion: 1,
+				RunID:         contract.RunID("run-acme-ws-001-01"),
+				Stage:         ptrStage(contract.StageAgent),
+				Unit:          ptrUnitID(contract.UnitShell),
+				Owner:         ptrString("agent-01"),
+				Root:          false,
+				Gate:          nil,
+				PreviewArgv:   []string{"wskit", "shell", "apply"},
+				ApplyArgv:     []string{"wskit", "shell", "apply", "--apply"},
+				Handover:      nil,
+				Probe:         nil,
+				LogPath:       ptrString("/var/log/agent-workstation-kit/run-acme-ws-001.jsonl"),
+				BlockedBy:     []string{},
+				Outcome:       nil,
+			},
+		},
+		{
+			name:   "Failure_with_backup",
+			schema: "failure",
+			value: contract.Failure{
+				SchemaVersion: 1,
+				Unit:          contract.UnitSSH,
+				Step:          contract.StepVerify,
+				ErrorClass:    "verify",
+				Message:       "sshd -t failed",
+				Suggested:     "Inspect the log and re-run wskit ssh apply.",
+				Log:           "/var/log/agent-workstation-kit/run-acme-ws-001-ssh.jsonl",
+				Backup:        ptrBackupRef(contract.BackupRef("backup-001")),
+			},
+		},
+		{
+			name:   "Explain_unit",
+			schema: "explain",
+			value: contract.Explain{
+				SchemaVersion:    1,
+				Subject:          "ssh",
+				What:             "Hardens OpenSSH.",
+				Why:              "Restricts remote logins.",
+				Options:          []string{"enabled", "disabled"},
+				Default:          "enabled",
+				Risk:             "high",
+				Undo:             "Run wskit ssh revert --apply.",
+				ManualEquivalent: "Edit sshd_config and reload ssh.",
+				Sources: []contract.ExplainSource{
+					{
+						URL:          "https://man.openbsd.org/sshd_config",
+						Purpose:      "OpenSSH manual",
+						LastVerified: "2026-11-22",
+					},
+				},
+			},
+		},
+		{
+			name:   "CLIError_refused",
+			schema: "error",
+			value: contract.CLIError{
+				SchemaVersion: 1,
+				Code:          contract.ExitNotStagedRoot,
+				Class:         "refused",
+				Message:       "root must run from the staged binary",
+				Rule:          ptrString("root-staged-binary-only"),
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -562,4 +679,242 @@ func TestSchemaEnumsMatchGoConstants(t *testing.T) {
 	if !slices.Equal(gotCodes, wantCodes) {
 		t.Errorf("error code enum = %v, want %v", gotCodes, wantCodes)
 	}
+
+	wantHandoverStatuses := make([]string, len(contract.AllHandoverStatuses()))
+	for i, s := range contract.AllHandoverStatuses() {
+		wantHandoverStatuses[i] = s.String()
+	}
+	handoverDoc := readRawSchema(t, "handover")
+	handoverProps := handoverDoc["properties"].(map[string]any)
+	if got := toStrings(t, handoverProps["status"].(map[string]any)["enum"], false); !slices.Equal(got, wantHandoverStatuses) {
+		t.Errorf("handover status enum = %v, want %v", got, wantHandoverStatuses)
+	}
 }
+
+func TestValidFixturesRoundTripThroughGoTypes(t *testing.T) {
+	t.Parallel()
+
+	type versionedDescribe struct {
+		SchemaVersion int `json:"schema_version"`
+		contract.Description
+	}
+	type versionedPlan struct {
+		SchemaVersion int `json:"schema_version"`
+		contract.Plan
+	}
+	type versionedStatus struct {
+		SchemaVersion int `json:"schema_version"`
+		contract.Status
+	}
+	type versionedEvent struct {
+		SchemaVersion int `json:"schema_version"`
+		contract.Event
+	}
+
+	constructors := map[string]func() any{
+		"describe": func() any { return &versionedDescribe{} },
+		"plan":     func() any { return &versionedPlan{} },
+		"next":     func() any { return &contract.Next{} },
+		"status":   func() any { return &versionedStatus{} },
+		"explain":  func() any { return &contract.Explain{} },
+		"handover": func() any { return &contract.Handover{} },
+		"failure":  func() any { return &contract.Failure{} },
+		"event":    func() any { return &versionedEvent{} },
+		"error":    func() any { return &contract.CLIError{} },
+	}
+
+	fixturesFS := os.DirFS("../../testdata/json")
+
+	for _, name := range expectedSchemas() {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			newTarget, ok := constructors[name]
+			if !ok {
+				t.Fatalf("no Go type constructor registered for schema %s", name)
+			}
+			schema := compileEmbeddedSchema(t, name)
+			validFiles, err := fs.Glob(fixturesFS, path.Join(name, "valid", "*.json"))
+			if err != nil {
+				t.Fatalf("glob valid fixtures for %s: %v", name, err)
+			}
+			if len(validFiles) == 0 {
+				t.Fatalf("no valid fixtures for %s", name)
+			}
+
+			for _, f := range validFiles {
+				t.Run(path.Base(f), func(t *testing.T) {
+					t.Parallel()
+
+					raw, err := fs.ReadFile(fixturesFS, f)
+					if err != nil {
+						t.Fatalf("read %s: %v", f, err)
+					}
+
+					dst := newTarget()
+					dec := json.NewDecoder(bytes.NewReader(raw))
+					dec.DisallowUnknownFields()
+					if err := dec.Decode(dst); err != nil {
+						t.Fatalf("decode %s into %T: %v", f, dst, err)
+					}
+
+					remarshalled, err := json.Marshal(dst)
+					if err != nil {
+						t.Fatalf("marshal %T from %s: %v", dst, f, err)
+					}
+					if err := validateBytes(t, schema, remarshalled); err != nil {
+						t.Fatalf("round-tripped %s failed schema %s: %v\njson: %s", f, name, err, remarshalled)
+					}
+
+					var origTree, gotTree any
+					if err := json.Unmarshal(raw, &origTree); err != nil {
+						t.Fatalf("parse orig %s: %v", f, err)
+					}
+					if err := json.Unmarshal(remarshalled, &gotTree); err != nil {
+						t.Fatalf("parse remarshalled %s: %v", f, err)
+					}
+					if !reflect.DeepEqual(origTree, gotTree) {
+						t.Errorf("round-trip mismatch for %s:\ngot:  %s\nwant: %s", f, remarshalled, raw)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestEventSeqBounds(t *testing.T) {
+	t.Parallel()
+
+	schema := compileEmbeddedSchema(t, "event")
+	const tmpl = `{
+		"schema_version": 1,
+		"seq": %s,
+		"time": "2026-11-23T12:20:00Z",
+		"run_id": "run-lab-ws-01-20261123T122000Z",
+		"unit": "shell",
+		"step": "apply",
+		"kind": "output",
+		"text": "seq bound check",
+		"data": {}
+	}`
+
+	for _, validSeq := range []string{"0", "18446744073709551615"} {
+		raw := []byte(strings.Replace(tmpl, "%s", validSeq, 1))
+		if err := validateBytes(t, schema, raw); err != nil {
+			t.Errorf("event schema rejected valid seq %s: %v", validSeq, err)
+		}
+	}
+	for _, invalidSeq := range []string{"-1", "18446744073709551616"} {
+		raw := []byte(strings.Replace(tmpl, "%s", invalidSeq, 1))
+		if err := validateBytes(t, schema, raw); err == nil {
+			t.Errorf("event schema unexpectedly accepted out-of-range seq %s", invalidSeq)
+		}
+	}
+}
+
+func TestNextHandoverSharedSchema(t *testing.T) {
+	t.Parallel()
+
+	rawSchema, err := fs.ReadFile(wskit.SchemaFS(), "schema/json/next.schema.json")
+	if err != nil {
+		t.Fatalf("read next.schema.json: %v", err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(rawSchema, &doc); err != nil {
+		t.Fatalf("parse next.schema.json: %v", err)
+	}
+	if defs, ok := doc["$defs"].(map[string]any); ok {
+		if _, duplicated := defs["handover_payload"]; duplicated {
+			t.Errorf("next.schema.json duplicates handover_payload instead of referencing handover.schema.json")
+		}
+	}
+	props := doc["properties"].(map[string]any)
+	handoverOneOf := props["handover"].(map[string]any)["oneOf"].([]any)
+	foundRef := false
+	for _, branch := range handoverOneOf {
+		if m, ok := branch.(map[string]any); ok && m["$ref"] == "handover.schema.json" {
+			foundRef = true
+		}
+	}
+	if !foundRef {
+		t.Errorf("next.schema.json properties.handover must $ref handover.schema.json, got %v", handoverOneOf)
+	}
+
+	// The nested handover inside next/valid/root-gate-handover.json must be
+	// valid under both next.schema.json and handover.schema.json.
+	nextRaw, err := fs.ReadFile(os.DirFS("../../testdata/json"), "next/valid/root-gate-handover.json")
+	if err != nil {
+		t.Fatalf("read root-gate-handover.json: %v", err)
+	}
+	nextSchema := compileEmbeddedSchema(t, "next")
+	if err := validateBytes(t, nextSchema, nextRaw); err != nil {
+		t.Fatalf("root-gate-handover.json failed next.schema.json: %v", err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(nextRaw, &parsed); err != nil {
+		t.Fatalf("parse root-gate-handover.json: %v", err)
+	}
+	nestedRaw, err := json.Marshal(parsed["handover"])
+	if err != nil {
+		t.Fatalf("marshal nested handover: %v", err)
+	}
+	handoverSchema := compileEmbeddedSchema(t, "handover")
+	if err := validateBytes(t, handoverSchema, nestedRaw); err != nil {
+		t.Errorf("nested handover in root-gate-handover.json failed handover.schema.json: %v", err)
+	}
+}
+
+func TestNextRejectsProbeIntervalSeconds(t *testing.T) {
+	t.Parallel()
+
+	nextSchema := compileEmbeddedSchema(t, "next")
+	handoverSchema := compileEmbeddedSchema(t, "handover")
+	fixturesFS := os.DirFS("../../testdata/json")
+
+	// Reject interval_seconds in next.probe.
+	baseNextRaw, err := fs.ReadFile(fixturesFS, "next/valid/user-step.json")
+	if err != nil {
+		t.Fatalf("read user-step.json: %v", err)
+	}
+	var nextDoc map[string]any
+	if err := json.Unmarshal(baseNextRaw, &nextDoc); err != nil {
+		t.Fatalf("parse user-step.json: %v", err)
+	}
+	nextDoc["probe"] = map[string]any{
+		"argv":             []string{"wskit", "next", "--json"},
+		"interval_seconds": 10,
+	}
+	badNext, err := json.Marshal(nextDoc)
+	if err != nil {
+		t.Fatalf("marshal bad next: %v", err)
+	}
+	if err := validateBytes(t, nextSchema, badNext); err == nil {
+		t.Errorf("next.schema.json unexpectedly accepted probe.interval_seconds")
+	}
+
+	// Reject interval_seconds in handover.probe too.
+	baseHandoverRaw, err := fs.ReadFile(fixturesFS, "handover/valid/open-root-apply.json")
+	if err != nil {
+		t.Fatalf("read open-root-apply.json: %v", err)
+	}
+	var handoverDoc map[string]any
+	if err := json.Unmarshal(baseHandoverRaw, &handoverDoc); err != nil {
+		t.Fatalf("parse open-root-apply.json: %v", err)
+	}
+	handoverDoc["probe"] = map[string]any{
+		"argv":             []string{"wskit", "next", "--json"},
+		"interval_seconds": 15,
+	}
+	badHandover, err := json.Marshal(handoverDoc)
+	if err != nil {
+		t.Fatalf("marshal bad handover: %v", err)
+	}
+	if err := validateBytes(t, handoverSchema, badHandover); err == nil {
+		t.Errorf("handover.schema.json unexpectedly accepted probe.interval_seconds")
+	}
+}
+
+func ptrString(s string) *string                            { return &s }
+func ptrStage(s contract.Stage) *contract.Stage             { return &s }
+func ptrUnitID(u contract.UnitID) *contract.UnitID          { return &u }
+func ptrBackupRef(b contract.BackupRef) *contract.BackupRef { return &b }

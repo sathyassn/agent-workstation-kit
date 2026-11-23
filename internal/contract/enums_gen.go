@@ -2,6 +2,8 @@
 
 package contract
 
+import "fmt"
+
 // UnitID identifies a unit in the catalog.
 type UnitID string
 
@@ -70,6 +72,16 @@ func (u UnitID) Valid() bool {
 	default:
 		return false
 	}
+}
+
+// UnmarshalText decodes a UnitID and rejects unknown values.
+func (u *UnitID) UnmarshalText(b []byte) error {
+	v := UnitID(b)
+	if !v.Valid() {
+		return fmt.Errorf("unknown UnitID %q", string(b))
+	}
+	*u = v
+	return nil
 }
 
 // AllUnitIDs returns a fresh slice of every valid UnitID in catalog order.
@@ -143,6 +155,16 @@ func (s Stage) Valid() bool {
 	}
 }
 
+// UnmarshalText decodes a Stage and rejects unknown values.
+func (s *Stage) UnmarshalText(b []byte) error {
+	v := Stage(b)
+	if !v.Valid() {
+		return fmt.Errorf("unknown Stage %q", string(b))
+	}
+	*s = v
+	return nil
+}
+
 // AllStages returns a fresh slice of every valid Stage in catalog order.
 func AllStages() []Stage {
 	return []Stage{
@@ -181,6 +203,16 @@ func (s Scope) Valid() bool {
 	default:
 		return false
 	}
+}
+
+// UnmarshalText decodes a Scope and rejects unknown values.
+func (s *Scope) UnmarshalText(b []byte) error {
+	v := Scope(b)
+	if !v.Valid() {
+		return fmt.Errorf("unknown Scope %q", string(b))
+	}
+	*s = v
+	return nil
 }
 
 // AllScopes returns a fresh slice of every valid Scope.
@@ -227,6 +259,16 @@ func (d Domain) Valid() bool {
 	}
 }
 
+// UnmarshalText decodes a Domain and rejects unknown values.
+func (d *Domain) UnmarshalText(b []byte) error {
+	v := Domain(b)
+	if !v.Valid() {
+		return fmt.Errorf("unknown Domain %q", string(b))
+	}
+	*d = v
+	return nil
+}
+
 // AllDomains returns a fresh slice of every valid Domain in catalog order.
 func AllDomains() []Domain {
 	return []Domain{
@@ -267,6 +309,16 @@ func (p Privilege) Valid() bool {
 	default:
 		return false
 	}
+}
+
+// UnmarshalText decodes a Privilege and rejects unknown values.
+func (p *Privilege) UnmarshalText(b []byte) error {
+	v := Privilege(b)
+	if !v.Valid() {
+		return fmt.Errorf("unknown Privilege %q", string(b))
+	}
+	*p = v
+	return nil
 }
 
 // Scope returns the execution Scope for p, or an empty Scope when invalid.

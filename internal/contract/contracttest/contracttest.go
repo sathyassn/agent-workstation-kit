@@ -1,6 +1,7 @@
 package contracttest
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -10,17 +11,30 @@ import (
 )
 
 const (
-	declaredPath     = "/etc/agent-workstation-kit/declared.conf"
-	undeclaredPath   = "/etc/agent-workstation-kit/undeclared.conf"
-	declaredState    = contract.StateKey("hostname.pretty")
-	undeclaredState  = contract.StateKey("hostname.undeclared")
-	declaredEnvKey   = "WSKIT_DECLARED_ENV"
-	undeclaredEnvKey = "WSKIT_UNDECLARED_ENV"
-	sampleTemplateID = contract.TemplateID("sample-tpl")
-	sampleBlockID    = contract.BlockID("wskit-block")
-	defaultSinkWait  = 250 * time.Millisecond
-	sinkBurstCount   = 512
-	emitOrderCount   = 8
+	declaredPath           = "/etc/agent-workstation-kit/declared.conf"
+	undeclaredPath         = "/etc/agent-workstation-kit/undeclared.conf"
+	declaredState          = contract.StateKey("hostname.pretty")
+	undeclaredState        = contract.StateKey("hostname.undeclared")
+	declaredPackage        = "zsh"
+	undeclaredPackage      = "undeclared-pkg"
+	declaredPackageKey     = contract.StateKey(targetPrefixPackage + declaredPackage)
+	undeclaredPackageKey   = contract.StateKey(targetPrefixPackage + undeclaredPackage)
+	declaredService        = "ssh"
+	undeclaredService      = "undeclared-svc"
+	declaredServiceKey     = contract.StateKey(targetPrefixService + declaredService)
+	undeclaredServiceKey   = contract.StateKey(targetPrefixService + undeclaredService)
+	declaredUser           = "agent-01"
+	declaredGroup          = "users"
+	undeclaredGroup        = "undeclared-grp"
+	declaredUserGroupKey   = contract.StateKey(targetPrefixUserGroup + declaredUser + ":" + declaredGroup)
+	undeclaredUserGroupKey = contract.StateKey(targetPrefixUserGroup + declaredUser + ":" + undeclaredGroup)
+	declaredEnvKey         = "WSKIT_DECLARED_ENV"
+	undeclaredEnvKey       = "WSKIT_UNDECLARED_ENV"
+	sampleTemplateID       = contract.TemplateID("sample-tpl")
+	sampleBlockID          = contract.BlockID("wskit-block")
+	defaultSinkWait        = 250 * time.Millisecond
+	sinkBurstCount         = 512
+	emitOrderCount         = 8
 )
 
 type reporter interface {
@@ -105,8 +119,8 @@ func checkUnit(r reporter, u contract.Unit) {
 			Arch:      "amd64",
 			OSVersion: "24.04",
 		},
-		FormFactor: contract.FormFactor("fixed"),
-		Topology:   contract.Topology("local-only"),
+		FormFactor: contract.FormFactorFixed,
+		Topology:   contract.TopologySeparate,
 	}
 	plan, err := u.Plan(ctx, in)
 	if err != nil {
@@ -159,15 +173,35 @@ func checkUnit(r reporter, u contract.Unit) {
 
 func standardTestDescription() contract.Description {
 	return contract.Description{
-		Unit:           contract.UnitShell,
-		Scope:          contract.ScopeUser,
-		DependsOn:      []contract.UnitID{},
-		Capabilities:   []contract.Capability{},
-		OwnedPaths:     []string{declaredPath},
-		OwnedStateKeys: []contract.StateKey{declaredState},
-		Irreversible:   []string{},
-		DeclaredEnv:    []string{declaredEnvKey},
+		Unit:         contract.UnitShell,
+		Scope:        contract.ScopeUser,
+		DependsOn:    []contract.UnitID{},
+		Capabilities: []contract.Capability{},
+		OwnedPaths:   []string{declaredPath},
+		OwnedStateKeys: []contract.StateKey{
+			declaredState,
+			declaredPackageKey,
+			declaredServiceKey,
+			declaredUserGroupKey,
+		},
+		Irreversible: []string{},
+		DeclaredEnv:  []string{declaredEnvKey},
 	}
+}
+
+type contractStateProvider struct {
+	inner *FakeStateProvider
+}
+
+func (p *contractStateProvider) Name() contract.StateProviderName { return p.inner.Name() }
+func (p *contractStateProvider) Read(ctx context.Context, key contract.StateKey) (contract.State, error) {
+	return p.inner.Read(ctx, key)
+}
+func (p *contractStateProvider) Snapshot(ctx context.Context) (contract.Snapshot, error) {
+	return p.inner.Snapshot(ctx)
+}
+func (p *contractStateProvider) Restore(ctx context.Context, s contract.Snapshot) error {
+	return p.inner.Restore(ctx, s)
 }
 
 func checkDeclarativeTx(r reporter, newTx func(contract.Description) contract.DeclarativeTx) {
@@ -183,16 +217,30 @@ func checkDeclarativeTx(r reporter, newTx func(contract.Description) contract.De
 		return
 	}
 
-	assertUndeclaredError(r, "WriteFile", contract.TargetPath, undeclaredPath,
-		tx.WriteFile(ctx, undeclaredPath, []byte("x"), defaultFilePerm, contract.Owner{}))
-	assertUndeclaredError(r, "RenderTemplate", contract.TargetPath, undeclaredPath,
-		tx.RenderTemplate(ctx, undeclaredPath, sampleTemplateID, contract.TemplateVars{}, defaultFilePerm, contract.Owner{}))
-	assertUndeclaredError(r, "EnsureBlock", contract.TargetPath, undeclaredPath,
-		tx.EnsureBlock(ctx, undeclaredPath, contract.ManagedBlock{ID: sampleBlockID, Begin: "# begin", End: "# end", Body: "x"}))
-	assertUndeclaredError(r, "RemoveBlock", contract.TargetPath, undeclaredPath,
-		tx.RemoveBlock(ctx, undeclaredPath, sampleBlockID))
-	assertUndeclaredError(r, "Remove", contract.TargetPath, undeclaredPath,
-		tx.Remove(ctx, undeclaredPath))
+	assertRefusedUnchanged(r, "WriteFile", inspector, contract.TargetPath, undeclaredPath, func() error {
+		return tx.WriteFile(ctx, undeclaredPath, []byte("x"), defaultFilePerm, contract.Owner{})
+	})
+	assertRefusedUnchanged(r, "RenderTemplate", inspector, contract.TargetPath, undeclaredPath, func() error {
+		return tx.RenderTemplate(ctx, undeclaredPath, sampleTemplateID, contract.TemplateVars{}, defaultFilePerm, contract.Owner{})
+	})
+	assertRefusedUnchanged(r, "EnsureBlock", inspector, contract.TargetPath, undeclaredPath, func() error {
+		return tx.EnsureBlock(ctx, undeclaredPath, contract.ManagedBlock{ID: sampleBlockID, Begin: "# begin", End: "# end", Body: "x"})
+	})
+	assertRefusedUnchanged(r, "RemoveBlock", inspector, contract.TargetPath, undeclaredPath, func() error {
+		return tx.RemoveBlock(ctx, undeclaredPath, sampleBlockID)
+	})
+	assertRefusedUnchanged(r, "Remove", inspector, contract.TargetPath, undeclaredPath, func() error {
+		return tx.Remove(ctx, undeclaredPath)
+	})
+	assertRefusedUnchanged(r, "Package", inspector, contract.TargetStateKey, string(undeclaredPackageKey), func() error {
+		return tx.Package(ctx, contract.PackageState{Name: undeclaredPackage, Present: true})
+	})
+	assertRefusedUnchanged(r, "Service", inspector, contract.TargetStateKey, string(undeclaredServiceKey), func() error {
+		return tx.Service(ctx, contract.ServiceState{Name: undeclaredService, Enabled: true, Running: true})
+	})
+	assertRefusedUnchanged(r, "UserGroup", inspector, contract.TargetStateKey, string(undeclaredUserGroupKey), func() error {
+		return tx.UserGroup(ctx, contract.UserGroupState{User: declaredUser, Group: undeclaredGroup, Present: true})
+	})
 
 	if changes := inspector.Changes(); len(changes) != 0 {
 		r.Errorf("refused undeclared mutations recorded %d changes, want 0", len(changes))
@@ -201,17 +249,22 @@ func checkDeclarativeTx(r reporter, newTx func(contract.Description) contract.De
 	if err := tx.WriteFile(ctx, declaredPath, []byte("hello\n"), defaultFilePerm, contract.Owner{}); err != nil {
 		r.Errorf("WriteFile on declared path failed: %v", err)
 	}
-	changes := inspector.Changes()
-	foundDeclared := false
-	for _, ch := range changes {
-		if ch.Target == declaredPath {
-			foundDeclared = true
-			break
-		}
+	assertRecordedChange(r, "WriteFile", inspector.Changes(), declaredPath, false)
+
+	if err := tx.Package(ctx, contract.PackageState{Name: declaredPackage, Present: true}); err != nil {
+		r.Errorf("Package on declared target failed: %v", err)
 	}
-	if !foundDeclared {
-		r.Errorf("WriteFile on declared path %q was not recorded for the receipt (changes=%v)", declaredPath, changes)
+	assertRecordedChange(r, "Package", inspector.Changes(), string(declaredPackageKey), true)
+
+	if err := tx.Service(ctx, contract.ServiceState{Name: declaredService, Enabled: true, Running: true}); err != nil {
+		r.Errorf("Service on declared target failed: %v", err)
 	}
+	assertRecordedChange(r, "Service", inspector.Changes(), string(declaredServiceKey), true)
+
+	if err := tx.UserGroup(ctx, contract.UserGroupState{User: declaredUser, Group: declaredGroup, Present: true}); err != nil {
+		r.Errorf("UserGroup on declared target failed: %v", err)
+	}
+	assertRecordedChange(r, "UserGroup", inspector.Changes(), string(declaredUserGroupKey), true)
 
 	checkEmitOrder(r, tx, inspector)
 }
@@ -233,25 +286,51 @@ func checkTx(r reporter, newTx func(contract.Description) contract.Tx) {
 		return
 	}
 
-	provider := NewFakeStateProvider(contract.ProviderHostname, map[contract.StateKey]contract.State{
+	rawProvider := NewFakeStateProvider(contract.ProviderHostname, map[contract.StateKey]contract.State{
 		declaredState: {Value: "lab-ws-01"},
 	})
+	provider := &contractStateProvider{inner: rawProvider}
 
-	assertUndeclaredError(r, "SetState", contract.TargetStateKey, string(undeclaredState),
-		tx.SetState(ctx, provider, undeclaredState, contract.State{Value: "bad"}))
+	beforeProvSnap, err := provider.Snapshot(ctx)
+	if err != nil {
+		r.Errorf("StateProvider.Snapshot before refused SetState failed: %v", err)
+		return
+	}
+	assertRefusedUnchanged(r, "SetState", inspector, contract.TargetStateKey, string(undeclaredState), func() error {
+		return tx.SetState(ctx, provider, undeclaredState, contract.State{Value: "bad"})
+	})
+	afterProvSnap, err := provider.Snapshot(ctx)
+	if err != nil {
+		r.Errorf("StateProvider.Snapshot after refused SetState failed: %v", err)
+		return
+	}
+	if !bytes.Equal(beforeProvSnap.Data, afterProvSnap.Data) {
+		r.Errorf("SetState mutated backing state of provider despite returning refusal error")
+	}
 
+	beforeRun := inspector.BackingState()
 	_, runErr := tx.Run(ctx, contract.Command{
 		Argv:    []string{"/usr/bin/true"},
 		EnvKeys: []string{undeclaredEnvKey},
 	})
 	assertUndeclaredError(r, "Run", contract.TargetEnvKey, undeclaredEnvKey, runErr)
+	if !bytes.Equal(beforeRun, inspector.BackingState()) {
+		r.Errorf("Run mutated backing state despite returning refusal error")
+	}
 
 	beforeCount := len(inspector.Changes())
-	if err := tx.SetState(ctx, provider, declaredState, contract.State{Value: "acme-ws-001"}); err != nil {
+	wantState := contract.State{Value: "acme-ws-001"}
+	if err := tx.SetState(ctx, provider, declaredState, wantState); err != nil {
 		r.Errorf("SetState on declared key failed: %v", err)
 	}
 	if len(inspector.Changes()) <= beforeCount {
 		r.Errorf("SetState on declared key %q was not recorded for the receipt", declaredState)
+	}
+	gotState, err := provider.Read(ctx, declaredState)
+	if err != nil {
+		r.Errorf("StateProvider.Read(%q) after SetState failed: %v", declaredState, err)
+	} else if gotState != wantState {
+		r.Errorf("StateProvider.Read(%q) after SetState = %+v, want %+v", declaredState, gotState, wantState)
 	}
 }
 
@@ -389,4 +468,43 @@ func assertUndeclaredError(r reporter, op string, wantKind contract.TargetKind, 
 	if targetErr.Target != wantTarget {
 		r.Errorf("%s error Target = %q, want %q", op, targetErr.Target, wantTarget)
 	}
+}
+
+func assertRefusedUnchanged(
+	r reporter,
+	op string,
+	inspector TxInspector,
+	wantKind contract.TargetKind,
+	wantTarget string,
+	call func() error,
+) {
+	r.Helper()
+
+	before := inspector.BackingState()
+	err := call()
+	assertUndeclaredError(r, op, wantKind, wantTarget, err)
+	after := inspector.BackingState()
+	if !bytes.Equal(before, after) {
+		r.Errorf("%s mutated backing state despite returning refusal error", op)
+	}
+}
+
+func assertRecordedChange(
+	r reporter,
+	op string,
+	changes []contract.AppliedChange,
+	wantTarget string,
+	requireBackup bool,
+) {
+	r.Helper()
+
+	for _, ch := range changes {
+		if ch.Target == wantTarget {
+			if requireBackup && ch.Backup == "" {
+				r.Errorf("%s on declared target %q recorded no backup reference", op, wantTarget)
+			}
+			return
+		}
+	}
+	r.Errorf("%s on declared target %q was not recorded for the receipt (changes=%v)", op, wantTarget, changes)
 }

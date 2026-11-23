@@ -24,6 +24,7 @@
     "--apply"
   ],
   "handover": {
+    "schema_version": 1,
     "machine": "acme-ws-001",
     "account": "admin-01",
     "step": "Enrol mesh VPN and verify SSH access from a second device",
@@ -52,8 +53,7 @@
         "wskit",
         "next",
         "--json"
-      ],
-      "interval_seconds": 10
+      ]
     },
     "status": "open"
   },
@@ -62,8 +62,7 @@
       "wskit",
       "next",
       "--json"
-    ],
-    "interval_seconds": 10
+    ]
   },
   "log_path": "/var/log/agent-workstation-kit/run-lab-ws-01-ssh.jsonl",
   "blocked_by": [

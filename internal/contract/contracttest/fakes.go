@@ -41,16 +41,31 @@ var (
 )
 
 const (
-	defaultSinkCapacity = 256
-	defaultFilePerm     = fs.FileMode(0o600)
-	checkDetailOK       = "ok"
+	defaultSinkCapacity   = 256
+	defaultFilePerm       = fs.FileMode(0o600)
+	checkDetailOK         = "ok"
+	targetPrefixPackage   = "package:"
+	targetPrefixService   = "service:"
+	targetPrefixUserGroup = "user-group:"
 )
 
-// TxInspector exposes recorded changes and events from a transaction under test
-// so contract tests can verify receipt recording and event order.
+// TxInspector exposes recorded changes, events and backing state from a
+// transaction under test so contract tests can verify receipt recording,
+// event order and that refused calls mutate nothing.
 type TxInspector interface {
 	Changes() []contract.AppliedChange
 	Events() []contract.Event
+	BackingState() []byte
+}
+
+type blockKey struct {
+	path string
+	id   contract.BlockID
+}
+
+type blockBounds struct {
+	begin string
+	end   string
 }
 
 // FileEntry holds one in-memory file stored by FakeDeclarativeTx.
@@ -185,6 +200,9 @@ func (p *FakeStateProvider) Restore(ctx context.Context, s contract.Snapshot) er
 	if err := json.Unmarshal(s.Data, &restored); err != nil {
 		return fmt.Errorf("unmarshal snapshot for %q: %w", p.name, err)
 	}
+	if restored == nil {
+		restored = make(map[contract.StateKey]contract.State)
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -196,22 +214,23 @@ func (p *FakeStateProvider) Restore(ctx context.Context, s contract.Snapshot) er
 // that enforces Description boundaries, backs up before mutation, records
 // changes for receipts and keeps emitted events in order.
 type FakeDeclarativeTx struct {
-	mu          sync.Mutex
-	desc        contract.Description
-	ownedPaths  map[string]bool
-	ownedStates map[contract.StateKey]bool
-	declaredEnv map[string]bool
-	sink        contract.Sink
-	files       map[string]FileEntry
-	templates   map[contract.TemplateID]string
-	packages    map[string]contract.PackageState
-	services    map[string]contract.ServiceState
-	userGroups  map[string]contract.UserGroupState
-	checks      map[string]contract.CheckResult
-	backups     map[contract.BackupRef][]byte
-	changes     []contract.AppliedChange
-	events      []contract.Event
-	nextBackup  int
+	mu           sync.Mutex
+	desc         contract.Description
+	ownedPaths   map[string]bool
+	ownedStates  map[contract.StateKey]bool
+	declaredEnv  map[string]bool
+	sink         contract.Sink
+	files        map[string]FileEntry
+	blockMarkers map[blockKey]blockBounds
+	templates    map[contract.TemplateID]string
+	packages     map[string]contract.PackageState
+	services     map[string]contract.ServiceState
+	userGroups   map[string]contract.UserGroupState
+	checks       map[contract.CheckName]contract.CheckResult
+	backups      map[contract.BackupRef][]byte
+	changes      []contract.AppliedChange
+	events       []contract.Event
+	nextBackup   int
 }
 
 // NewFakeDeclarativeTx creates an in-memory DeclarativeTx bound to desc and an
@@ -230,18 +249,19 @@ func NewFakeDeclarativeTx(desc contract.Description, sink contract.Sink) *FakeDe
 		declaredEnv[k] = true
 	}
 	return &FakeDeclarativeTx{
-		desc:        desc,
-		ownedPaths:  ownedPaths,
-		ownedStates: ownedStates,
-		declaredEnv: declaredEnv,
-		sink:        sink,
-		files:       make(map[string]FileEntry),
-		templates:   make(map[contract.TemplateID]string),
-		packages:    make(map[string]contract.PackageState),
-		services:    make(map[string]contract.ServiceState),
-		userGroups:  make(map[string]contract.UserGroupState),
-		checks:      make(map[string]contract.CheckResult),
-		backups:     make(map[contract.BackupRef][]byte),
+		desc:         desc,
+		ownedPaths:   ownedPaths,
+		ownedStates:  ownedStates,
+		declaredEnv:  declaredEnv,
+		sink:         sink,
+		files:        make(map[string]FileEntry),
+		blockMarkers: make(map[blockKey]blockBounds),
+		templates:    make(map[contract.TemplateID]string),
+		packages:     make(map[string]contract.PackageState),
+		services:     make(map[string]contract.ServiceState),
+		userGroups:   make(map[string]contract.UserGroupState),
+		checks:       make(map[contract.CheckName]contract.CheckResult),
+		backups:      make(map[contract.BackupRef][]byte),
 	}
 }
 
@@ -263,6 +283,38 @@ func (tx *FakeDeclarativeTx) SeedFile(path string, data []byte, perm fs.FileMode
 		Perm:  perm,
 		Owner: owner,
 	}
+}
+
+// SeedBlockMarkers records begin and end markers for a pre-seeded managed block.
+func (tx *FakeDeclarativeTx) SeedBlockMarkers(path string, id contract.BlockID, begin, end string) {
+	tx.mu.Lock()
+	defer tx.mu.Unlock()
+
+	tx.blockMarkers[blockKey{path: filepath.Clean(path), id: id}] = blockBounds{begin: begin, end: end}
+}
+
+// SeedPackage populates an existing package state without recording a change.
+func (tx *FakeDeclarativeTx) SeedPackage(state contract.PackageState) {
+	tx.mu.Lock()
+	defer tx.mu.Unlock()
+
+	tx.packages[state.Name] = state
+}
+
+// SeedService populates an existing service state without recording a change.
+func (tx *FakeDeclarativeTx) SeedService(state contract.ServiceState) {
+	tx.mu.Lock()
+	defer tx.mu.Unlock()
+
+	tx.services[state.Name] = state
+}
+
+// SeedUserGroup populates an existing user-group state without recording a change.
+func (tx *FakeDeclarativeTx) SeedUserGroup(state contract.UserGroupState) {
+	tx.mu.Lock()
+	defer tx.mu.Unlock()
+
+	tx.userGroups[state.User+":"+state.Group] = state
 }
 
 // SetCheckResult registers a canned response for Check.
@@ -330,15 +382,9 @@ func (tx *FakeDeclarativeTx) EnsureBlock(ctx context.Context, path string, b con
 	prev := tx.files[clean]
 	block := b.Begin + "\n" + b.Body + "\n" + b.End + "\n"
 	existing := string(prev.Data)
-	start := strings.Index(existing, b.Begin)
-	end := strings.Index(existing, b.End)
 	var next string
-	if start >= 0 && end > start {
-		afterEnd := end + len(b.End)
-		if afterEnd < len(existing) && existing[afterEnd] == '\n' {
-			afterEnd++
-		}
-		next = existing[:start] + block + existing[afterEnd:]
+	if start, end, found := findBlockRange(existing, b.Begin, b.End); found {
+		next = existing[:start] + block + existing[end:]
 	} else {
 		if existing != "" && !strings.HasSuffix(existing, "\n") {
 			existing += "\n"
@@ -349,11 +395,13 @@ func (tx *FakeDeclarativeTx) EnsureBlock(ctx context.Context, path string, b con
 	if perm == 0 {
 		perm = defaultFilePerm
 	}
+	tx.blockMarkers[blockKey{path: clean, id: b.ID}] = blockBounds{begin: b.Begin, end: b.End}
 	tx.writeFileLocked(clean, []byte(next), perm, prev.Owner)
 	return nil
 }
 
-// RemoveBlock removes the marked block identified by id from a declared path.
+// RemoveBlock removes the exact marked block between the begin and end markers
+// recorded for id in a declared path, leaving surrounding bytes identical.
 func (tx *FakeDeclarativeTx) RemoveBlock(ctx context.Context, path string, id contract.BlockID) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("remove block %q: %w", path, err)
@@ -369,25 +417,47 @@ func (tx *FakeDeclarativeTx) RemoveBlock(ctx context.Context, path string, id co
 	if !exists {
 		return nil
 	}
-	marker := string(id)
-	lines := strings.Split(string(prev.Data), "\n")
-	var kept []string
-	skipping := false
-	for _, line := range lines {
-		if !skipping && strings.Contains(line, marker) {
-			skipping = true
-			continue
-		}
-		if skipping && strings.Contains(line, marker) {
-			skipping = false
-			continue
-		}
-		if !skipping {
-			kept = append(kept, line)
-		}
+	bounds, ok := tx.blockMarkers[blockKey{path: clean, id: id}]
+	if !ok {
+		return nil
 	}
-	tx.writeFileLocked(clean, []byte(strings.Join(kept, "\n")), prev.Perm, prev.Owner)
+	existing := string(prev.Data)
+	start, end, found := findBlockRange(existing, bounds.begin, bounds.end)
+	if !found {
+		return nil
+	}
+	next := existing[:start] + existing[end:]
+	tx.writeFileLocked(clean, []byte(next), prev.Perm, prev.Owner)
 	return nil
+}
+
+// findBlockRange locates the exact byte range spanning a whole-line begin
+// marker through its matching whole-line end marker (including the end line's
+// trailing newline, if any).
+func findBlockRange(content, begin, end string) (int, int, bool) {
+	blockStart := -1
+	offset := 0
+	for offset < len(content) {
+		rel := strings.IndexByte(content[offset:], '\n')
+		var lineEnd, nextOffset int
+		if rel < 0 {
+			lineEnd = len(content)
+			nextOffset = len(content)
+		} else {
+			lineEnd = offset + rel
+			nextOffset = lineEnd + 1
+		}
+		line := strings.TrimSuffix(content[offset:lineEnd], "\r")
+		if blockStart < 0 {
+			if line == begin {
+				blockStart = offset
+			}
+		} else if line == end {
+			return blockStart, nextOffset, true
+		}
+		offset = nextOffset
+	}
+	return 0, 0, false
 }
 
 // Remove deletes a declared path after backing up any existing content.
@@ -422,67 +492,145 @@ func (tx *FakeDeclarativeTx) Remove(ctx context.Context, path string) error {
 	return nil
 }
 
-// Package records the wanted package state and logs a receipt change.
+// Package records the wanted package state after checking that the target is
+// declared in Description.OwnedStateKeys, snapshotting prior state and
+// recording a backup reference for the receipt.
 func (tx *FakeDeclarativeTx) Package(ctx context.Context, want contract.PackageState) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("package %q: %w", want.Name, err)
 	}
+	key := contract.StateKey(targetPrefixPackage + want.Name)
 	tx.mu.Lock()
 	defer tx.mu.Unlock()
 
+	if !tx.ownedStates[key] {
+		return &contract.UndeclaredTargetError{Kind: contract.TargetStateKey, Target: string(key)}
+	}
+	prev, existed := tx.packages[want.Name]
+	if !existed {
+		prev = contract.PackageState{Name: want.Name}
+	}
+	priorData, err := json.Marshal(prev)
+	if err != nil {
+		return fmt.Errorf("snapshot package %q: %w", want.Name, err)
+	}
+	wantData, err := json.Marshal(want)
+	if err != nil {
+		return fmt.Errorf("marshal package %q: %w", want.Name, err)
+	}
+	var before contract.Digest
+	if existed {
+		before = digestBytes(priorData)
+	}
+	backup := tx.recordBackupLocked(priorData)
 	tx.packages[want.Name] = want
 	action := contract.ActionCreate
-	if !want.Present {
+	switch {
+	case !want.Present:
 		action = contract.ActionRemove
+	case existed:
+		action = contract.ActionReplace
 	}
 	tx.changes = append(tx.changes, contract.AppliedChange{
 		Change: contract.Change{
-			Target: "package:" + want.Name,
+			Target: string(key),
 			Action: action,
-			After:  digestBytes([]byte(fmt.Sprintf("%s:%t:%s", want.Name, want.Present, want.Version))),
+			Before: before,
+			After:  digestBytes(wantData),
 			Risk:   contract.RiskLow,
 		},
+		Backup: backup,
 	})
 	return nil
 }
 
-// Service records the wanted service state and logs a receipt change.
+// Service records the wanted service state after checking that the target is
+// declared in Description.OwnedStateKeys, snapshotting prior state and
+// recording a backup reference for the receipt.
 func (tx *FakeDeclarativeTx) Service(ctx context.Context, want contract.ServiceState) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("service %q: %w", want.Name, err)
 	}
+	key := contract.StateKey(targetPrefixService + want.Name)
 	tx.mu.Lock()
 	defer tx.mu.Unlock()
 
+	if !tx.ownedStates[key] {
+		return &contract.UndeclaredTargetError{Kind: contract.TargetStateKey, Target: string(key)}
+	}
+	prev, existed := tx.services[want.Name]
+	if !existed {
+		prev = contract.ServiceState{Name: want.Name}
+	}
+	priorData, err := json.Marshal(prev)
+	if err != nil {
+		return fmt.Errorf("snapshot service %q: %w", want.Name, err)
+	}
+	wantData, err := json.Marshal(want)
+	if err != nil {
+		return fmt.Errorf("marshal service %q: %w", want.Name, err)
+	}
+	var before contract.Digest
+	if existed {
+		before = digestBytes(priorData)
+	}
+	backup := tx.recordBackupLocked(priorData)
 	tx.services[want.Name] = want
 	tx.changes = append(tx.changes, contract.AppliedChange{
 		Change: contract.Change{
-			Target: "service:" + want.Name,
+			Target: string(key),
 			Action: contract.ActionSet,
-			After:  digestBytes([]byte(fmt.Sprintf("%s:%t:%t", want.Name, want.Enabled, want.Running))),
+			Before: before,
+			After:  digestBytes(wantData),
 			Risk:   contract.RiskMedium,
 		},
+		Backup: backup,
 	})
 	return nil
 }
 
-// UserGroup records the wanted user-group membership and logs a receipt change.
+// UserGroup records the wanted user-group membership after checking that the
+// target is declared in Description.OwnedStateKeys, snapshotting prior state
+// and recording a backup reference for the receipt.
 func (tx *FakeDeclarativeTx) UserGroup(ctx context.Context, want contract.UserGroupState) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("user-group %s:%s: %w", want.User, want.Group, err)
 	}
+	ugKey := want.User + ":" + want.Group
+	key := contract.StateKey(targetPrefixUserGroup + ugKey)
 	tx.mu.Lock()
 	defer tx.mu.Unlock()
 
-	key := want.User + ":" + want.Group
-	tx.userGroups[key] = want
+	if !tx.ownedStates[key] {
+		return &contract.UndeclaredTargetError{Kind: contract.TargetStateKey, Target: string(key)}
+	}
+	prev, existed := tx.userGroups[ugKey]
+	if !existed {
+		prev = contract.UserGroupState{User: want.User, Group: want.Group}
+	}
+	priorData, err := json.Marshal(prev)
+	if err != nil {
+		return fmt.Errorf("snapshot user-group %q: %w", ugKey, err)
+	}
+	wantData, err := json.Marshal(want)
+	if err != nil {
+		return fmt.Errorf("marshal user-group %q: %w", ugKey, err)
+	}
+	var before contract.Digest
+	if existed {
+		before = digestBytes(priorData)
+	}
+	backup := tx.recordBackupLocked(priorData)
+	tx.userGroups[ugKey] = want
 	tx.changes = append(tx.changes, contract.AppliedChange{
 		Change: contract.Change{
-			Target: "user-group:" + key,
+			Target: string(key),
 			Action: contract.ActionSet,
-			After:  digestBytes([]byte(fmt.Sprintf("%s:%t", key, want.Present))),
+			Before: before,
+			After:  digestBytes(wantData),
 			Risk:   contract.RiskMedium,
 		},
+		Backup: backup,
 	})
 	return nil
 }
@@ -608,8 +756,37 @@ func (tx *FakeDeclarativeTx) recordBackupLocked(data []byte) contract.BackupRef 
 	return ref
 }
 
-type stateWriter interface {
-	Write(ctx context.Context, key contract.StateKey, want contract.State) error
+type declarativeBackingState struct {
+	Files      map[string]FileEntry               `json:"files"`
+	Packages   map[string]contract.PackageState   `json:"packages"`
+	Services   map[string]contract.ServiceState   `json:"services"`
+	UserGroups map[string]contract.UserGroupState `json:"user_groups"`
+	Backups    map[contract.BackupRef][]byte      `json:"backups"`
+	Changes    []contract.AppliedChange           `json:"changes"`
+}
+
+func (tx *FakeDeclarativeTx) declarativeStateLocked() declarativeBackingState {
+	return declarativeBackingState{
+		Files:      tx.files,
+		Packages:   tx.packages,
+		Services:   tx.services,
+		UserGroups: tx.userGroups,
+		Backups:    tx.backups,
+		Changes:    tx.changes,
+	}
+}
+
+// BackingState returns a deterministic snapshot of the fake transaction's
+// backing state so contract tests can prove refused calls leave state intact.
+func (tx *FakeDeclarativeTx) BackingState() []byte {
+	tx.mu.Lock()
+	defer tx.mu.Unlock()
+
+	raw, err := json.Marshal(tx.declarativeStateLocked())
+	if err != nil {
+		panic(fmt.Sprintf("marshal fake backing state: %v", err))
+	}
+	return raw
 }
 
 // FakeTx is an in-memory implementation of contract.Tx extending
@@ -628,6 +805,28 @@ func NewFakeTx(desc contract.Description, sink contract.Sink) *FakeTx {
 	}
 }
 
+// BackingState returns a deterministic snapshot of the fake transaction's
+// backing state including recorded commands.
+func (tx *FakeTx) BackingState() []byte {
+	tx.mu.Lock()
+	decl := tx.declarativeStateLocked()
+	tx.runMu.Lock()
+	full := struct {
+		Declarative declarativeBackingState `json:"declarative"`
+		Commands    []contract.Command      `json:"commands"`
+	}{
+		Declarative: decl,
+		Commands:    tx.commands,
+	}
+	raw, err := json.Marshal(full)
+	tx.runMu.Unlock()
+	tx.mu.Unlock()
+	if err != nil {
+		panic(fmt.Sprintf("marshal fake tx backing state: %v", err))
+	}
+	return raw
+}
+
 // SetRunner installs an optional handler invoked by Run after env checks pass.
 func (tx *FakeTx) SetRunner(fn func(ctx context.Context, c contract.Command) (contract.CommandResult, error)) {
 	tx.runMu.Lock()
@@ -636,8 +835,9 @@ func (tx *FakeTx) SetRunner(fn func(ctx context.Context, c contract.Command) (co
 	tx.runFn = fn
 }
 
-// SetState mutates a declared state key through p after taking a snapshot and
-// records the change for the receipt.
+// SetState mutates a declared state key through p's contract Snapshot and
+// Restore methods, records the pre-change snapshot as a backup and logs the
+// change for the receipt.
 func (tx *FakeTx) SetState(ctx context.Context, p contract.StateProvider, key contract.StateKey, want contract.State) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("set state %q: %w", key, err)
@@ -659,14 +859,26 @@ func (tx *FakeTx) SetState(ctx context.Context, p contract.StateProvider, key co
 	}
 
 	var before contract.Digest
-	if prev, err := p.Read(ctx, key); err == nil {
+	if prev, readErr := p.Read(ctx, key); readErr == nil {
 		before = digestBytes([]byte(prev.Value))
 	}
 
-	if w, ok := p.(stateWriter); ok {
-		if err := w.Write(ctx, key, want); err != nil {
-			return fmt.Errorf("write state %q: %w", key, err)
+	values := make(map[contract.StateKey]contract.State)
+	if len(snap.Data) > 0 {
+		if err := json.Unmarshal(snap.Data, &values); err != nil {
+			return fmt.Errorf("decode snapshot for %q: %w", key, err)
 		}
+		if values == nil {
+			values = make(map[contract.StateKey]contract.State)
+		}
+	}
+	values[key] = want
+	nextData, err := json.Marshal(values)
+	if err != nil {
+		return fmt.Errorf("encode state snapshot for %q: %w", key, err)
+	}
+	if err := p.Restore(ctx, contract.Snapshot{Provider: p.Name(), Data: nextData}); err != nil {
+		return fmt.Errorf("apply state %q via restore: %w", key, err)
 	}
 
 	tx.mu.Lock()

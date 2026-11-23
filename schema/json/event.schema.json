@@ -23,7 +23,8 @@
     },
     "seq": {
       "type": "integer",
-      "minimum": 0
+      "minimum": 0,
+      "maximum": 18446744073709551615
     },
     "time": {
       "type": "string",
@@ -88,7 +89,8 @@
         "warning",
         "handover",
         "failure",
-        "coalesced"
+        "coalesced",
+        "progress"
       ]
     },
     "text": {

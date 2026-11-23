@@ -125,7 +125,7 @@ func TestFakeDeclarativeTxOperations(t *testing.T) {
 	if err := tx.UserGroup(ctx, contract.UserGroupState{User: "agent-01", Group: "users", Present: true}); err != nil {
 		t.Fatalf("UserGroup: %v", err)
 	}
-	res, err := tx.Check(ctx, contract.CheckSpec{Name: "sshd-test", Argv: []string{"sshd", "-t"}})
+	res, err := tx.Check(ctx, contract.CheckSpec{Name: contract.CheckName("sshd-test")})
 	if err != nil || !res.OK {
 		t.Fatalf("Check = %+v, err=%v", res, err)
 	}
@@ -137,6 +137,214 @@ func TestFakeDeclarativeTxOperations(t *testing.T) {
 	if _, ok := tx.Backup(changes[0].Backup); !ok {
 		t.Fatalf("backup %q not found", changes[0].Backup)
 	}
+}
+
+type validatingInputsUnit struct{ *FileUnit }
+
+func (u *validatingInputsUnit) Plan(ctx context.Context, in contract.Inputs) (contract.Plan, error) {
+	if !in.FormFactor.Valid() {
+		return contract.Plan{}, fmt.Errorf("invalid form factor %q", in.FormFactor)
+	}
+	if !in.Topology.Valid() {
+		return contract.Plan{}, fmt.Errorf("invalid topology %q", in.Topology)
+	}
+	return u.FileUnit.Plan(ctx, in)
+}
+
+func TestCheckUnitPassesValidFormFactorAndTopology(t *testing.T) {
+	t.Parallel()
+
+	u := &validatingInputsUnit{NewFileUnit(contract.UnitShell, declaredPath, []byte("ok\n"))}
+	rep := &fakeReporter{}
+	checkUnit(rep, u)
+	if len(rep.errors) > 0 {
+		t.Fatalf("checkUnit passed invalid FormFactor/Topology: %v", rep.errors)
+	}
+}
+
+func TestFakeDeclarativeTxRefusesUndeclaredResourceTargets(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	desc := contract.Description{
+		Unit:  contract.UnitPackages,
+		Scope: contract.ScopeRoot,
+		OwnedStateKeys: []contract.StateKey{
+			"package:zsh",
+			"service:ssh",
+			"user-group:agent-01:users",
+		},
+	}
+	tx := NewFakeDeclarativeTx(desc, nil)
+
+	assertUndeclared := func(op, wantTarget string, err error) {
+		t.Helper()
+		var targetErr *contract.UndeclaredTargetError
+		if !errors.As(err, &targetErr) || targetErr.Kind != contract.TargetStateKey || targetErr.Target != wantTarget {
+			t.Errorf("%s undeclared err = %v, want UndeclaredTargetError{state-key, %q}", op, err, wantTarget)
+		}
+	}
+
+	assertUndeclared("Package", "package:curl", tx.Package(ctx, contract.PackageState{Name: "curl", Present: true}))
+	assertUndeclared("Service", "service:cron", tx.Service(ctx, contract.ServiceState{Name: "cron", Enabled: true}))
+	assertUndeclared("UserGroup", "user-group:agent-01:sudo", tx.UserGroup(ctx, contract.UserGroupState{User: "agent-01", Group: "sudo", Present: true}))
+
+	if err := tx.Package(ctx, contract.PackageState{Name: "zsh", Present: true}); err != nil {
+		t.Fatalf("declared Package failed: %v", err)
+	}
+	if err := tx.Service(ctx, contract.ServiceState{Name: "ssh", Enabled: true, Running: true}); err != nil {
+		t.Fatalf("declared Service failed: %v", err)
+	}
+	if err := tx.UserGroup(ctx, contract.UserGroupState{User: "agent-01", Group: "users", Present: true}); err != nil {
+		t.Fatalf("declared UserGroup failed: %v", err)
+	}
+
+	changes := tx.Changes()
+	if len(changes) != 3 {
+		t.Fatalf("got %d recorded changes, want 3", len(changes))
+	}
+	for _, ch := range changes {
+		if ch.Backup == "" {
+			t.Errorf("change %q missing backup reference", ch.Target)
+		} else if _, ok := tx.Backup(ch.Backup); !ok {
+			t.Errorf("change %q backup %q not stored", ch.Target, ch.Backup)
+		}
+	}
+}
+
+type contractOnlyStateProvider struct {
+	inner contract.StateProvider
+}
+
+func (p *contractOnlyStateProvider) Name() contract.StateProviderName { return p.inner.Name() }
+func (p *contractOnlyStateProvider) Read(ctx context.Context, key contract.StateKey) (contract.State, error) {
+	return p.inner.Read(ctx, key)
+}
+func (p *contractOnlyStateProvider) Snapshot(ctx context.Context) (contract.Snapshot, error) {
+	return p.inner.Snapshot(ctx)
+}
+func (p *contractOnlyStateProvider) Restore(ctx context.Context, s contract.Snapshot) error {
+	return p.inner.Restore(ctx, s)
+}
+
+func TestFakeTxSetStateUsesContractMethodsOnly(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	tx := NewFakeTx(standardTestDescription(), nil)
+	raw := NewFakeStateProvider(contract.ProviderHostname, map[contract.StateKey]contract.State{
+		declaredState: {Value: "lab-ws-01"},
+	})
+	provider := &contractOnlyStateProvider{inner: raw}
+
+	want := contract.State{Value: "acme-ws-001"}
+	if err := tx.SetState(ctx, provider, declaredState, want); err != nil {
+		t.Fatalf("SetState: %v", err)
+	}
+	got, err := provider.Read(ctx, declaredState)
+	if err != nil {
+		t.Fatalf("Read after SetState: %v", err)
+	}
+	if got != want {
+		t.Fatalf("Read after SetState = %+v, want %+v", got, want)
+	}
+}
+
+func TestFakeDeclarativeTxRemoveBlockExactMarkers(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	tx := NewFakeDeclarativeTx(standardTestDescription(), nil)
+	initial := strings.Join([]string{
+		"# unrelated line mentioning wskit-block stays untouched",
+		"# begin wskit-block-other",
+		"other=1",
+		"# end wskit-block-other",
+		"prefix # begin wskit-block not a real marker",
+		"",
+	}, "\n")
+	tx.SeedFile(declaredPath, []byte(initial), defaultFilePerm, contract.Owner{})
+
+	if err := tx.EnsureBlock(ctx, declaredPath, contract.ManagedBlock{
+		ID:    sampleBlockID,
+		Begin: "# begin wskit-block",
+		End:   "# end wskit-block",
+		Body:  "managed=1",
+	}); err != nil {
+		t.Fatalf("EnsureBlock: %v", err)
+	}
+	if err := tx.RemoveBlock(ctx, declaredPath, sampleBlockID); err != nil {
+		t.Fatalf("RemoveBlock: %v", err)
+	}
+	entry, ok := tx.File(declaredPath)
+	if !ok {
+		t.Fatal("declared file missing after RemoveBlock")
+	}
+	if string(entry.Data) != initial {
+		t.Fatalf("content after RemoveBlock =\n%q\nwant exact initial:\n%q", string(entry.Data), initial)
+	}
+}
+
+type brokenMutateBeforeRefuseWriteTx struct{ *FakeTx }
+
+func (b *brokenMutateBeforeRefuseWriteTx) WriteFile(ctx context.Context, path string, data []byte, perm fs.FileMode, owner contract.Owner) error {
+	if path == undeclaredPath {
+		b.SeedFile(path, data, perm, owner)
+		return &contract.UndeclaredTargetError{Kind: contract.TargetPath, Target: path}
+	}
+	return b.FakeTx.WriteFile(ctx, path, data, perm, owner)
+}
+
+type brokenNoOpSetStateTx struct{ *FakeTx }
+
+func (b *brokenNoOpSetStateTx) SetState(ctx context.Context, p contract.StateProvider, key contract.StateKey, want contract.State) error {
+	if key == undeclaredState {
+		return &contract.UndeclaredTargetError{Kind: contract.TargetStateKey, Target: string(key)}
+	}
+	// Record a change without actually updating p.
+	snap, err := p.Snapshot(ctx)
+	if err != nil {
+		return err
+	}
+	b.mu.Lock()
+	backup := b.recordBackupLocked(snap.Data)
+	b.changes = append(b.changes, contract.AppliedChange{
+		Change: contract.Change{
+			Target: string(p.Name()) + ":" + string(key),
+			Action: contract.ActionSet,
+			After:  digestBytes([]byte(want.Value)),
+			Risk:   contract.RiskMedium,
+		},
+		Backup: backup,
+	})
+	b.mu.Unlock()
+	return nil
+}
+
+func TestBrokenMutateBeforeRefuseAndNoOpSetStateFailContractCheck(t *testing.T) {
+	t.Parallel()
+
+	t.Run("mutates backing state before refusing WriteFile", func(t *testing.T) {
+		t.Parallel()
+		rep := &fakeReporter{}
+		checkTx(rep, func(d contract.Description) contract.Tx {
+			return &brokenMutateBeforeRefuseWriteTx{NewFakeTx(d, nil)}
+		})
+		if !rep.hasErrorContaining("mutated backing state") {
+			t.Fatalf("expected backing-state mutation failure, got %v", rep.errors)
+		}
+	})
+
+	t.Run("SetState does not persist value to provider", func(t *testing.T) {
+		t.Parallel()
+		rep := &fakeReporter{}
+		checkTx(rep, func(d contract.Description) contract.Tx {
+			return &brokenNoOpSetStateTx{NewFakeTx(d, nil)}
+		})
+		if !rep.hasErrorContaining("StateProvider.Read") {
+			t.Fatalf("expected StateProvider.Read mismatch failure, got %v", rep.errors)
+		}
+	})
 }
 
 // --- Deliberately broken fakes proving every contract check can fail ---
@@ -169,6 +377,60 @@ type brokenAllowUndeclaredRemoveTx struct{ *FakeTx }
 
 func (b *brokenAllowUndeclaredRemoveTx) Remove(_ context.Context, _ string) error {
 	return nil
+}
+
+type brokenAllowUndeclaredPackageTx struct{ *FakeTx }
+
+func (b *brokenAllowUndeclaredPackageTx) Package(_ context.Context, _ contract.PackageState) error {
+	return nil
+}
+
+type brokenAllowUndeclaredServiceTx struct{ *FakeTx }
+
+func (b *brokenAllowUndeclaredServiceTx) Service(_ context.Context, _ contract.ServiceState) error {
+	return nil
+}
+
+type brokenAllowUndeclaredUserGroupTx struct{ *FakeTx }
+
+func (b *brokenAllowUndeclaredUserGroupTx) UserGroup(_ context.Context, _ contract.UserGroupState) error {
+	return nil
+}
+
+type brokenMutateBeforeRefusePackageTx struct{ *FakeTx }
+
+func (b *brokenMutateBeforeRefusePackageTx) Package(ctx context.Context, want contract.PackageState) error {
+	if want.Name == undeclaredPackage {
+		b.SeedPackage(want)
+		return &contract.UndeclaredTargetError{Kind: contract.TargetStateKey, Target: string(undeclaredPackageKey)}
+	}
+	return b.FakeTx.Package(ctx, want)
+}
+
+type brokenMutateBeforeRefuseStateTx struct{ *FakeTx }
+
+func (b *brokenMutateBeforeRefuseStateTx) SetState(ctx context.Context, p contract.StateProvider, key contract.StateKey, want contract.State) error {
+	if key == undeclaredState {
+		if err := p.Restore(ctx, contract.Snapshot{Provider: p.Name(), Data: []byte(`{"hostname.undeclared":{"value":"leaked"}}`)}); err != nil {
+			return err
+		}
+		return &contract.UndeclaredTargetError{Kind: contract.TargetStateKey, Target: string(key)}
+	}
+	return b.FakeTx.SetState(ctx, p, key, want)
+}
+
+type brokenMutateBeforeRefuseRunTx struct{ *FakeTx }
+
+func (b *brokenMutateBeforeRefuseRunTx) Run(ctx context.Context, c contract.Command) (contract.CommandResult, error) {
+	for _, k := range c.EnvKeys {
+		if k == undeclaredEnvKey {
+			b.runMu.Lock()
+			b.commands = append(b.commands, c)
+			b.runMu.Unlock()
+			return contract.CommandResult{}, &contract.UndeclaredTargetError{Kind: contract.TargetEnvKey, Target: k}
+		}
+	}
+	return b.FakeTx.Run(ctx, c)
 }
 
 type brokenUntypedErrorWriteTx struct{ *FakeTx }
@@ -311,6 +573,54 @@ func TestContractChecksCatchBrokenTxFakes(t *testing.T) {
 			name:    "allows undeclared Remove",
 			newTx:   func(d contract.Description) contract.Tx { return &brokenAllowUndeclaredRemoveTx{NewFakeTx(d, nil)} },
 			wantErr: "Remove on undeclared path",
+		},
+		{
+			name:    "allows undeclared Package",
+			newTx:   func(d contract.Description) contract.Tx { return &brokenAllowUndeclaredPackageTx{NewFakeTx(d, nil)} },
+			wantErr: "Package on undeclared state-key",
+		},
+		{
+			name:    "allows undeclared Service",
+			newTx:   func(d contract.Description) contract.Tx { return &brokenAllowUndeclaredServiceTx{NewFakeTx(d, nil)} },
+			wantErr: "Service on undeclared state-key",
+		},
+		{
+			name:    "allows undeclared UserGroup",
+			newTx:   func(d contract.Description) contract.Tx { return &brokenAllowUndeclaredUserGroupTx{NewFakeTx(d, nil)} },
+			wantErr: "UserGroup on undeclared state-key",
+		},
+		{
+			name: "mutates file before refusing WriteFile",
+			newTx: func(d contract.Description) contract.Tx {
+				return &brokenMutateBeforeRefuseWriteTx{NewFakeTx(d, nil)}
+			},
+			wantErr: "WriteFile mutated backing state",
+		},
+		{
+			name: "mutates package before refusing Package",
+			newTx: func(d contract.Description) contract.Tx {
+				return &brokenMutateBeforeRefusePackageTx{NewFakeTx(d, nil)}
+			},
+			wantErr: "Package mutated backing state",
+		},
+		{
+			name: "mutates provider before refusing SetState",
+			newTx: func(d contract.Description) contract.Tx {
+				return &brokenMutateBeforeRefuseStateTx{NewFakeTx(d, nil)}
+			},
+			wantErr: "SetState mutated backing state",
+		},
+		{
+			name: "records command before refusing Run",
+			newTx: func(d contract.Description) contract.Tx {
+				return &brokenMutateBeforeRefuseRunTx{NewFakeTx(d, nil)}
+			},
+			wantErr: "Run mutated backing state",
+		},
+		{
+			name:    "SetState does not update provider",
+			newTx:   func(d contract.Description) contract.Tx { return &brokenNoOpSetStateTx{NewFakeTx(d, nil)} },
+			wantErr: "StateProvider.Read",
 		},
 		{
 			name:    "untyped error on undeclared WriteFile",

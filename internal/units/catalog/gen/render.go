@@ -229,7 +229,7 @@ func RenderContractEnums(cat Catalog) ([]byte, error) {
 
 	var b bytes.Buffer
 	b.WriteString(generatedHeader)
-	b.WriteString("\npackage contract\n\n")
+	b.WriteString("\npackage contract\n\nimport \"fmt\"\n\n")
 
 	for _, spec := range contractEnumDefs() {
 		spec.values = valuesByType[spec.typeName]
@@ -287,6 +287,16 @@ func writeEnum(b *bytes.Buffer, spec enumSpec) {
 		b.WriteString(goIdent(spec.prefix, v))
 	}
 	b.WriteString(":\n\t\treturn true\n\tdefault:\n\t\treturn false\n\t}\n}\n\n")
+
+	writef(b, "// UnmarshalText decodes a %s and rejects unknown values.\n", spec.typeName)
+	writef(b, "func (%s *%s) UnmarshalText(b []byte) error {\n", spec.recv, spec.typeName)
+	writef(b, "\tv := %s(b)\n", spec.typeName)
+	writef(b, "\tif !v.Valid() {\n")
+	writef(b, "\t\treturn fmt.Errorf(\"unknown %s %%q\", string(b))\n", spec.typeName)
+	writef(b, "\t}\n")
+	writef(b, "\t*%s = v\n", spec.recv)
+	writef(b, "\treturn nil\n")
+	writef(b, "}\n\n")
 
 	if len(spec.scopeCases) > 0 {
 		writef(b, "// Scope returns the execution Scope for %s, or an empty Scope when invalid.\n", spec.recv)

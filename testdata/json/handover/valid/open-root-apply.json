@@ -28,8 +28,7 @@
       "wskit",
       "next",
       "--json"
-    ],
-    "interval_seconds": 15
+    ]
   },
   "status": "open"
 }
