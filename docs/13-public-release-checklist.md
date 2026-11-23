@@ -121,13 +121,15 @@ link it to a name. Other paths are printed with control characters escaped,
 so a file name cannot forge a log line. Errors never echo input text.
 
 The scan reads each distinct object once, however many paths share it, and
-fails closed above 100,000 tree entries or 512 MiB of distinct content.
+fails closed above 100,000 tree entries, a 64 MiB listing, 512 MiB of
+distinct content or 10,000 findings. Its caches hold only short lines and are
+bounded by size.
 
 Where the scan runs:
 
 | Run | Key | Rules and scanner |
 |---|---|---|
-| `public-scan / keyed scan` (`.github/workflows/public-scan.yml`), on every pull request into `main` and every push to `main` | `PUBLIC_SCAN_HMAC_KEY`, an environment secret of the `public-scan` environment, passed only to the scan step | From `main`'s current commit. The head is fetched as git data and scanned with `--tree`; its code never runs. |
+| `public-scan / keyed scan` (`.github/workflows/public-scan.yml`), on every pull request into `main`, including retargets and edits, and every push to `main` | `PUBLIC_SCAN_HMAC_KEY`, an environment secret of the `public-scan` environment, passed only to the scan step | From `main`'s current commit. The head is fetched as git data and scanned with `--tree`; its code never runs. |
 | `CI / repository-validation`, `make ci-check`, `make public-check` | None: the public synthetic key | From the checkout. This job runs pull request code, so it never receives the key. |
 | A local run without a key | None: falls back to synthetic, printing `WARNING: keyed private-name rules not checked locally; CI runs them.` | From the checkout. |
 
@@ -184,9 +186,16 @@ Owner setup:
    with the key present to confirm it passes, and commit only
    `tests/public_scan_rules.json`.
 
-4. Make `public-scan / keyed scan` a required status check on `main`, next to
+4. Make `public-scan / result` a required status check on `main`, next to
    the existing required checks, and require code-owner review so the
    `.github/CODEOWNERS` rules apply to CI and to the scan's own files.
+
+Require `result`, not `keyed scan`: the `keyed scan` job is skipped for pull
+requests into other branches, and GitHub counts a skipped required job as a
+pass. `result` always runs and fails unless the keyed scan succeeded for a
+pull request into `main` or a push to it. Every pull request event, including
+retargeting to `main`, reruns the workflow, so an earlier result for the same
+head is replaced by a real scan.
 
 Residual risk: a required check is matched by name, and a workflow in a pull
 request could report a job of the same name. The code-owner rule on
@@ -197,7 +206,7 @@ pull request.
 - [ ] `PUBLIC_SCAN_HMAC_KEY` is a secret of the `public-scan` environment, limited to `main`, and no repository-level copy exists.
 - [ ] Every rule in `tests/public_scan_rules.json` holds HMAC-SHA256 digests,
       and keyed `make public-check` passes.
-- [ ] `public-scan / keyed scan` is a required status check on `main`, and code-owner review is required.
+- [ ] `public-scan / result` is a required status check on `main`, and code-owner review is required.
 
 ## Private fleet repositories
 

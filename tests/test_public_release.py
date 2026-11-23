@@ -918,8 +918,20 @@ class PublicReleaseTests(unittest.TestCase):
         self.assertRegex(scan, r"(?m)^    environment: public-scan$")
         self.assertRegex(scan, r"(?m)^permissions:\n  contents: read$")
 
-        step_blocks = re.split(r"(?m)^      - name: ", scan)[1:]
+        keyed_job = scan[scan.index("  keyed-scan:"):scan.index("  result:")]
+        result_job = scan[scan.index("  result:"):]
+        step_blocks = re.split(r"(?m)^      - name: ", keyed_job)[1:]
         steps = {block.splitlines()[0].strip(): block for block in step_blocks}
+
+        # Every pull request event reruns the workflow, so retargeting a pull
+        # request replaces an earlier result; the required "result" job always
+        # runs (never skipped) and fails unless the keyed scan succeeded.
+        self.assertIn("types: [opened, synchronize, reopened, edited]", scan)
+        self.assertRegex(result_job, r"(?m)^    needs: keyed-scan$")
+        self.assertRegex(result_job, r"(?m)^    if: always\(\)$")
+        self.assertIn('if [ "$KEYED_RESULT" != "success" ]; then', result_job)
+        self.assertNotIn("secrets.", result_job)
+        self.assertNotIn("environment:", result_job)
         self.assertEqual(
             ["Check out the trusted commit", "Fetch the commit to scan as git data", "Run the keyed scan on the tree"],
             list(steps),

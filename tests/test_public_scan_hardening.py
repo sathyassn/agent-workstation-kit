@@ -440,10 +440,54 @@ class SecondReviewTests(unittest.TestCase):
 
     def test_candidate_cache_is_bounded(self) -> None:
         scanner = scan.Scanner(rules=rules(), key=KEY)
-        with mock.patch.object(scan, "CANDIDATE_CACHE_LIMIT", 50):
+        with mock.patch.object(scan, "CANDIDATE_CACHE_BYTES", 300):
             for index in range(20):
                 scanner.keyed_hits(scan.extract_candidates(f"line {index} with words {index * 7} more {index * 13}"))
-                self.assertLessEqual(len(scanner.cache), 50)
+                self.assertLessEqual(scanner.cache_bytes, 300)
+                self.assertLessEqual(sum(len(k.encode()) for k in scanner.cache), 300)
+
+
+
+class ThirdReviewTests(unittest.TestCase):
+    """Regression tests for the third security review of PR #24."""
+
+    def test_a_mark_between_words_does_not_join_them(self) -> None:
+        self.assertTrue(scan_line("owner " + PERSON + "\u034fxyz"))
+        self.assertTrue(scan_line("owner " + PERSON + "\u0301xyz"))
+
+    def test_every_candidate_respects_the_length_bound(self) -> None:
+        line = "a" * 300 + " " + "Bb" * 150 + " " + ".".join(["c" * 200] * 3) + " " + "-".join(["d" * 90] * 3)
+        candidates = scan.extract_candidates(line)
+        self.assertTrue(candidates)
+        self.assertLessEqual(max(len(c) for c in candidates), scan.MAX_CANDIDATE_CHARS)
+
+    def test_long_lines_are_not_cached(self) -> None:
+        before = scan._cached_candidates.cache_info().currsize
+        scan.extract_candidates("long " * (scan.CACHE_LINE_CHARS // 4))
+        self.assertEqual(before, scan._cached_candidates.cache_info().currsize)
+
+    def test_findings_are_capped_and_fail_closed(self) -> None:
+        sources = [scan.SourceFile(f"docs/f{i}.txt", ("owner " + PERSON + "\n").encode()) for i in range(10)]
+        with mock.patch.object(scan, "MAX_FINDINGS", 5):
+            findings = scan.scan_sources(iter(sources), rules=rules(), key=KEY)
+        self.assertEqual(6, len(findings))
+        self.assertEqual("more than 5 findings; the scan stopped after 6 entries", findings[-1])
+
+    def test_listing_bytes_are_capped_while_reading(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            git(root, "init", "-q", "-b", "main")
+            for index in range(30):
+                (root / f"file-with-a-longer-name-{index}.txt").write_text(f"{index}\n", encoding="utf-8")
+            git(root, "add", "-A")
+            git(root, "commit", "-q", "-m", "many")
+            head = git(root, "rev-parse", "HEAD")
+            with mock.patch.object(scan, "MAX_LISTING_BYTES", 500):
+                with self.assertRaisesRegex(scan.ScanConfigError, "larger than 500 bytes"):
+                    scan.tree_sources(root, head)
+            with mock.patch.object(scan, "MAX_TREE_ENTRIES", 5):
+                with self.assertRaisesRegex(scan.ScanConfigError, "more than 5 entries"):
+                    scan.tree_sources(root, head)
 
 
 if __name__ == "__main__":

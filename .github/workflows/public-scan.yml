@@ -18,12 +18,17 @@
 # never sees the key. A push to main scans the pushed commit with that commit's
 # own scanner, which review already accepted. There is no manual trigger.
 #
-# The required check is the job below: "public-scan / keyed scan".
+# The required check is the "result" job: "public-scan / result". It always
+# runs, so it is never skipped (GitHub counts a skipped required job as a
+# pass), and it fails unless the keyed scan succeeded for a pull request into
+# the default branch or a push to it. Every pull request event, including
+# `edited`, reruns the whole workflow, so retargeting a pull request to the
+# default branch replaces any earlier result for that head with a real scan.
 name: public-scan
 
 on:
   pull_request_target:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, edited]
   push:
     branches: [main]
 
@@ -80,3 +85,33 @@ jobs:
           PUBLIC_SCAN_HMAC_KEY: ${{ secrets.PUBLIC_SCAN_HMAC_KEY }}
           TARGET_SHA: ${{ steps.target.outputs.sha }}
         run: python3 -I -B tests/check_public_release.py --tree "$TARGET_SHA"
+
+  result:
+    name: result
+    needs: keyed-scan
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require the keyed scan for the default branch
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PUSH_REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          KEYED_RESULT: ${{ needs.keyed-scan.result }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "pull_request_target" ] && [ "$BASE_REF" != "$DEFAULT_BRANCH" ]; then
+            echo "Not a pull request into $DEFAULT_BRANCH; the keyed scan runs when it targets $DEFAULT_BRANCH."
+            exit 0
+          fi
+          if [ "$EVENT_NAME" = "push" ] && [ "$PUSH_REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
+            echo "::error::unexpected push ref"
+            exit 1
+          fi
+          if [ "$KEYED_RESULT" != "success" ]; then
+            echo "::error::the keyed scan did not succeed (result: $KEYED_RESULT)"
+            exit 1
+          fi
+          echo "Keyed scan passed."

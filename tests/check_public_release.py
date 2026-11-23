@@ -91,7 +91,13 @@ MAX_KEY_FILE_BYTES = 4096
 MAX_SCAN_FILE_BYTES = 20 * 1024 * 1024
 MAX_TREE_ENTRIES = 100_000
 MAX_TREE_BYTES = 512 * 1024 * 1024
-CANDIDATE_CACHE_LIMIT = 500_000
+MAX_LISTING_BYTES = 64 * 1024 * 1024
+MAX_FINDINGS = 10_000
+# Caches hold only lines up to CACHE_LINE_CHARS, at most CACHE_LINES of them,
+# and the candidate cache is cleared above CANDIDATE_CACHE_BYTES of keys.
+CACHE_LINE_CHARS = 2048
+CACHE_LINES = 4096
+CANDIDATE_CACHE_BYTES = 32 * 1024 * 1024
 RULES_SCHEMA_VERSION = 1
 RULES_ALGORITHM = "hmac-sha256"
 HMAC_DOMAIN_PREFIX = "wskit-public-scan:v1"
@@ -252,14 +258,27 @@ def _decode_json_escapes(text: str) -> str:
 _APOSTROPHE_TABLE = {ord(ch): None for ch in APOSTROPHES}
 
 
-@functools.lru_cache(maxsize=65536)
-def normalize_text(text: str) -> str:
+def normalize_text(text: str, strip_marks: bool = True) -> str:
+    """Canonicalise text before tokenising (cached for short lines)."""
+    if len(text) <= CACHE_LINE_CHARS:
+        return _normalize_text_cached(text, strip_marks)
+    return _normalize_text(text, strip_marks)
+
+
+@functools.lru_cache(maxsize=CACHE_LINES)
+def _normalize_text_cached(text: str, strip_marks: bool) -> str:
+    return _normalize_text(text, strip_marks)
+
+
+def _normalize_text(text: str, strip_marks: bool) -> str:
     """Canonicalise text before tokenising, keeping case for camelCase splits.
 
     JSON unicode escapes are decoded, then NFKC folds compatibility forms (a
     fullwidth dot becomes "."), format and zero-width characters and combining
-    marks are removed (so accents fold: "José" matches "Jose"), Latin lookalikes are folded and apostrophes are dropped, so "O'Brien" and
-    "OBrien" give the same token.
+    marks are removed (so accents fold: "José" matches "Jose"), Latin
+    lookalikes are folded and apostrophes are dropped, so "O'Brien" and
+    "OBrien" give the same token. With strip_marks false, combining marks are
+    kept, so a mark that separates two words still separates them.
     """
     if text.isascii() and "\\u" not in text:
         # NFKC, format characters and lookalikes cannot change ASCII text.
@@ -269,7 +288,8 @@ def normalize_text(text: str) -> str:
         # Decompose, drop format characters and combining marks (so an accent
         # or a mark between octets cannot split a token), then recompose.
         decoded = unicodedata.normalize("NFKD", decoded)
-        decoded = "".join(ch for ch in decoded if unicodedata.category(ch) not in ("Cf", "Mn"))
+        dropped = ("Cf", "Mn") if strip_marks else ("Cf",)
+        decoded = "".join(ch for ch in decoded if unicodedata.category(ch) not in dropped)
         decoded = unicodedata.normalize("NFKC", decoded).translate(CONFUSABLES)
     return decoded.translate(_APOSTROPHE_TABLE)
 
@@ -314,14 +334,16 @@ def _add(candidates: set[str], value: str) -> None:
         candidates.add(folded)
 
 
-@functools.lru_cache(maxsize=65536)
+@functools.lru_cache(maxsize=CACHE_LINES)
 def _cached_candidates(line: str) -> frozenset[str]:
     return frozenset(_extract_candidates(line))
 
 
 def extract_candidates(line: str) -> frozenset[str]:
-    """Extract candidate values from one line of text (cached by line)."""
-    return _cached_candidates(line)
+    """Extract candidate values from one line of text (cached for short lines)."""
+    if len(line) <= CACHE_LINE_CHARS:
+        return _cached_candidates(line)
+    return frozenset(_extract_candidates(line))
 
 
 def _extract_candidates(line: str) -> set[str]:
@@ -331,8 +353,18 @@ def _extract_candidates(line: str) -> set[str]:
     three-word runs, canonical dotted-decimal runs and their prefixes, the
     whole line, and the whole line with punctuation removed.
     """
-    text = normalize_text(line)
     candidates: set[str] = set()
+    _candidates_from(normalize_text(line), candidates)
+    if not line.isascii():
+        # Also tokenise with combining marks kept: removing a mark that sits
+        # between two words would otherwise join them into one token.
+        kept = normalize_text(line, strip_marks=False)
+        if kept != normalize_text(line):
+            _candidates_from(kept, candidates)
+    return candidates
+
+
+def _candidates_from(text: str, candidates: set[str]) -> None:
     words: list[str] = []
 
     _add(candidates, text)
@@ -353,7 +385,7 @@ def _extract_candidates(line: str) -> set[str]:
         if octets is None:
             continue
         for width in range(1, len(octets) + 1):
-            candidates.add(".".join(str(octet) for octet in octets[:width]))
+            _add(candidates, ".".join(str(octet) for octet in octets[:width]))
 
     for match in COMPOUND_TOKEN_RE.finditer(text):
         raw_token = match.group(0)
@@ -385,24 +417,23 @@ def _extract_candidates(line: str) -> set[str]:
             run = run_match.group(0)
             norm_run = _fold(run)
             if norm_run:
-                candidates.add(norm_run)
+                _add(candidates, norm_run)
             camel_parts = CAMEL_SPLIT_RE.findall(run)
             if len(camel_parts) > 1:
                 for part in camel_parts:
                     norm_part = _fold(part)
                     if norm_part:
-                        candidates.add(norm_part)
+                        _add(candidates, norm_part)
                         words.append(norm_part)
             elif norm_run:
                 words.append(norm_run)
 
     for idx in range(len(words)):
         if idx + 1 < len(words):
-            candidates.add(f"{words[idx]} {words[idx + 1]}")
+            _add(candidates, f"{words[idx]} {words[idx + 1]}")
         if idx + 2 < len(words):
-            candidates.add(f"{words[idx]} {words[idx + 1]} {words[idx + 2]}")
+            _add(candidates, f"{words[idx]} {words[idx + 1]} {words[idx + 2]}")
 
-    return candidates
 
 
 def private_ipv4_hits(line: str) -> list[tuple[str, str]]:
@@ -853,6 +884,43 @@ def _git(root: Path, args: Sequence[str], *, stdin: bytes | None = None) -> byte
     return result.stdout
 
 
+def _stream_listing(root: Path, revision: str) -> Iterator[bytes]:
+    """Yield NUL-separated ls-tree records as they arrive, capping total bytes."""
+    try:
+        process = subprocess.Popen(
+            ["git", "ls-tree", "-r", "-z", "--full-tree", revision],
+            cwd=root, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        raise ScanConfigError("Git could not be executed") from exc
+    assert process.stdout is not None
+    pending = b""
+    total = 0
+    finished = False
+    try:
+        while True:
+            chunk = process.stdout.read(65536)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > MAX_LISTING_BYTES:
+                raise ScanConfigError(f"tree listing is larger than {MAX_LISTING_BYTES} bytes; refusing to scan")
+            pending += chunk
+            *records, pending = pending.split(b"\0")
+            for record in records:
+                if record:
+                    yield record
+        if pending:
+            raise ScanConfigError("Git returned a malformed tree listing")
+        finished = True
+    finally:
+        process.stdout.close()
+        if not finished:
+            process.kill()
+        if process.wait() != 0 and finished:
+            raise ScanConfigError("Git could not read the requested tree")
+
+
 def tree_sources(root: Path, revision: str) -> tuple[list[str], Iterator[SourceFile]]:
     """Read every entry of a commit's tree as git objects, never as a checkout.
 
@@ -862,12 +930,8 @@ def tree_sources(root: Path, revision: str) -> tuple[list[str], Iterator[SourceF
     if not COMMIT_RE.fullmatch(revision):
         raise ScanConfigError("--tree needs a full lowercase commit SHA")
     _git(root, ["cat-file", "-e", f"{revision}^{{commit}}"])
-    listing = _git(root, ["ls-tree", "-r", "-z", "--full-tree", revision])
-
     entries: list[tuple[str, str, str, str]] = []
-    for record in listing.split(b"\0"):
-        if not record:
-            continue
+    for record in _stream_listing(root, revision):
         meta, sep, raw_path = record.partition(b"\t")
         fields = meta.split(b" ")
         if not sep or len(fields) != 3:
@@ -878,11 +942,10 @@ def tree_sources(root: Path, revision: str) -> tuple[list[str], Iterator[SourceF
         except UnicodeDecodeError as exc:
             raise ScanConfigError("tracked file listing contains a path that is not valid UTF-8") from exc
         entries.append((mode, kind, sha, path))
+        if len(entries) > MAX_TREE_ENTRIES:
+            raise ScanConfigError(f"tree has more than {MAX_TREE_ENTRIES} entries; refusing to scan")
     if not entries:
         raise ScanConfigError("tracked file listing is empty")
-
-    if len(entries) > MAX_TREE_ENTRIES:
-        raise ScanConfigError(f"tree has more than {MAX_TREE_ENTRIES} entries; refusing to scan")
 
     # One size check per distinct object, so many paths sharing a blob cost
     # one read; the total of distinct blob sizes is capped.
@@ -1018,6 +1081,7 @@ class Scanner:
             if rule.digests
         )
         self.cache: dict[str, tuple[str, ...]] = {}
+        self.cache_bytes = 0
         self.object_findings: dict[str, tuple[str | None, list[tuple[int, str]], list[tuple[int, str, str]]]] = {}
 
     def keyed_hits(self, candidates: Iterable[str]) -> set[str]:
@@ -1025,9 +1089,11 @@ class Scanner:
         for candidate in candidates:
             cached = self.cache.get(candidate)
             if cached is None:
-                if len(self.cache) >= CANDIDATE_CACHE_LIMIT:
-                    self.cache.clear()
                 encoded = candidate.encode("utf-8")
+                if self.cache_bytes + len(encoded) > CANDIDATE_CACHE_BYTES:
+                    self.cache.clear()
+                    self.cache_bytes = 0
+                self.cache_bytes += len(encoded)
                 cached = tuple(
                     rule_id
                     for rule_id, prefix, digests in self.active_rules
@@ -1064,6 +1130,8 @@ class Scanner:
         for number, line in enumerate(lines, start=1):
             for rule_id in sorted(per_line[number - 1]):
                 found.append((number, f"matched keyed rule '{rule_id}'"))
+            if len(found) > MAX_FINDINGS:
+                return found
         # Join each line with the next to catch names split by a wrap: a
         # trailing hyphen joins without a space, any other wrap with one.
         for index in range(len(lines) - 1):
@@ -1089,6 +1157,8 @@ class Scanner:
         for number, line in enumerate(text.replace("\r\n", "\n").replace("\r", "\n").split("\n"), start=1):
             for label, value in private_ipv4_hits(line):
                 found.append((number, label, value))
+            if len(found) > MAX_FINDINGS:
+                break
         return found
 
     def scan_private_ipv4(self, relative: str, text: str) -> list[tuple[int, str]]:
@@ -1144,7 +1214,7 @@ class Scanner:
             for number, label, value in address_hits
             if value not in allowed_values
         ]
-        for number, label in sorted(findings):
+        for number, label in sorted(findings)[: MAX_FINDINGS + 1]:
             failures.append(f"{shown}:{number}: {label}")
         return failures
 
@@ -1163,6 +1233,13 @@ def scan_sources(
     for source in sources:
         count += 1
         failures.extend(scanner.scan_source(source))
+        if len(failures) > MAX_FINDINGS:
+            # Fail closed: stop, keep the first findings and say so.
+            del failures[MAX_FINDINGS:]
+            failures.append(f"more than {MAX_FINDINGS} findings; the scan stopped after {count} entries")
+            if hasattr(sources, "close"):
+                sources.close()
+            return failures
     if count == 0:
         return ["tracked file listing is missing or empty"]
     return failures
