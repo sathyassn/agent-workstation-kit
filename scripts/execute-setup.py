@@ -166,16 +166,44 @@ def journal_lock(path, label="this account's journal"):
         os.close(descriptor)
 
 
+MACOS_LOCK_ROOT = Path("/Library/Application Support")
+LINUX_LOCK_ROOT = Path("/run")
+
+
+def _ensure_root_directory(path, mode=0o755):
+    try:
+        path.mkdir(mode=mode)
+    except FileExistsError:
+        pass
+    else:
+        os.chmod(path, mode)
+    info = path.lstat()
+    if path.is_symlink() or not stat.S_ISDIR(info.st_mode):
+        raise ValueError("privileged lock directory must be a regular directory: " + str(path))
+    secure_root_path(path)
+
+
+def host_lock_directory():
+    if sys.platform == "darwin":
+        secure_root_path(MACOS_LOCK_ROOT)
+        top = MACOS_LOCK_ROOT / "agent-workstation-kit"
+        _ensure_root_directory(top, 0o755)
+        directory = top / "run"
+        _ensure_root_directory(directory, 0o755)
+        return directory
+    runtime = LINUX_LOCK_ROOT.resolve()
+    secure_root_path(runtime)
+    directory = runtime / "agent-workstation-kit"
+    _ensure_root_directory(directory, 0o755)
+    return directory
+
+
 @contextmanager
 def host_apply_lock():
     if os.geteuid() != 0:
         yield
         return
-    runtime = Path("/var/run" if sys.platform == "darwin" else "/run").resolve()
-    secure_root_path(runtime)
-    directory = runtime / "agent-workstation-kit"
-    directory.mkdir(mode=0o755, exist_ok=True)
-    secure_root_path(directory)
+    directory = host_lock_directory()
     # A host-level lock serializes root scopes even if different human operators
     # choose separate journal files. flock releases it automatically on exit.
     with journal_lock(directory / "privileged-setup", label="the host's privileged setup lock"):

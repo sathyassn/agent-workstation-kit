@@ -86,11 +86,23 @@ Then preview the base phase:
   --fleet-root "$FLEET_ROOT" run "$PROFILE" base
 ```
 
-After reviewing every package and cask, apply as that same package owner:
+After reviewing every package and cask, export the execution plan, preview the
+`packages` scope, and apply as that same package owner through
+`scripts/setup-workstation.sh`:
 
 ```bash
-"$PYTHON_BIN" ./scripts/fleetctl.py \
-  --fleet-root "$FLEET_ROOT" run "$PROFILE" base --apply
+AWK_PYTHON="$PYTHON_BIN" ./scripts/setup-workstation.sh plan \
+  --fleet-root "$FLEET_ROOT" --profile "$PROFILE" \
+  --export-plan /PRIVATE/EVIDENCE/execution-plan.json
+
+AWK_PYTHON="$PYTHON_BIN" ./scripts/setup-workstation.sh run \
+  --plan-file /PRIVATE/EVIDENCE/execution-plan.json --scope packages
+
+AWK_PYTHON="$PYTHON_BIN" ./scripts/setup-workstation.sh run \
+  --plan-file /PRIVATE/EVIDENCE/execution-plan.json --scope packages \
+  --apply --approve-plan REVIEWED_EXECUTION_PLAN_ID \
+  --confirm-target acme-mac-001 --execution-context host \
+  --journal /PRIVATE/PER_EXECUTOR_DIRECTORY/setup.json
 ```
 
 The baseline installs missing selected packages and preserves installed versions.

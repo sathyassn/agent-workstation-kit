@@ -565,6 +565,56 @@ def phase_for(
 
 
 PHASES = ("base", "identity", "accounts", "remote-hardening", "agentctl", "shell", "user-tooling", "workloads", "resources", "audit")
+PHASE_SCOPE = {
+    "base": "packages",
+    "identity": "machine",
+    "accounts": "machine",
+    "remote-hardening": "machine",
+    "agentctl": "machine",
+    "shell": "agent",
+    "user-tooling": "agent",
+    "workloads": "machine (Linux) or agent (macOS)",
+    "resources": "resources",
+    "audit": "audit",
+}
+
+
+def print_executor_handoff(args: argparse.Namespace) -> None:
+    fleet = str(args.fleet_root) if args.fleet_root else "FLEET"
+    profile = str(args.profile)
+    scope = PHASE_SCOPE.get(args.phase, "SCOPE")
+    scope_arg = scope if " " not in scope else "SCOPE"
+    print(
+        "ERROR run: fleetctl run --apply is disabled; apply only through "
+        "scripts/setup-workstation.sh so locks, receipts, source digests and "
+        "staged-root checks run.",
+        file=sys.stderr,
+    )
+    print(f"Scope for phase {args.phase!r}: {scope}", file=sys.stderr)
+    print("Use the executor instead (preview first, then apply):", file=sys.stderr)
+    print(
+        f"  scripts/setup-workstation.sh plan --fleet-root {shlex.quote(fleet)} "
+        f"--profile {shlex.quote(profile)} --export-plan PRIVATE/execution-plan.json",
+        file=sys.stderr,
+    )
+    print(
+        f"  scripts/setup-workstation.sh run --plan-file PRIVATE/execution-plan.json "
+        f"--scope {scope_arg}",
+        file=sys.stderr,
+    )
+    print(
+        f"  scripts/setup-workstation.sh run --plan-file PRIVATE/execution-plan.json "
+        f"--scope {scope_arg} --apply --approve-plan ID --confirm-target HOST "
+        "--execution-context host --journal JOURNAL",
+        file=sys.stderr,
+    )
+    print(
+        "For root scopes, run the staged copy as root: "
+        "sudo /bin/bash /opt/agent-workstation-kit/scripts/setup-workstation.sh run "
+        "--plan-file /opt/agent-workstation-fleet/plans/execution-plan.json "
+        f"--scope {scope_arg} ...",
+        file=sys.stderr,
+    )
 
 
 def account_groups(account: str) -> set[str]:
@@ -1058,21 +1108,29 @@ def main() -> int:
     setup.add_argument("--fleet-revision", help="require the exact reviewed fleet commit")
     setup.add_argument("--execution-context", choices=("host", "sandbox", "unknown"), default="unknown",
                        help="state that readiness runs in an ordinary target-host terminal (host); anything else reports NOT READY")
-    run = subs.add_parser("run", help="run exactly one phase")
+    run = subs.add_parser("run", help="preview one phase or run read-only audit")
     run.add_argument("profile", type=Path)
     run.add_argument("phase", choices=PHASES)
-    run.add_argument("--apply", action="store_true")
+    run.add_argument(
+        "--apply",
+        action="store_true",
+        help="disabled: exits 2 and prints the setup-workstation.sh executor commands",
+    )
     run.add_argument("--confirm-recovery-tested", action="store_true")
     run.add_argument(
         "--connection-context",
         choices=("local-console", "tailscale-ssh"),
-        help="required for identity/remote-hardening apply; states how this shell reaches the host",
+        help="legacy flag; apply through setup-workstation.sh",
     )
     run.add_argument(
         "--ssh-source-ip",
-        help="SSH peer captured before sudo; required with tailscale-ssh",
+        help="legacy flag; apply through setup-workstation.sh",
     )
     args = parser.parse_args()
+
+    if args.command == "run" and args.apply:
+        print_executor_handoff(args)
+        return 2
 
     if args.command == "setup":
         if args.fleet_root is None:
@@ -1154,7 +1212,7 @@ def main() -> int:
     except ValueError as exc:
         print(f"ERROR profile: {exc}", file=sys.stderr)
         return 2
-    require_ready = bool(getattr(args, "ready", False) or getattr(args, "apply", False) or getattr(args, "phase", "") == "audit")
+    require_ready = bool(getattr(args, "ready", False) or getattr(args, "phase", "") == "audit")
     issues = validate_profile(profile, ready=require_ready)
     if issues:
         show_issues(issues)
@@ -1184,29 +1242,14 @@ def main() -> int:
     if profile["machine"]["platform"] != actual_platform():
         print(f"ERROR machine.platform: profile is {profile['machine']['platform']}, host is {actual_platform()}", file=sys.stderr)
         return 2
-    if args.phase in {"identity", "remote-hardening"} and args.apply and not args.confirm_recovery_tested:
-        print(f"ERROR {args.phase}: --apply also requires --confirm-recovery-tested", file=sys.stderr)
-        return 2
-    if args.phase in {"identity", "remote-hardening"} and args.apply:
-        if not args.connection_context:
-            print(f"ERROR {args.phase}: --apply also requires --connection-context", file=sys.stderr)
-            return 2
-        if args.connection_context == "tailscale-ssh" and not args.ssh_source_ip:
-            print(f"ERROR {args.phase}: tailscale-ssh also requires --ssh-source-ip", file=sys.stderr)
-            return 2
-        if args.connection_context == "local-console" and args.ssh_source_ip:
-            print(f"ERROR {args.phase}: local-console must not include --ssh-source-ip", file=sys.stderr)
-            return 2
     if (args.phase in {"shell", "user-tooling"} or (args.phase == "workloads" and profile["machine"]["platform"] == "macos")) and pwd.getpwuid(os.getuid()).pw_name != profile["accounts"]["agent"]:
         print(f"ERROR {args.phase}: run this phase as {profile['accounts']['agent']}, not root or a human account", file=sys.stderr)
         return 2
     phase = phase_for(
         profile,
         args.phase,
-        apply=args.apply,
-        recovery=args.confirm_recovery_tested,
-        connection_context=args.connection_context,
-        ssh_source_ip=args.ssh_source_ip,
+        apply=False,
+        recovery=False,
     )
     print(f"PHASE {phase.name}: {phase.note}")
     if phase.command is None:

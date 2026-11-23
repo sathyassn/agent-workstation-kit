@@ -83,25 +83,36 @@ names, and consistent definitions for provider principals shared by multiple hos
 Profiles contain no passwords, tokens, private keys, recovery codes, or
 secret-bearing URLs.
 
-## Apply one phase
+## Preview a phase and apply through the executor
 
-Never run the whole build as one opaque operation. Preview, obtain approval,
-apply one phase, and verify it before continuing:
+Never run the whole build as one opaque operation. `fleetctl.py run` supports
+single-phase preview and read-only `audit`; applying changes runs only through
+`scripts/setup-workstation.sh` so locks, receipts, source digests and
+staged-root checks run:
 
 ```bash
+# Single-phase preview from the reviewed source checkout:
 ./scripts/fleetctl.py run /path/to/acme-ws-001.toml accounts
-# Ubuntu, from the root-owned staged copies:
-sudo /usr/bin/python3 -I -B /opt/agent-workstation-kit/scripts/fleetctl.py \
-  --fleet-root /opt/agent-workstation-fleet \
-  run machines/acme-ws-001.toml accounts --apply
+
+# Export the reviewed execution bundle, then preview and apply the scope:
+scripts/setup-workstation.sh plan --fleet-root /path/to/private-fleet \
+  --profile machines/acme-ws-001.toml \
+  --export-plan /PRIVATE/EVIDENCE/execution-plan.json
+
+# Root scopes run from the root-owned staged copy after staging the bundle:
+sudo /bin/bash /opt/agent-workstation-kit/scripts/setup-workstation.sh run \
+  --plan-file /opt/agent-workstation-fleet/plans/execution-plan.json \
+  --scope machine --apply --approve-plan REVIEWED_EXECUTION_PLAN_ID \
+  --confirm-target acme-ws-001 --execution-context host \
+  --confirm-recovery-tested --journal /PRIVATE/ROOT_OWNED_DIRECTORY/setup.json
 ```
 
-The apply command is valid only after the reviewed toolkit and fleet snapshots
-have been staged as root-owned, non-writable trees. Follow the Linux staging
+The apply command is valid only after the reviewed toolkit, fleet snapshot and
+execution plan have been staged as root-owned, non-writable trees. Follow
+[automated and resumable setup](runbooks/resumable-setup.md) and the OS staging
 runbook; never apply from an ordinary user checkout, and never let `sudo` pick
-the interpreter from PATH. On macOS, use the staged `setup-workstation.sh run`
-in [automated and resumable setup](runbooks/resumable-setup.md) instead: the
-system Python there is 3.9, and Homebrew's Python belongs to a user.
+the interpreter from PATH. On macOS, the same staged `setup-workstation.sh run`
+command uses the OS Python 3.9+ without touching a user-owned Homebrew Python.
 
 Machine identity and remote hardening also require an explicit recovery
 confirmation when applying. The `shell`

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import copy
 import importlib.util
+import io
 import os
 import stat
 import subprocess
@@ -785,6 +786,57 @@ class FleetProfileTests(unittest.TestCase):
             "100.64.0.10",
             phase.command[phase.command.index("--ssh-source-ip") + 1],
         )
+
+    def test_run_apply_exits_2_and_prints_executor_commands(self) -> None:
+        profile = self.make_ready(self.load_work())
+        cases = (
+            ("base", [], "packages"),
+            ("accounts", [], "machine"),
+            (
+                "identity",
+                ["--confirm-recovery-tested", "--connection-context", "local-console"],
+                "machine",
+            ),
+            (
+                "remote-hardening",
+                ["--confirm-recovery-tested", "--connection-context", "local-console"],
+                "machine",
+            ),
+            ("shell", [], "agent"),
+            ("audit", [], "audit"),
+        )
+        for phase_name, extra, expected_scope in cases:
+            with self.subTest(phase=phase_name):
+                argv = ["fleetctl.py", "run", "machines/ac-ws-001.toml", phase_name, "--apply", *extra]
+                stderr = io.StringIO()
+                with mock.patch.object(sys, "argv", argv), \
+                     mock.patch.object(fleetctl, "load_profile", return_value=profile), \
+                     mock.patch.object(fleetctl, "actual_platform", return_value="linux"), \
+                     mock.patch.object(fleetctl.subprocess, "run") as run, \
+                     mock.patch("sys.stderr", new=stderr):
+                    self.assertEqual(2, fleetctl.main())
+                    run.assert_not_called()
+                output = stderr.getvalue()
+                self.assertIn("setup-workstation.sh plan", output)
+                self.assertIn("setup-workstation.sh run", output)
+                self.assertIn(f"--scope {expected_scope}", output)
+
+    def test_run_read_only_audit_still_runs_without_apply(self) -> None:
+        profile = self.make_ready(self.load_work())
+        argv = ["fleetctl.py", "run", "ignored.toml", "audit"]
+        completed = subprocess.CompletedProcess([], 0)
+        with mock.patch.object(sys, "argv", argv), \
+             mock.patch.object(fleetctl, "load_profile", return_value=profile), \
+             mock.patch.object(fleetctl, "actual_platform", return_value="linux"), \
+             mock.patch.object(fleetctl, "audit_machine_identity", return_value=0) as id_audit, \
+             mock.patch.object(fleetctl, "audit_declared_accounts", return_value=0) as acct_audit, \
+             mock.patch.object(fleetctl.subprocess, "run", return_value=completed) as run, \
+             mock.patch("sys.stdout", new=io.StringIO()):
+            self.assertEqual(0, fleetctl.main())
+            id_audit.assert_called_once_with(profile)
+            acct_audit.assert_called_once_with(profile)
+            run.assert_called_once()
+            self.assertNotIn("--apply", run.call_args.args[0])
 
 
 if __name__ == "__main__":

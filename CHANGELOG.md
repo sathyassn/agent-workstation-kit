@@ -29,6 +29,9 @@ step is in [docs/maintenance/releasing.md](docs/maintenance/releasing.md).
 
 ### Fixed
 
+- `fleetctl.py run ... --apply` now exits 2 and prints the `setup-workstation.sh` executor commands so changes never bypass locks, receipts, source digests or staged-root checks; preview and read-only `audit` stay, docs now show the executor path, and `tests/check_repository.py` fails if a doc shows `fleetctl run ... --apply` again.
+- On macOS, `execute-setup.py` now places the privileged host lock under `/Library/Application Support/agent-workstation-kit/run/` (created root-owned `0755` and checked with `secure_root_path`) instead of group-writable `/var/run`, so macOS root scopes can run.
+- `install-local-deb-linux.sh` now refuses to install NoMachine `.deb` packages unless the UFW firewall is active.
 - `agent-work-shell` falls back to the plain shell, with a warning, when it cannot start a scope in `agent-work.slice`, so a terminal never closes immediately.
 - The Linux resource policy now caps agent work in a dedicated `agent-work.slice` under the agent's user manager, with memory shares of RAM, systemd-oomd, swap, zram and `/tmp` policy, a receipt and an exact `--revert`; `agentctl start` runs sessions inside it.
 - `scripts/agent-work-shell` runs an agent manager's terminals inside `agent-work.slice`; the host audit and phase verifier fail when a claude, codex, grok or agent-manager pty process runs outside it.
