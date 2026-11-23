@@ -1,0 +1,11 @@
+id = "TSK-042"
+uid = "c24cc98f-c012-4153-a5ac-71a740591759"
+kind = "TSK"
+title = "Fault-injection tests in CI"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-23T23:12:43Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
