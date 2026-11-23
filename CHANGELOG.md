@@ -36,6 +36,13 @@ step is in [docs/maintenance/releasing.md](docs/maintenance/releasing.md).
 - An interrupted resource-policy apply no longer blocks `--revert`.
 - The Linux resource policy (`scripts/apply-resource-policy-linux.sh`) now uses reserve-based sizing by default (8 GiB desktop or 2 GiB headless fixed reserve plus 2% of RAM, optional `--measure` baseline at 1.5x non-agent slices, `MemoryHigh = MemoryMax - min(10%, 8 GiB)`, `MemorySwapMax = min(25% of swap, 8 GiB)`, `CPUWeight=50`, `CPUQuota` from reserved cores, refusing below 2 GiB), shows every value's derivation in the preview, keeps percentage flags as explicit overrides, and adds optional profile fields `resources.reserve_fixed_gib`, `resources.reserve_cores`, and `resources.cpu_weight`.
 - The memory reserve is a share of RAM: `resources.os_memory_reserve_percent` and `--memory-reserve-percent` replace the deprecated `os_memory_reserve_gib` and `--memory-reserve-gib`; the schema migration check accepts that rename.
+- The resource policy puts `CPUWeight` on `agent.slice`, the parent that competes with the desktop's `app.slice` and `session.slice`, instead of on `agent-work.slice`, where it had no sibling to divide CPU with.
+- Resource-policy apply and revert write every file atomically, hold a lock on the state directory, and record each step before and after it, so an apply or revert stopped at any point can be reverted or finished.
+- `--measure` is informational only: it reads every top-level cgroup except the agent's `agent.slice` and never changes the reserve.
+- The resource receipt keeps the approved inputs, readings and values; a repeat apply reuses them, and the phase verifier checks the slices against the receipt and against the values systemd holds.
+- The resource policy refuses a host whose user manager does not delegate the cpu controller, integer flags that are not plain numbers of at most six digits, a `--memory-max-percent` that leaves less than the reserve or 2 GiB (unless `--allow-small-reserve`), and a symlinked state path.
+- Planned zram counts toward the swap total that sizes `MemorySwapMax`, and the preview says when the core reserve is lowered on 1 or 2 CPUs.
+- `validate-host.sh` rejects a MemoryMax below 2 GiB, a MemoryHigh not below MemoryMax, a CPUQuota below 100% and a missing MemorySwapMax or `agent.slice` weight; the profile migration check no longer ignores `reserve_fixed_gib`, `reserve_cores` and `cpu_weight`.
 
 ## [0.2.0-rc.7] - 2026-11-20
 

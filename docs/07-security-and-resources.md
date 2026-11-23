@@ -53,15 +53,16 @@ root.
             |-- app.slice           desktop apps (not limited)
             |-- session.slice       desktop shell (not limited)
             |-- orca_ptys_*.slice   agent-manager ptys (left by agent-work-shell)
-            `-- agent.slice         implied parent (see slice naming below)
-                `-- agent-work.slice  CPUWeight, CPUQuota, MemoryHigh, MemoryMax, MemorySwapMax, oomd
+            `-- agent.slice         CPUWeight (the parent systemd implies; see slice naming)
+                `-- agent-work.slice  CPUQuota, MemoryHigh, MemoryMax, MemorySwapMax, oomd
                     |-- agent services   (Slice=agent-work.slice)
                     |-- agentctl tmux sessions
                     `-- agent-manager terminals (through agent-work-shell)
 ```
 
 **Where the ceiling applies, and why.** The policy is a user-level slice,
-`/etc/systemd/user/agent-work.slice`, under the agent account's user manager.
+`/etc/systemd/user/agent-work.slice`, under the agent account's user manager,
+with its CPU weight on the parent slice `/etc/systemd/user/agent.slice`.
 Earlier versions limited the whole `user-UID.slice`. That slice also holds the
 agent account's desktop, so a ceiling there throttled the desktop with the
 jobs, and it missed `agentctl` sessions completely: `sudo` keeps a delegated
@@ -70,10 +71,16 @@ rests on systemd's documented behaviour:
 
 - `user@.service` delegates the `memory`, `pids` and `cpu` controllers to the
   user manager, so a user-level slice can carry `MemoryHigh`, `MemoryMax`,
-  `MemorySwapMax` and `TasksMax`. The script refuses when the memory controller
-  is not delegated.
+  `MemorySwapMax`, `TasksMax`, `CPUWeight` and `CPUQuota`. The script refuses
+  when the memory or cpu controller is not available or not delegated.
+- `CPUWeight` only divides CPU time between siblings. `agent-work.slice` has
+  no siblings inside `agent.slice`, so a weight there would have no effect.
+  `agent.slice` competes with `app.slice` and `session.slice` (weight 100)
+  inside the agent's user manager, so its `CPUWeight=50` is what keeps the
+  agent account's desktop responsive while agents run. The `CPUQuota` hard cap
+  stays on `agent-work.slice`.
 - Units in `/etc/systemd/user` are root-owned and load in every user manager;
-  `ConditionUser=` keeps the slice to the agent account.
+  `ConditionUser=` keeps both slices to the agent account.
 - systemd-oomd acts on user units (systemd 248 and newer), so the slice can
   carry `ManagedOOMMemoryPressure=kill` with its own pressure limit.
 - A system-level slice would need root to place each process in it, while
@@ -83,7 +90,7 @@ rests on systemd's documented behaviour:
 (`~/.config/systemd/user`, or `systemctl --user set-property`) outranks
 `/etc/systemd/user`, and work started outside the slice is not limited.
 `validate-host.sh` and the phase verifier fail when an override for
-`agent-work.slice` exists. Start agent services with `Slice=agent-work.slice`.
+`agent-work.slice` or `agent.slice` exists. Start agent services with `Slice=agent-work.slice`.
 
 **Placement check.** `validate-host.sh` and the phase verifier fail when a
 process of the agent account runs outside `agent-work.slice` and is a `claude`,
@@ -128,14 +135,14 @@ code as `orca_ptys_` plus its daemon scope name, with every other character
 replaced by `_`, so the wrapper is the supported route.
 
 **What apply changes.** Each item is shown in the preview with its derivation
-and source (formula, measured baseline, or explicit override) before apply.
+and source (formula or explicit override) before apply.
 
 | Change | Setting | Default | When it takes effect |
 |---|---|---|---|
-| Memory reserve | `fixed + 2% of RAM` (never below the fixed part); fixed part is 8 GiB when `graphical.target` or a display manager is active, 2 GiB headless, or `1.5x` measured non-agent slices with `--measure` when larger | 8 GiB desktop or 2 GiB headless + 2% of RAM | Preview |
+| Memory reserve | `fixed + 2% of RAM` (never below the fixed part); fixed part is 8 GiB when `graphical.target` or a display manager is active, 2 GiB headless, or `--reserve-fixed-gib` | 8 GiB desktop or 2 GiB headless + 2% of RAM | Preview |
 | Memory ceiling | `MemoryMax = RAM - reserve` (refuses when below 2 GiB); `MemoryHigh = MemoryMax - min(10% of MemoryMax, 8 GiB)` | Reserve-based formula | New and restarted work in the slice |
-| Swap for agent work | `MemorySwapMax = min(25% of total swap, 8 GiB)`; `0` when no swap is active | Formula from `/proc/swaps` | Same |
-| CPU controls | `CPUWeight=50` (system and desktop keep 100); `reserved = clamp(ceil(cores * 0.05), 2, 4)` and `CPUQuota = (cores - reserved) * 100%` | Formula from `/proc/cpuinfo` | Same |
+| Swap for agent work | `MemorySwapMax = min(25% of total swap, 8 GiB)`, where total swap is the active swap plus the zram this apply configures that is not active yet; `0` when there is none | Formula from `/proc/swaps` and `--zram-percent` | Same |
+| CPU controls | `CPUWeight=50` on `agent.slice` (`app.slice` and `session.slice` keep 100); `reserved = clamp(ceil(cores * 0.05), 2, 4)`, lowered on 1 or 2 CPUs so agent work keeps one core, and `CPUQuota = (cores - reserved) * 100%` on `agent-work.slice` | Formula from `/proc/cpuinfo` | Same |
 | systemd-oomd | Enabled; kills in the slice above the pressure limit (states `enabled`, `enabled-runtime`, `static` and `alias` count as enabled) | 60% | At once |
 | oomd scope | Overrides each vendor oomd drop-in for `user@.service` and `-.slice` with `ManagedOOM...=auto`, so oomd acts only on `agent-work.slice` | | At once |
 | Swappiness | `vm.swappiness`: 100 with zram, 10 with disk swap only, unchanged with no swap | auto | At once |
@@ -146,18 +153,27 @@ and source (formula, measured baseline, or explicit override) before apply.
 
 Reserve-based sizing is the default: it reserves what the OS and desktop need
 and gives agent work the remainder, rather than taking a fixed percentage on
-every host size. With `--measure`, the script sums `memory.current` of
-`system.slice` plus the session and app slices outside `agent-work.slice`,
-multiplies by `1.5`, uses that baseline when it exceeds the role default, and
-prints both in the preview.
+every host size. The reserve comes only from the role default or
+`--reserve-fixed-gib`. `--measure` is informational: it sums `memory.current`
+of every top-level cgroup (`init.scope`, `system.slice`, `user.slice` and any
+other) minus the agent's `agent.slice` subtree, multiplies by `1.5`, and
+prints that next to the role default, labelled "informational, not applied".
+Compare the two, and pass `--reserve-fixed-gib` if the host needs more.
 
 Flags for tuning or explicit overrides:
 
-- Reserve and CPU tuning: `--reserve-fixed-gib N`, `--measure`,
-  `--reserve-cores N`, `--cpu-weight N`.
+- Reserve and CPU tuning: `--reserve-fixed-gib N`, `--measure`
+  (informational), `--reserve-cores N`, `--cpu-weight N`.
 - Explicit percentage overrides that win over the formula (labelled in the
   preview): `--memory-high-percent N`, `--memory-max-percent N`,
   `--swap-max-percent N`, `--memory-reserve-percent N`.
+- Whole-number flags take at most six digits and no leading zeros; `08`,
+  `-1`, `abc`, an empty value and an overflowing number are refused before
+  any arithmetic.
+- A `--memory-max-percent` that leaves less than the reserve, or less than
+  2 GiB, outside agent work is refused unless `--allow-small-reserve` is
+  given. The preview then labels the reserve "overridden" and says when it was
+  accepted below the reserve.
 - Other policy flags: `--oomd-pressure-percent N`, `--swappiness auto|keep|N`,
   `--zram-percent N`, `--tmp auto|disk|keep`.
 
@@ -194,16 +210,27 @@ load. It does not edit `/etc/fstab`; a tmpfs `/tmp` from fstab is left alone
 with a warning, and `--tmp disk` refuses it.
 
 The script refuses, with a message, when systemd is not the init system, is
-older than 248, the unified cgroup v2 memory controller is missing, the user
-manager does not delegate memory, `--zram-percent` is set without
-`systemd-zram-generator`, or the shares break the reserve.
+older than 248, the unified cgroup v2 memory or cpu controller is missing, the
+user manager does not delegate memory and cpu, `--zram-percent` is set without
+`systemd-zram-generator`, the shares break the reserve, or the state
+directory, the receipt or one of their parents is a symbolic link.
 
 **Receipt and exact undo.** Apply copies each file it replaces or removes into
 `/var/lib/agent-workstation-kit/resource-policy/backups/` before changing it,
 and records every change (files, directories, the tmp.mount mask, the earlier
-swappiness, lingering and the oomd service) in `receipt.tsv` there. A repeat
-apply with the same policy changes nothing; a different policy is refused
-until you revert.
+swappiness, lingering and the oomd service) in `receipt.tsv` there. The
+receipt also keeps the approved inputs (every flag), the readings the values
+came from (RAM, swap, planned zram, cores, host role) and every value written.
+A repeat apply with the same inputs reuses those readings and changes nothing,
+even when the host now reads a different amount of memory or swap; it says
+which reading changed. Different inputs are refused until you revert. The
+phase verifier derives the expected slices from the receipt, not from a new
+reading, and checks the values systemd holds for both slices.
+
+Every file is written to a temporary file in its destination folder, flushed
+to disk, then renamed over the destination, so a file is either the old or the
+new version. Apply and revert hold an exclusive lock on the state directory,
+so two runs never interleave.
 
 ```bash
 # Preview, then apply after review (root, from the staged copy)
@@ -215,11 +242,14 @@ sudo /bin/bash /opt/agent-workstation-kit/scripts/apply-resource-policy-linux.sh
 sudo /bin/bash /opt/agent-workstation-kit/scripts/apply-resource-policy-linux.sh --agent ACCOUNT --revert --apply
 ```
 
-Apply records each step just before making it. If apply stops part way, it
-says so and names the revert command; revert accepts a step that was recorded
-but not made (a missing mask link, a file not yet written or not yet removed),
-so an interrupted apply never blocks the undo. Revert refuses, and changes
-nothing, when a managed file changed after apply.
+Apply records each step just before making it and again once it is made, and
+marks the receipt complete at the end. If apply stops part way, even from a
+power loss, a new apply refuses the incomplete receipt and names the revert
+command; revert accepts a step that was recorded but not finished in either
+state (a missing mask link, a file not yet written or not yet removed), so an
+interrupted apply never blocks the undo. Revert records each restore in the
+same way, so a stopped revert can be run again to finish. Revert refuses, and
+changes nothing, when a managed file changed after apply.
 `--remove` is an alias of `--revert`. Disabling lingering stops the agent's
 user manager when the agent has no login session.
 
