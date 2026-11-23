@@ -1,0 +1,166 @@
+# Tool and dependency registry (ADR 0005 section 2b and section 13).
+# Every direct require and every tool directive in go.mod is recorded here with
+# its exact version, its go.sum h1 sum, canonical source, SPDX licence
+# identifier and review dates. Indirect modules are not listed: go.sum
+# integrity and govulncheck hold that graph. internal/registry checks this.
+# Managed workstation CLIs join this registry in EPC-011 / T6.
+
+schema_version = 1
+
+[[tool]]
+id = "toml"
+kind = "go-library"
+module = "github.com/BurntSushi/toml"
+version = "v1.6.0"
+sum = "h1:dRaEfpa2VI55EwlIW72hMRHdWouJeRF7TPYhI+AUQjk="
+source = "https://github.com/BurntSushi/toml"
+licence = "MIT"
+last_review = "2026-11-22"
+next_review = "2027-05-22"
+purpose = "TOML v1.0 parser and encoder for schemas, registries and machine profiles"
+
+[[tool]]
+id = "jcs"
+kind = "go-library"
+module = "github.com/gowebpki/jcs"
+version = "v1.0.2"
+sum = "h1:IY0Iv76ThSvocWinl2rphYmGLhMufS3ZD1giKqkI6ps="
+source = "https://github.com/gowebpki/jcs"
+licence = "Apache-2.0"
+last_review = "2026-11-22"
+next_review = "2027-05-22"
+purpose = "RFC 8785 canonical JSON serialisation for plan digests"
+
+[[tool]]
+id = "cobra"
+kind = "go-library"
+module = "github.com/spf13/cobra"
+version = "v1.10.2"
+sum = "h1:DMTTonx5m65Ic0GOoRY2c16WCbHxOOw6xxezuLaBpcU="
+source = "https://github.com/spf13/cobra"
+licence = "Apache-2.0"
+last_review = "2026-11-22"
+next_review = "2027-05-22"
+purpose = "CLI command tree, shared flags, completions and man-page generation"
+
+[[tool]]
+id = "fang"
+kind = "go-library"
+module = "charm.land/fang/v2"
+version = "v2.0.1"
+sum = "h1:zQCM8JQJ1JnQX/66B5jlCYBUxL2as5JXQZ2KJ6EL0mY="
+source = "https://github.com/charmbracelet/fang"
+licence = "MIT"
+last_review = "2026-11-22"
+next_review = "2027-05-22"
+purpose = "Lip Gloss styled CLI help and error presentation for Cobra"
+
+[[tool]]
+id = "bubbletea"
+kind = "go-library"
+module = "charm.land/bubbletea/v2"
+version = "v2.1.2"
+sum = "h1:vB3XAcHhLB2gR3HOHpwO3lHB3nbvaowIgL3e5x/DUZo="
+source = "https://github.com/charmbracelet/bubbletea"
+licence = "MIT"
+last_review = "2026-11-22"
+next_review = "2027-05-22"
+purpose = "Interactive terminal UI runtime for human-driven setup screens"
+
+[[tool]]
+id = "huh"
+kind = "go-library"
+module = "charm.land/huh/v2"
+version = "v2.0.3"
+sum = "h1:2cJsMqEPwSywGHvdlKsJyQKPtSJLVnFKyFbsYZTlLkU="
+source = "https://github.com/charmbracelet/huh"
+licence = "MIT"
+last_review = "2026-11-22"
+next_review = "2027-05-22"
+purpose = "Interactive terminal interview forms and confirmation prompts"
+
+[[tool]]
+id = "bubbles"
+kind = "go-library"
+module = "charm.land/bubbles/v2"
+version = "v2.2.2"
+sum = "h1:lXTAX9eRzW4t92r+pG4qTzkV1vU6rIO6TaIoETFf7v4="
+source = "https://github.com/charmbracelet/bubbles"
+licence = "MIT"
+last_review = "2026-11-22"
+next_review = "2027-05-22"
+purpose = "Terminal UI components: spinners, progress bars and lists"
+
+[[tool]]
+id = "lipgloss"
+kind = "go-library"
+module = "charm.land/lipgloss/v2"
+version = "v2.1.1"
+sum = "h1:F+vKWis9Kz3MFRsbICSDFtT1ZwVL+8f+36Dtg+OpKwc="
+source = "https://github.com/charmbracelet/lipgloss"
+licence = "MIT"
+last_review = "2026-11-22"
+next_review = "2027-05-22"
+purpose = "Terminal layout and styling primitives"
+
+[[tool]]
+id = "glamour"
+kind = "go-library"
+module = "charm.land/glamour/v2"
+version = "v2.0.1"
+sum = "h1:xl+r00A4aJWU0z8fgwKd9fQQ4rsphqGUzuEiXZP5n+c="
+source = "https://github.com/charmbracelet/glamour"
+licence = "MIT"
+last_review = "2026-11-22"
+next_review = "2027-05-22"
+purpose = "Markdown rendering for explain and inline documentation views"
+
+[[tool]]
+id = "x-sys"
+kind = "go-library"
+module = "golang.org/x/sys"
+version = "v0.50.0"
+sum = "h1:dkKZEFTEKaLr1sjhs0WiKqoi8Jj5nHbS3Njmx1UoMJs="
+source = "https://go.googlesource.com/sys"
+licence = "BSD-3-Clause"
+last_review = "2026-11-22"
+next_review = "2027-05-22"
+purpose = "Low-level OS system calls and locking on Linux and macOS"
+
+[[tool]]
+id = "golangci-lint"
+kind = "go-tool"
+module = "github.com/golangci/golangci-lint/v2"
+tool_path = "github.com/golangci/golangci-lint/v2/cmd/golangci-lint"
+version = "v2.15.0"
+sum = "h1:w94zf8HAYI7hm3164kwKsvZRuqXvY+YxeFoTbu1OLg8="
+source = "https://github.com/golangci/golangci-lint"
+licence = "GPL-3.0-only"
+last_review = "2026-11-22"
+next_review = "2027-05-22"
+purpose = "Static analysis and formatting gate configured by .golangci.yml (build tool only, not linked into binaries)"
+
+[[tool]]
+id = "govulncheck"
+kind = "go-tool"
+module = "golang.org/x/vuln"
+tool_path = "golang.org/x/vuln/cmd/govulncheck"
+version = "v1.10.0"
+sum = "h1:W/Im35AGknunDiqBysVe9VoMfaeTJE7lptrD+1s//aE="
+source = "https://go.googlesource.com/vuln"
+licence = "BSD-3-Clause"
+last_review = "2026-11-22"
+next_review = "2027-05-22"
+purpose = "Known-vulnerability scanner for Go modules and call graphs (build tool only)"
+
+[[tool]]
+id = "x-mod"
+kind = "go-library"
+module = "golang.org/x/mod"
+version = "v0.43.0"
+sum = "h1:MFuq5J6s35W9D3IjkwyWc9vHh0nENOrt5K8Iof4ofmg="
+source = "https://cs.opensource.google/go/x/mod"
+licence = "BSD-3-Clause"
+last_review = "2026-11-23"
+next_review = "2027-05-23"
+purpose = "Strict go.mod parsing for the dependency registry check"

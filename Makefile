@@ -2,7 +2,7 @@ SHELL := /bin/sh
 PYTHON ?= python3
 BASH_BIN ?= bash
 
-.PHONY: bash-check check ci-check git-discipline-check public-check public-draft-check repo-check skill-check shell-check unit-check python-check
+.PHONY: bash-check check ci-check git-discipline-check go-check public-check public-draft-check repo-check skill-check shell-check unit-check python-check
 
 check: bash-check shell-check python-check unit-check skill-check repo-check git-discipline-check public-draft-check
 
@@ -14,6 +14,12 @@ public-check:
 
 public-draft-check:
 	@$(PYTHON) tests/check_public_release.py --allow-missing-license
+
+go-check:
+	go test ./...
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build ./...
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build ./...
+	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build ./...
 
 python-check:
 	@$(PYTHON) -m py_compile scripts/*.py tests/*.py
