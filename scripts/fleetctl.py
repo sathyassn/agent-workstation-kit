@@ -12,6 +12,7 @@ import argparse
 import fcntl
 import grp
 import ipaddress
+import math
 import os
 import pwd
 import re
@@ -74,7 +75,13 @@ OPTIONAL_KEYS = {
     "tooling": {"apt_packages", "brew_formulae", "brew_casks", "mise_version", "mise_sha256"},
     "accounts": {"macos_provisioning"},
     # os_memory_reserve_gib is deprecated: still accepted, no longer used.
-    "resources": {"os_memory_reserve_percent", "os_memory_reserve_gib"},
+    "resources": {
+        "os_memory_reserve_percent",
+        "os_memory_reserve_gib",
+        "reserve_fixed_gib",
+        "reserve_cores",
+        "cpu_weight",
+    },
 }
 for _section, _keys in OPTIONAL_KEYS.items():
     SECTION_KEYS[_section] |= _keys
@@ -444,6 +451,21 @@ def validate_profile(profile: dict[str, Any], *, ready: bool) -> list[Issue]:
         value = resources[key]
         if type(value) is not int or not lower <= value <= upper:
             issues.append(Issue(f"resources.{key}", f"must be an integer from {lower} through {upper}"))
+    if "reserve_fixed_gib" in resources:
+        value = resources["reserve_fixed_gib"]
+        # The same bound the resource script applies (up to six whole digits).
+        if type(value) not in (int, float) or not math.isfinite(value) or not 0 < value < 1_000_000:
+            issues.append(Issue("resources.reserve_fixed_gib", "must be a positive number below 1000000"))
+        if "os_memory_reserve_percent" in resources:
+            issues.append(Issue("resources.reserve_fixed_gib", "cannot be combined with resources.os_memory_reserve_percent"))
+    if "reserve_cores" in resources:
+        value = resources["reserve_cores"]
+        if type(value) is not int or not 0 <= value <= 1024:
+            issues.append(Issue("resources.reserve_cores", "must be an integer from 0 through 1024"))
+    if "cpu_weight" in resources:
+        value = resources["cpu_weight"]
+        if type(value) is not int or not 1 <= value <= 10000:
+            issues.append(Issue("resources.cpu_weight", "must be an integer from 1 through 10000"))
     if not isinstance(backup["retention_days"], int) or isinstance(backup["retention_days"], bool) or backup["retention_days"] < 1:
         issues.append(Issue("backup.retention_days", "must be a positive integer"))
     for path in ("maintenance.timezone", "maintenance.update_window", "maintenance.owner", "backup.target"):
@@ -558,7 +580,18 @@ def phase_for(
     if name == "resources":
         if machine["platform"] == "macos":
             return Phase(name, None, True, "Measure and apply macOS controls through the documented managed workflow.")
-        return Phase(name, (str(ROOT / "scripts/apply-resource-policy-linux.sh"), "--agent", accounts["agent"], "--memory-reserve-percent", str(profile["resources"].get("os_memory_reserve_percent", 10)), *suffix), True, "Apply only after observation and load testing; audit cgroup placement after reboot.")
+        resources = profile["resources"]
+        argv = [str(ROOT / "scripts/apply-resource-policy-linux.sh"), "--agent", accounts["agent"]]
+        if "os_memory_reserve_percent" in resources:
+            argv.extend(("--memory-reserve-percent", str(resources["os_memory_reserve_percent"])))
+        if "reserve_fixed_gib" in resources:
+            argv.extend(("--reserve-fixed-gib", str(resources["reserve_fixed_gib"])))
+        if "reserve_cores" in resources:
+            argv.extend(("--reserve-cores", str(resources["reserve_cores"])))
+        if "cpu_weight" in resources:
+            argv.extend(("--cpu-weight", str(resources["cpu_weight"])))
+        argv.extend(suffix)
+        return Phase(name, tuple(argv), True, "Apply only after observation and load testing; audit cgroup placement after reboot.")
     if name == "audit":
         return Phase(name, (str(ROOT / "scripts/validate-host.sh"), accounts["agent"], str(remote["nomachine_port"])), True, "Compare declared accounts and live security state.")
     raise ValueError(f"unknown phase: {name}")
@@ -906,7 +939,7 @@ schema_version = {SCHEMA_VERSION}\nprofile = {toml_string(args.context)}\nstate 
 [collaboration]\natlassian_site = "ask"\natlassian_identity = "ask"\natlassian_principal = "ask"\natlassian_mcp_auth = "ask"\n\n\
 [model_auth]\ncodex = "api-workload"\nclaude = "api-workload"\ngrok = "api-workload"\n\n\
 [security]\ndisk_encryption_required = true\nsecure_boot_required = true\nremote_scope = "tailscale-only"\nendpoint_management = {toml_string(endpoint)}\n\n\
-[resources]\npolicy = "measured-balanced"\nos_memory_reserve_percent = 10\nos_cpu_reserve_threads = 2\n\n\
+[resources]\npolicy = "measured-balanced"\nos_cpu_reserve_threads = 2\n\n\
 [backup]\ntarget = "ask"\nretention_days = 30\n\n\
 [maintenance]\ntimezone = "America/Toronto"\nupdate_window = "ask"\nowner = "ask"\n'''
 

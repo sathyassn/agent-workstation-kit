@@ -787,6 +787,77 @@ class FleetProfileTests(unittest.TestCase):
             phase.command[phase.command.index("--ssh-source-ip") + 1],
         )
 
+    def test_resources_optional_overrides_are_validated_and_passed_only_when_set(self) -> None:
+        profile = self.make_ready(self.load_work())
+        default_phase = fleetctl.phase_for(profile, "resources", apply=False, recovery=False)
+        assert default_phase.command
+        for flag in ("--reserve-fixed-gib", "--reserve-cores", "--cpu-weight", "--memory-reserve-percent"):
+            self.assertNotIn(flag, default_phase.command)
+
+        profile["resources"]["reserve_fixed_gib"] = 8.5
+        profile["resources"]["reserve_cores"] = 0
+        profile["resources"]["cpu_weight"] = 75
+        self.assertEqual([], fleetctl.validate_profile(profile, ready=True))
+        override_phase = fleetctl.phase_for(profile, "resources", apply=False, recovery=False)
+        assert override_phase.command
+        self.assertEqual("8.5", override_phase.command[override_phase.command.index("--reserve-fixed-gib") + 1])
+        self.assertEqual("0", override_phase.command[override_phase.command.index("--reserve-cores") + 1])
+        self.assertEqual("75", override_phase.command[override_phase.command.index("--cpu-weight") + 1])
+        self.assertNotIn("--memory-reserve-percent", override_phase.command)
+
+        percent_profile = self.make_ready(self.load_work())
+        percent_profile["resources"]["os_memory_reserve_percent"] = 15
+        self.assertEqual([], fleetctl.validate_profile(percent_profile, ready=True))
+        percent_phase = fleetctl.phase_for(percent_profile, "resources", apply=False, recovery=False)
+        assert percent_phase.command
+        self.assertEqual("15", percent_phase.command[percent_phase.command.index("--memory-reserve-percent") + 1])
+
+        conflict = self.make_ready(self.load_work())
+        conflict["resources"]["reserve_fixed_gib"] = 8
+        conflict["resources"]["os_memory_reserve_percent"] = 10
+        self.assertIn("resources.reserve_fixed_gib", {i.path for i in fleetctl.validate_profile(conflict, ready=True)})
+
+        for key, bad_values in (
+            ("reserve_fixed_gib", (0, -2, True, "8", float("inf"), float("nan"), 1_000_000, 18446744073709551666)),
+            ("reserve_cores", (-1, 1.5, True, "2", 1025, 18446744073709551666)),
+            ("cpu_weight", (0, 10001, -5, 50.5, False, "50")),
+        ):
+            for bad in bad_values:
+                invalid = self.make_ready(self.load_work())
+                invalid["resources"][key] = bad
+                with self.subTest(key=key, value=bad):
+                    self.assertIn(f"resources.{key}", {i.path for i in fleetctl.validate_profile(invalid, ready=True)})
+
+    def test_example_profiles_name_the_role_defaults_and_call_other_numbers_overrides(self) -> None:
+        for name in ("work", "personal", "macos-work"):
+            text = (ROOT / f"config/profiles/{name}.example.toml").read_text(encoding="utf-8")
+            line = next(line for line in text.splitlines() if line.startswith("# reserve_fixed_gib"))
+            with self.subTest(profile=name):
+                self.assertIn("8 GiB desktop", line)
+                self.assertIn("2 GiB headless", line)
+                self.assertIn("any other number is an override", line)
+                self.assertNotIn("6 desktop", line)
+                weight = next(line for line in text.splitlines() if line.startswith("# cpu_weight"))
+                self.assertIn("override for agent.slice", weight)
+
+    def test_profile_migration_keeps_sizing_overrides_and_exempts_only_the_reserve_rename(self) -> None:
+        spec = importlib.util.spec_from_file_location("check_profile_migration", ROOT / "scripts/check-profile-migration.py")
+        assert spec and spec.loader
+        migration = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(migration)
+        old = fleetctl.load_profile(ROOT / "tests/fixtures/schema2-work.toml")
+        new = fleetctl.load_profile(ROOT / "config/profiles/work.example.toml")
+        self.assertEqual([], migration.check_migration(old, new))
+        for key, value in (("reserve_fixed_gib", 6), ("reserve_cores", 2), ("cpu_weight", 75)):
+            changed = copy.deepcopy(new)
+            changed["resources"][key] = value
+            with self.subTest(key=key):
+                self.assertIn("resources changed during schema migration", migration.check_migration(old, changed))
+        renamed = copy.deepcopy(new)
+        renamed["resources"].pop("os_memory_reserve_gib", None)
+        renamed["resources"]["os_memory_reserve_percent"] = 15
+        self.assertEqual([], migration.check_migration(old, renamed))
+
     def test_run_apply_exits_2_and_prints_executor_commands(self) -> None:
         import shlex
 

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -254,32 +256,308 @@ def markdown_headings(text: str) -> set[str]:
     return {heading_slug(heading) for heading in MARKDOWN_HEADING.findall(visible_text)}
 
 
-def main() -> int:
-    failures: list[str] = []
+WORKFLOW_PLAIN_USES_LINE = re.compile(r"^\s*(?:-\s+)?uses:(?:\s+(.*))?$")
+WORKFLOW_BLOCK_SCALAR_HEADER = re.compile(
+    r"^(\s*(?:-\s+)?)(?:[^:#\n]+:\s*)?[|>](?:[1-9]?[+-]?|[+-]?[1-9]?)\s*(?:#.*)?$"
+)
+# Fail closed: outside a `run:` value or a block scalar, the token `uses`
+# followed by a colon, in any quoting, spacing, flow or explicit-key form,
+# must be the one canonical line below; anything else is unsupported.
+WORKFLOW_ANY_USES_KEY = re.compile(r"(?<![A-Za-z0-9_-])['\"]?uses['\"]?\s*:")
+WORKFLOW_RUN_INLINE = re.compile(r"^\s*(?:-\s+)?run:\s+\S")
+WORKFLOW_LOCAL_ACTION = re.compile(r"^(\./[^\s'\"#]+)(?:\s+#.*)?$")
+WORKFLOW_PINNED_ACTION = re.compile(
+    r"^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(?:/[A-Za-z0-9_./-]+)?@([0-9a-f]{40})\s+#\s*(\S.*?)\s*$"
+)
+ACTION_PIN_KEY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}$")
 
-    for path in ROOT.rglob("*"):
-        if ".git" in path.parts or not path.is_file():
+
+# Workflow YAML is restricted to a plain subset, so every key is a plain
+# `key:` on its own line and the canonical `uses:` rule is complete. Banned
+# outside `run:` values, block scalars and `${{ }}` expressions: explicit
+# keys, flow mappings, quoted keys (and so escapes in keys), anchors,
+# aliases, merge keys and tags. A flow sequence is allowed only when it holds
+# plain or quoted scalars, as in `branches: [main, "release/**"]`.
+WORKFLOW_EXPRESSION = re.compile(r"\$\{\{.*?\}\}")
+WORKFLOW_QUOTED_SCALAR = re.compile(r"'(?:[^']|'')*'|\"(?:[^\"\\]|\\.)*\"")
+WORKFLOW_QUOTED_KEY = re.compile(r"^\s*(?:-\s+)*(?:'(?:[^']|'')*'|\"(?:[^\"\\]|\\.)*\")\s*:(?:\s|$)")
+WORKFLOW_FLOW_SEQUENCE = re.compile(r"\[([^\[\]{}]*)\]")
+WORKFLOW_NODE_START = r"(?:^|:\s+|-\s+|[\[,]\s*)"
+WORKFLOW_BANNED = (
+    ("explicit key ('?')", re.compile(r"^\s*(?:-\s+)*\?(?:\s|$)")),
+    ("merge key ('<<')", re.compile(r"^\s*(?:-\s+)*<<\s*:")),
+    ("anchor ('&')", re.compile(WORKFLOW_NODE_START + r"&\S")),
+    ("alias ('*')", re.compile(WORKFLOW_NODE_START + r"\*\S")),
+    ("tag ('!')", re.compile(WORKFLOW_NODE_START + r"!\S")),
+)
+
+
+def workflow_syntax_issue(code_only: str) -> str | None:
+    """Return the banned YAML feature on a workflow line, or None.
+
+    `code_only` is one line with its comment removed, outside `run:` values
+    and block scalars.
+    """
+    if WORKFLOW_QUOTED_KEY.match(code_only):
+        return "quoted key"
+    text = WORKFLOW_EXPRESSION.sub("", code_only)
+    text = WORKFLOW_QUOTED_SCALAR.sub("x", text)
+    for feature, pattern in WORKFLOW_BANNED:
+        if pattern.search(text):
+            return feature
+    # Allowed flow sequences of scalars are removed; any other bracket or
+    # brace left is a flow mapping or a nested flow collection.
+    for sequence in WORKFLOW_FLOW_SEQUENCE.finditer(text):
+        if ":" in sequence.group(1):
+            return "flow mapping inside a flow sequence"
+    remainder = WORKFLOW_FLOW_SEQUENCE.sub("x", text)
+    if "{" in remainder or "}" in remainder:
+        return "flow mapping ('{ }')"
+    if "[" in remainder or "]" in remainder:
+        return "nested or multi-line flow sequence"
+    return None
+
+
+def _strip_yaml_comment(line: str) -> str:
+    """Strip a trailing YAML `# ...` comment outside single or double quotes."""
+    in_single = False
+    in_double = False
+    escaped = False
+    for index, ch in enumerate(line):
+        if escaped:
+            escaped = False
+            continue
+        if in_double:
+            if ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_double = False
+            continue
+        if in_single:
+            if ch == "'":
+                in_single = False
+            continue
+        if ch == '"':
+            in_double = True
+        elif ch == "'":
+            in_single = True
+        elif ch == "#" and (index == 0 or line[index - 1].isspace()):
+            return line[:index]
+    return line
+
+
+def _load_action_pins_table(root: Path) -> tuple[dict[str, str] | None, str | None]:
+    pins_path = root / "tests/action_pins.json"
+    if not pins_path.is_file():
+        return None, "missing workflow action pin table: tests/action_pins.json"
+    try:
+        raw = json.loads(pins_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return None, f"cannot parse tests/action_pins.json: {exc}"
+    if not isinstance(raw, dict):
+        return None, "tests/action_pins.json must be a JSON object"
+    pins: dict[str, str] = {}
+    for key, value in raw.items():
+        if not isinstance(key, str) or not ACTION_PIN_KEY.fullmatch(key):
+            return None, f"invalid pin key in tests/action_pins.json: {key!r}"
+        if not isinstance(value, str) or not value.strip():
+            return None, f"invalid tag value for {key!r} in tests/action_pins.json: {value!r}"
+        pins[key] = value.strip()
+    return pins, None
+
+
+def repo_files(root: Path) -> tuple[list[Path], list[str]]:
+    """Return tracked and untracked non-ignored regular files from Git, plus any scan errors."""
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "--no-optional-locks",
+                "-C",
+                str(root),
+                "ls-files",
+                "-z",
+                "--cached",
+                "--others",
+                "--exclude-standard",
+            ],
+            capture_output=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return [], ["cannot list repository files: git is unavailable"]
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", errors="replace").strip()
+        return [], [f"cannot list repository files via git ls-files: {detail or f'exit {result.returncode}'}"]
+
+    stage_result = subprocess.run(
+        ["git", "--no-optional-locks", "-C", str(root), "ls-files", "-z", "--stage"],
+        capture_output=True,
+        check=False,
+    )
+    if stage_result.returncode != 0:
+        detail = stage_result.stderr.decode("utf-8", errors="replace").strip()
+        return [], [f"cannot inspect git index via git ls-files --stage: {detail or f'exit {stage_result.returncode}'}"]
+    gitlinks: set[str] = set()
+    for entry in stage_result.stdout.split(b"\x00"):
+        if not entry or b"\t" not in entry:
+            continue
+        meta, raw_rel = entry.split(b"\t", 1)
+        mode = meta.split(b" ", 1)[0]
+        if mode == b"160000":
+            gitlinks.add(raw_rel.decode("utf-8", errors="surrogateescape"))
+
+    paths: list[Path] = []
+    errors: list[str] = []
+    seen: set[str] = set()
+    for raw in result.stdout.split(b"\x00"):
+        if not raw:
+            continue
+        rel = raw.decode("utf-8", errors="surrogateescape")
+        if rel in seen:
+            continue
+        seen.add(rel)
+        if rel in gitlinks:
+            errors.append(f"cannot scan repository path {rel}: gitlink is not a regular file")
+            continue
+        path = root / rel
+        try:
+            st = os.lstat(path)
+        except FileNotFoundError:
+            errors.append(f"cannot scan repository path {rel}: file is missing")
+            continue
+        except OSError as exc:
+            errors.append(f"cannot scan repository path {rel}: {exc.strerror or exc}")
+            continue
+        if stat.S_ISLNK(st.st_mode):
+            errors.append(f"cannot scan repository path {rel}: symlink is not a regular file")
+            continue
+        if not stat.S_ISREG(st.st_mode):
+            errors.append(f"cannot scan repository path {rel}: not a regular file")
+            continue
+        paths.append(path)
+    return sorted(paths), errors
+
+
+def workflow_action_pin_issues(root: Path) -> list[str]:
+    """Every `uses:` in .github/workflows/*.yml must be a plain block `uses:` line with a local `./` path or a 40-hex SHA pin matching tests/action_pins.json."""
+    issues: list[str] = []
+    workflows_dir = root / ".github/workflows"
+    if not workflows_dir.is_dir():
+        return issues
+    workflow_paths = sorted({*workflows_dir.glob("*.yml"), *workflows_dir.glob("*.yaml")})
+    if not workflow_paths:
+        return issues
+
+    pins_table, pins_error = _load_action_pins_table(root)
+    if pins_error is not None:
+        issues.append(pins_error)
+    used_pins: set[str] = set()
+
+    for path in workflow_paths:
+        if not path.is_file():
+            continue
+        relative = path.relative_to(root).as_posix()
+        block_indent: int | None = None
+        for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            stripped = line.lstrip(" ")
+            indent = len(line) - len(stripped)
+            if block_indent is not None:
+                if not stripped or indent > block_indent:
+                    continue
+                block_indent = None
+
+            if not stripped or stripped.startswith("#"):
+                continue
+
+            plain_match = WORKFLOW_PLAIN_USES_LINE.match(line)
+            if plain_match:
+                raw_value = (plain_match.group(1) or "").strip()
+                header_match = WORKFLOW_BLOCK_SCALAR_HEADER.match(line)
+                if header_match:
+                    block_indent = len(header_match.group(1))
+                if WORKFLOW_LOCAL_ACTION.fullmatch(raw_value):
+                    continue
+                pinned_match = WORKFLOW_PINNED_ACTION.fullmatch(raw_value)
+                if not pinned_match:
+                    issues.append(
+                        f"unpinned workflow action in {relative}:{line_no}: {raw_value or '<empty>'} "
+                        "(expected './...' or 'owner/repo[/path]@<40-lowercase-hex> # <version>')"
+                    )
+                    continue
+                repo, sha = pinned_match.group(1), pinned_match.group(2)
+                comment_tag = pinned_match.group(3).strip()
+                pin_key = f"{repo}@{sha}"
+                used_pins.add(pin_key)
+                if pins_table is not None:
+                    expected_tag = pins_table.get(pin_key)
+                    if expected_tag is None:
+                        issues.append(
+                            f"workflow action pin in {relative}:{line_no} is missing from tests/action_pins.json: {pin_key}"
+                        )
+                    elif comment_tag != expected_tag:
+                        issues.append(
+                            f"workflow action pin comment in {relative}:{line_no} for {pin_key} is {comment_tag!r}, "
+                            f"expected {expected_tag!r} from tests/action_pins.json"
+                        )
+                continue
+
+            code_only = _strip_yaml_comment(line)
+            if not WORKFLOW_RUN_INLINE.match(code_only):
+                feature = workflow_syntax_issue(code_only)
+                if feature is not None:
+                    issues.append(
+                        f"unsupported YAML in {relative}:{line_no}: {feature}; "
+                        "workflows use plain 'key: value' lines only"
+                    )
+                    continue
+            if not WORKFLOW_RUN_INLINE.match(code_only) and WORKFLOW_ANY_USES_KEY.search(code_only):
+                issues.append(
+                    f"unsupported uses syntax in {relative}:{line_no}: {stripped} "
+                    "(use the canonical line 'uses: owner/repo@<40-hex> # <version>' or 'uses: ./path')"
+                )
+                continue
+
+            header_match = WORKFLOW_BLOCK_SCALAR_HEADER.match(line)
+            if header_match:
+                block_indent = len(header_match.group(1))
+    if pins_table is not None:
+        for stale in sorted(set(pins_table) - used_pins):
+            issues.append(f"tests/action_pins.json lists a pin no workflow uses: {stale}")
+    return issues
+
+
+def scan_repository_files(root: Path) -> list[str]:
+    """Scan Git-listed repository files for forbidden files, secrets, paths, links and markers."""
+    files, list_errors = repo_files(root)
+    failures: list[str] = list(list_errors)
+
+    for path in files:
+        if ".git" in path.parts:
             continue
         if path.name in FORBIDDEN_NAMES or path.suffix.lower() in {".key", ".pem", ".p12", ".pfx"}:
-            failures.append(f"forbidden credential-like file: {path.relative_to(ROOT)}")
+            failures.append(f"forbidden credential-like file: {path.relative_to(root)}")
         try:
             content = path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             content = ""
-        relative = path.relative_to(ROOT).as_posix()
+        except OSError as exc:
+            failures.append(f"cannot read repository file {path.relative_to(root)}: {exc.strerror or exc}")
+            continue
+        relative = path.relative_to(root).as_posix()
         if unexpected_matches(SECRET_LIKE, content, relative):
-            failures.append(f"secret-like value in {path.relative_to(ROOT)}")
+            failures.append(f"secret-like value in {path.relative_to(root)}")
         if unexpected_matches(PERSONAL_PATH, content, relative):
-            failures.append(f"personal absolute path in {path.relative_to(ROOT)}")
+            failures.append(f"personal absolute path in {path.relative_to(root)}")
         non_neutral = non_neutral_hostname_examples(content)
         if non_neutral:
             failures.append(
-                f"non-neutral hostname namespace(s) in {path.relative_to(ROOT)}: "
+                f"non-neutral hostname namespace(s) in {path.relative_to(root)}: "
                 + ", ".join(sorted(non_neutral))
             )
         if path.suffix == ".md" and BARE_KVM_MODEL.search(content):
             failures.append(
-                f"bare remote-KVM model shorthand in {path.relative_to(ROOT)}"
+                f"bare remote-KVM model shorthand in {path.relative_to(root)}"
             )
         if path.suffix != ".md" or codeflow_managed(relative):
             continue
@@ -295,17 +573,22 @@ def main() -> int:
                 continue
             if not resolved.exists():
                 failures.append(
-                    f"broken relative link in {path.relative_to(ROOT)}: {target}"
+                    f"broken relative link in {path.relative_to(root)}: {target}"
                 )
                 continue
             if anchor and resolved.suffix == ".md":
                 headings = markdown_headings(resolved.read_text(encoding="utf-8"))
                 if anchor not in headings:
                     failures.append(
-                        f"broken heading link in {path.relative_to(ROOT)}: {raw_target}"
+                        f"broken heading link in {path.relative_to(root)}: {raw_target}"
                     )
         if PLACEHOLDER.search(text):
-            failures.append(f"unfinished marker in {path.relative_to(ROOT)}")
+            failures.append(f"unfinished marker in {path.relative_to(root)}")
+    return failures
+
+
+def main() -> int:
+    failures: list[str] = scan_repository_files(ROOT)
 
     required_executables = [
         *ROOT.glob("scripts/*.sh"),
@@ -377,6 +660,7 @@ def main() -> int:
     if "./gitleaks git" not in workflow_text:
         failures.append("hosted secret scan does not use the supported Gitleaks git command")
 
+    failures.extend(workflow_action_pin_issues(ROOT))
     failures.extend(agents_manual_issues(ROOT))
     failures.extend(fleetctl_run_apply_issues(ROOT))
 
