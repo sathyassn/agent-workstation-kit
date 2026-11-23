@@ -65,6 +65,7 @@ SYNTHETIC_CLEAN_FIXTURE_PATH = Path("tests/fixtures/public_scan/clean_fixture.tx
 KEY_ENV_VAR = "PUBLIC_SCAN_HMAC_KEY"
 KEY_FILE_ENV_VAR = "PUBLIC_SCAN_HMAC_KEY_FILE"
 SYNTHETIC_ENV_VAR = "PUBLIC_SCAN_SYNTHETIC"
+GITHUB_ACTIONS_ENV_VAR = "GITHUB_ACTIONS"
 
 MIN_KEY_BYTES = 16
 MAX_KEY_FILE_BYTES = 4096
@@ -102,12 +103,17 @@ class RuleSet:
     algorithm: str
     rules: tuple[KeyedRule, ...]
 
+    @property
+    def digest_count(self) -> int:
+        return sum(len(rule.digests) for rule in self.rules)
+
 
 @dataclass(frozen=True)
 class KeyMaterial:
     key: bytes
     synthetic: bool
     source: str
+    local_fallback: bool = False
 
 
 @dataclass(frozen=True)
@@ -347,15 +353,22 @@ def load_key_from_file(
     return _parse_key_text(raw_text)
 
 
+def is_github_actions(environ: Mapping[str, str]) -> bool:
+    """Return True when GITHUB_ACTIONS indicates a GitHub Actions runner."""
+    value = environ.get(GITHUB_ACTIONS_ENV_VAR, "").strip().lower()
+    return value not in ("", "0", "false")
+
+
 def resolve_key_material(
     root: Path,
     *,
     tracked: Sequence[str] | None,
     key_file: Path | None = None,
     synthetic_flag: bool = False,
+    allow_local_fallback: bool = False,
     environ: Mapping[str, str] | None = None,
 ) -> KeyMaterial:
-    """Resolve private or synthetic HMAC key material, failing closed on any gap."""
+    """Resolve private or synthetic HMAC key material, failing closed in CI or on misconfiguration."""
     env = os.environ if environ is None else environ
 
     synthetic_env = env.get(SYNTHETIC_ENV_VAR, "")
@@ -404,6 +417,13 @@ def resolve_key_material(
         if default_path.exists() or default_path.is_symlink():
             key_bytes = load_key_from_file(default_path, root=root, tracked=tracked)
             source = str(DEFAULT_LOCAL_KEY_PATH)
+        elif allow_local_fallback and not is_github_actions(env):
+            return KeyMaterial(
+                key=load_synthetic_key(root),
+                synthetic=True,
+                source=str(SYNTHETIC_KEY_PATH),
+                local_fallback=True,
+            )
         else:
             raise ScanConfigError(
                 "HMAC scan key is missing; provide PUBLIC_SCAN_HMAC_KEY, create untracked "
@@ -853,6 +873,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             tracked=tracked,
             key_file=args.key_file,
             synthetic_flag=args.synthetic,
+            allow_local_fallback=True,
         )
     except ScanConfigError as exc:
         failures.append(str(exc))
@@ -867,7 +888,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     active_rules: RuleSet | None = prod_rules
     if key_material is not None and key_material.synthetic:
         synthetic_rules_path = (
-            args.rules_file if args.rules_file is not None else (root / SYNTHETIC_RULES_PATH)
+            (root / SYNTHETIC_RULES_PATH)
+            if key_material.local_fallback or args.rules_file is None
+            else args.rules_file
         )
         try:
             active_rules = load_rules(
@@ -877,7 +900,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             active_rules = None
             failures.append(str(exc))
         else:
-            if args.rules_file is None:
+            if key_material.local_fallback or args.rules_file is None:
                 failures.extend(
                     verify_synthetic_fixtures(
                         root, rules=active_rules, key=key_material.key
@@ -895,18 +918,43 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
 
     if failures:
+        if key_material is not None and key_material.local_fallback:
+            print("WARNING: keyed private-name rules not checked locally; CI runs them.")
         print("Public release checks failed:")
         for failure in failures:
             print(f"- {failure}")
         return 1
 
     qualifier = "draft " if args.allow_missing_license else ""
-    if key_material is not None and key_material.synthetic:
+    if key_material is not None and key_material.local_fallback:
+        print("WARNING: keyed private-name rules not checked locally; CI runs them.")
+        print(
+            f"Deterministic public-release {qualifier}checks passed (local synthetic scan); "
+            "complete docs/13-public-release-checklist.md before publication."
+        )
+    elif key_material is not None and key_material.synthetic:
         print(
             f"Deterministic public-release {qualifier}checks passed (public synthetic scan); "
             "a maintainer must run the keyed scan on this revision before merge."
         )
+    elif active_rules is not None and active_rules.digest_count == 0:
+        print(
+            "WARNING: no keyed rules populated; keyed scan checked 0 digests "
+            "(see docs/13-public-release-checklist.md)."
+        )
+        print(
+            f"Deterministic public-release {qualifier}checks passed (no keyed rules populated); "
+            "complete docs/13-public-release-checklist.md before publication."
+        )
     else:
+        if active_rules is not None:
+            empty_rules = [rule.rule_id for rule in active_rules.rules if not rule.digests]
+            if empty_rules:
+                print(
+                    "WARNING: keyed rule(s) have no digests populated: "
+                    + ", ".join(empty_rules)
+                    + "."
+                )
         print(
             f"Deterministic public-release {qualifier}checks passed; "
             "complete docs/13-public-release-checklist.md before publication."

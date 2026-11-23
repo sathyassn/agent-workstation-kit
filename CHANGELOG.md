@@ -36,6 +36,10 @@ step is in [docs/maintenance/releasing.md](docs/maintenance/releasing.md).
 - An interrupted resource-policy apply no longer blocks `--revert`.
 - The memory reserve is a share of RAM: `resources.os_memory_reserve_percent` and `--memory-reserve-percent` replace the deprecated `os_memory_reserve_gib` and `--memory-reserve-gib`; the schema migration check accepts that rename.
 
+### Security
+
+- Keyed HMAC-SHA256 public-safety scan (`tests/check_public_release.py`, `tests/public_scan_rules.json`, `.github/workflows/ci.yml`) matches personal and private network names by digest only, fails closed in same-repository CI on a missing key or failed/empty Git file listing, isolates fork pull requests to synthetic fixtures, falls back to synthetic checks with an explicit warning on keyless local runs, and warns when no keyed digests are populated.
+
 ## [0.2.0-rc.7] - 2026-11-20
 
 ### Added

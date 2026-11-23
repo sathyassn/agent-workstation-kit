@@ -79,6 +79,63 @@ run hosted CI -> protect main -> delete bootstrap branch
 This one-time bootstrap preserves the reviewed history and never pushes directly
 to the protected local branch. It is only valid for a new, empty repository.
 
+## Keyed public-safety scan
+
+`tests/check_public_release.py` scans tracked files for private personal names
+and private network names using HMAC-SHA256 digests stored in
+`tests/public_scan_rules.json`. The rule file holds only lowercase 64-character
+hex digests and never stores plaintext names.
+
+- Same-repository CI (`Run public-release gate` in `.github/workflows/ci.yml`)
+  runs `make public-check` with `secrets.PUBLIC_SCAN_HMAC_KEY` and fails closed
+  when the key is missing or empty.
+- Fork pull requests run the public synthetic scan (`PUBLIC_SCAN_SYNTHETIC=1`)
+  and never receive secrets; a maintainer runs the keyed scan on the revision
+  before merge.
+- Local runs without a key fall back to the synthetic scan, print
+  `WARNING: keyed private-name rules not checked locally; CI runs them.`, and
+  exit 0 when all other checks pass.
+- Until digests are populated in `tests/public_scan_rules.json`, a keyed scan
+  prints `no keyed rules populated` instead of passing silently.
+
+Owner setup:
+
+1. Create the untracked local key file (at least 16 bytes; 32 random bytes
+   recommended, owner-readable only):
+
+   ```bash
+   install -d -m 0700 .secrets
+   umask 077
+   python3 -c 'import secrets; print(secrets.token_hex(32))' > .secrets/public-scan-hmac
+   ```
+
+   Never commit `.secrets/public-scan-hmac`. `.gitignore` excludes `.secrets/`,
+   and the scanner fails closed if a key file is tracked, symlinked, or
+   group/world-readable.
+
+2. Set the GitHub Actions repository secret `PUBLIC_SCAN_HMAC_KEY` to the exact
+   contents of `.secrets/public-scan-hmac` (in GitHub under **Settings ->
+   Secrets and variables -> Actions -> Repository secrets**, or with
+   `gh secret set PUBLIC_SCAN_HMAC_KEY < .secrets/public-scan-hmac`).
+
+3. Compute digests for private names from stdin without putting private values
+   in command arguments or shell history:
+
+   ```bash
+   python3 tests/check_public_release.py --hash-rule personal-name
+   python3 tests/check_public_release.py --hash-rule private-network-name
+   ```
+
+   Enter one value per line and press Ctrl-D (or pipe from a private file
+   outside the repository). Paste the resulting 64-hex digests into the
+   matching `digests` list in `tests/public_scan_rules.json`, run
+   `make public-check` to confirm the `no keyed rules populated` warning is
+   gone, and commit only `tests/public_scan_rules.json`.
+
+- [ ] `PUBLIC_SCAN_HMAC_KEY` is configured as a GitHub Actions repository secret.
+- [ ] `tests/public_scan_rules.json` is populated with HMAC-SHA256 digests and
+      keyed `make public-check` passes without the empty-rules warning.
+
 ## Private fleet repositories
 
 - [ ] Create personal and/or organization fleet repositories as private.

@@ -300,8 +300,9 @@ class PublicReleaseTests(unittest.TestCase):
             root = Path(directory)
             tracked = self.make_repository(root, include_license=True)
             cases = [
-                (["--root", str(root)], {}),
-                (["--root", str(root), "--allow-missing-license"], {}),
+                (["--root", str(root)], {"GITHUB_ACTIONS": "true"}),
+                (["--root", str(root), "--allow-missing-license"], {"GITHUB_ACTIONS": "true"}),
+                (["--root", str(root)], {"GITHUB_ACTIONS": "true", "PUBLIC_SCAN_HMAC_KEY": ""}),
                 (["--root", str(root)], {"PUBLIC_SCAN_HMAC_KEY": ""}),
                 (["--root", str(root)], {"PUBLIC_SCAN_HMAC_KEY": "   \n"}),
                 (["--root", str(root)], {"PUBLIC_SCAN_HMAC_KEY": "too-short"}),
@@ -313,6 +314,182 @@ class PublicReleaseTests(unittest.TestCase):
                 with self.subTest(argv=argv, env=env):
                     code, output = self.run_main(argv, tracked=tracked, env=env)
                     self.assertEqual(1, code, output)
+                    self.assertNotIn(
+                        "keyed private-name rules not checked locally; CI runs them",
+                        output,
+                    )
+
+    def test_local_run_without_key_warns_runs_synthetic_and_exits_zero(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tracked = self.make_repository(root, include_license=True)
+            for argv in (
+                ["--root", str(root)],
+                ["--root", str(root), "--allow-missing-license"],
+            ):
+                with self.subTest(argv=argv):
+                    code, output = self.run_main(argv, tracked=tracked, env={})
+                    self.assertEqual(0, code, output)
+                    self.assertIn(
+                        "keyed private-name rules not checked locally; CI runs them",
+                        output,
+                    )
+
+            # Local fallback must still enforce synthetic scan matches on tracked files.
+            canary_doc = root / "docs/canary-leak.md"
+            canary_doc.parent.mkdir(parents=True, exist_ok=True)
+            canary_doc.write_text(f"owner = {SYNTH_PERSON}\n", encoding="utf-8")
+            code, output = self.run_main(
+                ["--root", str(root)],
+                tracked=[*tracked, "docs/canary-leak.md"],
+                env={},
+            )
+            self.assertEqual(1, code, output)
+            self.assertIn("docs/canary-leak.md:1: matched keyed rule 'personal-name'", output)
+            canary_doc.unlink()
+
+            # Local fallback must still reject a corrupted production rule file.
+            (root / "tests/public_scan_rules.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "algorithm": "hmac-sha256",
+                        "rules": [
+                            {"id": "personal-name", "digests": ["plaintext-name"]},
+                            {"id": "private-network-name", "digests": []},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            code, output = self.run_main(["--root", str(root)], tracked=tracked, env={})
+            self.assertEqual(1, code, output)
+            self.assertNotIn("plaintext-name", output)
+
+            # Hash generation mode must never silently fall back to the public synthetic key.
+            stdout = io.StringIO()
+            stdin = io.StringIO(f"{SYNTH_PERSON}\n")
+            with (
+                mock.patch.object(sys, "stdin", stdin),
+                mock.patch.dict(os.environ, {}, clear=True),
+                contextlib.redirect_stdout(stdout),
+            ):
+                hash_code = public_release.main(
+                    ["--root", str(root), "--hash-rule", "personal-name"]
+                )
+            self.assertEqual(1, hash_code, stdout.getvalue())
+
+    def test_github_actions_same_repo_without_key_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tracked = self.make_repository(root, include_license=True)
+            cases = [
+                (["--root", str(root)], {"GITHUB_ACTIONS": "true"}),
+                (["--root", str(root), "--allow-missing-license"], {"GITHUB_ACTIONS": "true"}),
+                (
+                    ["--root", str(root)],
+                    {"GITHUB_ACTIONS": "true", "PUBLIC_SCAN_HMAC_KEY": ""},
+                ),
+                (
+                    ["--root", str(root)],
+                    {"GITHUB_ACTIONS": "1"},
+                ),
+            ]
+            for argv, env in cases:
+                with self.subTest(argv=argv, env=env):
+                    code, output = self.run_main(argv, tracked=tracked, env=env)
+                    self.assertEqual(1, code, output)
+                    self.assertNotIn(
+                        "keyed private-name rules not checked locally; CI runs them",
+                        output,
+                    )
+
+    def test_github_actions_fork_synthetic_exits_zero(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tracked = self.make_repository(root, include_license=True)
+            code, output = self.run_main(
+                ["--root", str(root)],
+                tracked=tracked,
+                env={"GITHUB_ACTIONS": "true", "PUBLIC_SCAN_SYNTHETIC": "1"},
+            )
+            self.assertEqual(0, code, output)
+            self.assertIn("synthetic", output.lower())
+            self.assertIn("maintainer", output.lower())
+            self.assertNotIn(
+                "keyed private-name rules not checked locally; CI runs them",
+                output,
+            )
+
+    def test_keyed_scan_with_empty_digest_lists_prints_explicit_message(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tracked = self.make_repository(root, include_license=True)
+            for env in (
+                {"PUBLIC_SCAN_HMAC_KEY": TEST_PRIVATE_KEY},
+                {"GITHUB_ACTIONS": "true", "PUBLIC_SCAN_HMAC_KEY": TEST_PRIVATE_KEY},
+            ):
+                with self.subTest(env=env):
+                    code, output = self.run_main(
+                        ["--root", str(root)],
+                        tracked=tracked,
+                        env=env,
+                    )
+                    self.assertEqual(0, code, output)
+                    self.assertIn("no keyed rules populated", output)
+
+            # Once one rule has a digest, report only the still-empty rule.
+            key = TEST_PRIVATE_KEY.encode("utf-8")
+            person_digest = public_release.compute_digest(
+                key, "personal-name", "populated-only-test-person"
+            )
+            net_digest = public_release.compute_digest(
+                key, "private-network-name", "populated-only-test.internal"
+            )
+            (root / "tests/public_scan_rules.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "algorithm": "hmac-sha256",
+                        "rules": [
+                            {"id": "personal-name", "digests": [person_digest]},
+                            {"id": "private-network-name", "digests": []},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            code, output = self.run_main(
+                ["--root", str(root)],
+                tracked=tracked,
+                env={"PUBLIC_SCAN_HMAC_KEY": TEST_PRIVATE_KEY},
+            )
+            self.assertEqual(0, code, output)
+            self.assertNotIn("no keyed rules populated", output)
+            self.assertIn("private-network-name", output)
+
+            # Once all rules have digests, no empty-rule warning is printed.
+            (root / "tests/public_scan_rules.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "algorithm": "hmac-sha256",
+                        "rules": [
+                            {"id": "personal-name", "digests": [person_digest]},
+                            {"id": "private-network-name", "digests": [net_digest]},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            code, output = self.run_main(
+                ["--root", str(root)],
+                tracked=tracked,
+                env={"PUBLIC_SCAN_HMAC_KEY": TEST_PRIVATE_KEY},
+            )
+            self.assertEqual(0, code, output)
+            self.assertNotIn("no keyed rules populated", output)
+            self.assertNotIn("have no digests populated", output)
 
     def test_synthetic_key_refused_in_private_mode_and_ambiguous_sources_refused(self) -> None:
         synthetic_key = (
@@ -746,6 +923,7 @@ class PublicReleaseTests(unittest.TestCase):
             same_repo_step,
         )
         self.assertNotIn("PUBLIC_SCAN_SYNTHETIC", same_repo_step)
+        self.assertNotIn("GITHUB_ACTIONS", same_repo_step)
         self.assertIn("run: make public-check", same_repo_step)
 
         fork_step = steps["Run public-release gate (fork synthetic scan)"]
