@@ -518,5 +518,24 @@ class FourthReviewTests(unittest.TestCase):
         self.assertTrue(scan_line("owner " + PERSON + "\\u0301xyz"))
 
 
+
+class FifthReviewTests(unittest.TestCase):
+    """Regression tests for the fifth security review of PR #24."""
+
+    def test_a_format_character_between_words_does_not_join_them(self) -> None:
+        for code in ("200b", "200d", "2060"):
+            raw = chr(int(code, 16))
+            for form in (raw, "\\u" + code):
+                with self.subTest(char=code, escaped=form != raw):
+                    self.assertTrue(scan_line("owner " + PERSON + form + "xyz"))
+
+    def test_a_format_character_inside_a_name_still_joins_it(self) -> None:
+        for code in ("200b", "200d", "2060"):
+            raw = chr(int(code, 16))
+            for form in (raw, "\\u" + code):
+                with self.subTest(char=code, escaped=form != raw):
+                    self.assertTrue(scan_line("owner alpha" + form + "person73"))
+
+
 if __name__ == "__main__":
     unittest.main()

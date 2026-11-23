@@ -258,39 +258,48 @@ def _decode_json_escapes(text: str) -> str:
 _APOSTROPHE_TABLE = {ord(ch): None for ch in APOSTROPHES}
 
 
-def normalize_text(text: str, strip_marks: bool = True) -> str:
+def normalize_text(text: str, separate: bool = False) -> str:
     """Canonicalise text before tokenising (cached for short lines)."""
     if len(text) <= CACHE_LINE_CHARS:
-        return _normalize_text_cached(text, strip_marks)
-    return _normalize_text(text, strip_marks)
+        return _normalize_text_cached(text, separate)
+    return _normalize_text(text, separate)
 
 
 @functools.lru_cache(maxsize=CACHE_LINES)
-def _normalize_text_cached(text: str, strip_marks: bool) -> str:
-    return _normalize_text(text, strip_marks)
+def _normalize_text_cached(text: str, separate: bool) -> str:
+    return _normalize_text(text, separate)
 
 
-def _normalize_text(text: str, strip_marks: bool) -> str:
+def _normalize_text(text: str, separate: bool) -> str:
     """Canonicalise text before tokenising, keeping case for camelCase splits.
 
     JSON unicode escapes are decoded, then NFKC folds compatibility forms (a
     fullwidth dot becomes "."), format and zero-width characters and combining
     marks are removed (so accents fold: "José" matches "Jose"), Latin
     lookalikes are folded and apostrophes are dropped, so "O'Brien" and
-    "OBrien" give the same token. With strip_marks false, combining marks are
-    kept, so a mark that separates two words still separates them.
+    "OBrien" give the same token. With separate true, the text is composed
+    first and each remaining format character or combining mark becomes a
+    space instead, so one placed between a name and a suffix still separates
+    them; the scanner tokenises both forms.
     """
     if text.isascii() and "\\u" not in text:
         # NFKC, format characters and lookalikes cannot change ASCII text.
         return text.translate(_APOSTROPHE_TABLE)
     decoded = _decode_json_escapes(text)
     if not decoded.isascii():
-        # Decompose, drop format characters and combining marks (so an accent
-        # or a mark between octets cannot split a token), then recompose.
-        decoded = unicodedata.normalize("NFKD", decoded)
-        dropped = ("Cf", "Mn") if strip_marks else ("Cf",)
-        decoded = "".join(ch for ch in decoded if unicodedata.category(ch) not in dropped)
-        decoded = unicodedata.normalize("NFKC", decoded).translate(CONFUSABLES)
+        if separate:
+            # Compose, so ordinary accented letters stay whole, then turn each
+            # remaining format character or mark into a word break.
+            decoded = unicodedata.normalize("NFKC", decoded)
+            decoded = "".join(" " if unicodedata.category(ch) in ("Cf", "Mn") else ch for ch in decoded)
+            decoded = decoded.translate(CONFUSABLES)
+        else:
+            # Decompose, drop format characters and combining marks (so an
+            # accent or a mark between octets cannot split a token), then
+            # recompose.
+            decoded = unicodedata.normalize("NFKD", decoded)
+            decoded = "".join(ch for ch in decoded if unicodedata.category(ch) not in ("Cf", "Mn"))
+            decoded = unicodedata.normalize("NFKC", decoded).translate(CONFUSABLES)
     return decoded.translate(_APOSTROPHE_TABLE)
 
 
@@ -356,12 +365,12 @@ def _extract_candidates(line: str) -> set[str]:
     candidates: set[str] = set()
     _candidates_from(normalize_text(line), candidates)
     if not line.isascii() or "\\u" in line:
-        # Also tokenise with combining marks kept (decided on the decoded
-        # text, so an escaped mark counts as one): removing a mark that sits
-        # between two words would otherwise join them into one token.
-        kept = normalize_text(line, strip_marks=False)
-        if kept != normalize_text(line):
-            _candidates_from(kept, candidates)
+        # Also tokenise with format characters and marks as word breaks
+        # (decided on the decoded text, so an escaped one counts too):
+        # deleting one that sits between two words would otherwise join them.
+        separated = normalize_text(line, separate=True)
+        if separated != normalize_text(line):
+            _candidates_from(separated, candidates)
     return candidates
 
 

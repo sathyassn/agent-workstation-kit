@@ -108,7 +108,8 @@ above 255, is not an address.
 
 Before matching, text is normalised: JSON `\u` escapes are decoded,
 compatibility forms are folded (NFKD, then NFKC), format and zero-width
-characters and combining marks are removed (so accents fold), Latin
+characters and combining marks are removed (so accents fold) and, in a
+second pass, read as word breaks, Latin
 lookalikes from Cyrillic and Greek are folded, and apostrophes are dropped.
 Punctuation inside a word is also tried deleted, so `ab!cd` is read as `abcd`. A name split across two
 lines, with or without a hyphen, is still found. Files must be UTF-8 or UTF-16
