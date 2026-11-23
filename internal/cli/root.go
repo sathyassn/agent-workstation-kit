@@ -382,8 +382,7 @@ func newCompletionCommand(flags *sharedFlags) *cobra.Command {
 
 // writeCompletion prints sh's completion script. The man page ADR 0005
 // section 2b asks for alongside completions is deferred to TSK-039 under
-// EPC-025, the generated reference, which adds its generator to the
-// registry.
+// EPC-003, the CLI epic, which adds its generator to the registry.
 func writeCompletion(root *cobra.Command, sh Shell, w io.Writer) error {
 	var err error
 	switch sh {
