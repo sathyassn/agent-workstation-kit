@@ -153,14 +153,21 @@ func compileEventSchema(t *testing.T) *jsonschema.Schema {
 
 func count(t *testing.T, e contract.Event) uint64 {
 	t.Helper()
-	if e.Kind != contract.EventCoalesced {
+	if e.Kind != contract.EventCoalesced && !isSkipped(e) {
 		return 1
 	}
 	n, err := strconv.ParseUint(e.Data[contract.DataCount], 10, 64)
 	if err != nil || n < 2 {
-		t.Fatalf("coalesced event %d has count %q, want an integer of at least 2", e.Seq, e.Data[contract.DataCount])
+		t.Fatalf("event %d (%s) has count %q, want an integer of at least 2", e.Seq, e.Kind, e.Data[contract.DataCount])
 	}
 	return n
+}
+
+// isSkipped reports whether e is the UI's marker for progress updates
+// skipped while the UI was stalled: a progress event with a count.
+func isSkipped(e contract.Event) bool {
+	_, ok := e.Data[contract.DataCount]
+	return e.Kind == contract.EventProgress && ok
 }
 
 // sameEvent compares events, treating nil and empty Data as equal: the run
@@ -191,9 +198,11 @@ func segments(sent []contract.Event) (map[uint64]uint64, uint64) {
 
 // checkOrder fails unless got, the events seen by the UI or written to the
 // run log, has increasing sequence numbers, holds every non-progress event of
-// sent unchanged, and accounts between each two non-progress events for
-// exactly the progress events sent between them, so no progress shows after
-// a non-progress event it preceded, or before one it followed.
+// sent unchanged, and accounts for every progress event of sent exactly
+// once. A progress or coalesced event covers only progress sent between the
+// same two non-progress events, so no progress shows after a non-progress
+// event it preceded. Only a skipped marker may also cover progress from
+// earlier runs, which it reports as skipped.
 func checkOrder(t *testing.T, where string, got, sent []contract.Event) {
 	t.Helper()
 	nonProgress := map[uint64]contract.Event{}
@@ -203,24 +212,32 @@ func checkOrder(t *testing.T, where string, got, sent []contract.Event) {
 		}
 	}
 	wantBefore, wantAfter := segments(sent)
-	var last, run uint64
+	// pending counts progress of earlier runs not yet shown; only a skipped
+	// marker may cover it.
+	var last, run, pending uint64
 	seen := 0
 	for _, e := range got {
 		if e.Seq <= last {
 			t.Fatalf("%s got seq %d after %d: the sequence must increase", where, e.Seq, last)
 		}
 		last = e.Seq
-		switch e.Kind {
-		case contract.EventProgress, contract.EventCoalesced:
+		switch {
+		case isSkipped(e):
+			n := count(t, e)
+			fromPending := min(n, pending)
+			pending -= fromPending
+			run += n - fromPending
+		case e.Kind == contract.EventProgress || e.Kind == contract.EventCoalesced:
 			run += count(t, e)
 		default:
 			want, ok := nonProgress[e.Seq]
 			if !ok || !sameEvent(e, want) {
 				t.Fatalf("%s got non-progress event %+v, want %+v", where, e, want)
 			}
-			if run != wantBefore[e.Seq] {
-				t.Fatalf("%s got %d progress events before seq %d, want %d", where, run, e.Seq, wantBefore[e.Seq])
+			if run > wantBefore[e.Seq] {
+				t.Fatalf("%s got %d progress events before seq %d, want at most %d", where, run, e.Seq, wantBefore[e.Seq])
 			}
+			pending += wantBefore[e.Seq] - run
 			run = 0
 			seen++
 		}
@@ -228,8 +245,9 @@ func checkOrder(t *testing.T, where string, got, sent []contract.Event) {
 	if seen != len(nonProgress) {
 		t.Fatalf("%s got %d of %d non-progress events", where, seen, len(nonProgress))
 	}
-	if run != wantAfter {
-		t.Fatalf("%s got %d progress events after the last non-progress event, want %d", where, run, wantAfter)
+	if run != wantAfter || pending != 0 {
+		t.Fatalf("%s got %d progress events after the last non-progress event, want %d, and left %d earlier ones unaccounted",
+			where, run, wantAfter, pending)
 	}
 }
 
@@ -808,5 +826,47 @@ func TestProgressDuringLogWriteReachesUI(t *testing.T) {
 	within(t, "non-progress Deliver", func() { <-done })
 	if err := s.Err(); err != nil {
 		t.Fatalf("Err: %v", err)
+	}
+}
+
+// TestStalledUIBoundsWaitingProgress alternates progress and warnings to a
+// UI nobody reads. The progress waiting for the UI must stay at or under the
+// cap throughout; once the UI reads, it gets every warning in order, and the
+// skipped counts plus the progress shown add up to the progress sent.
+//
+// It is not parallel: its 100,000 deliveries would take CPU from the tests
+// that time Deliver.
+func TestStalledUIBoundsWaitingProgress(t *testing.T) { //nolint:paralleltest // see above
+	const total = 100_000
+	// An in-memory log keeps 50,000 log writes within the race detector's
+	// time budget; the replay reads it as it grows.
+	runLog := &memLog{}
+	open := func() (io.ReadCloser, error) { return io.NopCloser(&liveReader{log: runLog}), nil }
+	ui := make(chan contract.Event, 1)
+	s := newSink(t, events.Options{Log: runLog, OpenLog: open, UI: ui})
+
+	sent := make([]contract.Event, 0, total)
+	peak := 0
+	for seq := uint64(1); seq <= total; seq++ {
+		kind := contract.EventProgress
+		if seq%2 == 0 {
+			kind = contract.EventWarning
+		}
+		e := event(seq, kind)
+		sent = append(sent, e)
+		s.Deliver(e)
+		n := s.UIWaitingLen()
+		if n > events.MaxUIWaiting {
+			t.Fatalf("after seq %d, %d progress batches wait for the UI, over the cap of %d", seq, n, events.MaxUIWaiting)
+		}
+		peak = max(peak, n)
+	}
+	if peak == 0 {
+		t.Fatal("no progress ever waited for the UI: the test did not stall it")
+	}
+
+	drainUI(t, ui, sent)
+	if err := s.Close(context.Background()); err != nil {
+		t.Fatalf("Close: %v", err)
 	}
 }

@@ -18,6 +18,15 @@ const (
 	// DefaultPendingProgress bounds the progress events held for the run
 	// log between two non-progress writes.
 	DefaultPendingProgress = 64
+	// maxUIWaiting caps the progress batches waiting for a stalled UI, to
+	// keep memory bounded (SPC-001 "Events"). Waiting progress is one batch
+	// per run between two non-progress events, so without a cap it grows
+	// with the backlog. Progress is lossy by design, and non-progress events
+	// are durable in the run log and replayed from it, so past the cap the
+	// oldest batches become one skipped marker.
+	maxUIWaiting = 8
+	// skippedText is the skipped marker's text; the verb is the count.
+	skippedText = "%d progress updates skipped"
 	// eventSchemaVersion is the schema_version of event.schema.json.
 	eventSchemaVersion = 1
 )
@@ -58,17 +67,29 @@ type Options struct {
 }
 
 // progressBatch is one progress event, or several coalesced into the latest.
-// All of them lie between the same two non-progress events.
+// All of them lie between the same two non-progress events, except in a
+// skipped marker.
 type progressBatch struct {
 	ev    contract.Event // the newest event; its Seq is the batch's Seq
 	first uint64         // Seq of the oldest event in the batch
 	n     uint64
+	// skipped marks batches merged over maxUIWaiting. The marker stays
+	// where its newest batch was, before the next non-progress event, and
+	// also counts progress from earlier runs that the UI never showed.
+	skipped bool
 }
 
-// event returns b as it is written or shown: the event itself, or an
-// EventCoalesced event carrying the count.
+// event returns b as it is written or shown: the event itself, an
+// EventCoalesced event carrying the count, or for a skipped marker an
+// EventProgress event saying how many updates were skipped, with the count.
 func (b progressBatch) event() contract.Event {
 	ev := cloneEvent(b.ev)
+	if b.skipped {
+		ev.Kind = contract.EventProgress
+		ev.Text = fmt.Sprintf(skippedText, b.n)
+		ev.Data = map[contract.DataKey]string{contract.DataCount: strconv.FormatUint(b.n, 10)}
+		return ev
+	}
 	if b.n > 1 {
 		ev.Kind = contract.EventCoalesced
 		if ev.Data == nil {
@@ -99,10 +120,11 @@ func (b progressBatch) event() contract.Event {
 //     the run between two non-progress events, and a non-progress event that
 //     cannot be sent is replayed later from the run log. Both are sent by one
 //     background worker, which merges them in Seq order and is the only
-//     sender while it runs. While the UI is stalled, the progress waiting for
-//     it is one batch per non-progress event it has not been sent. Close
-//     waits for the worker to send everything. Non-progress events are never
-//     coalesced or dropped.
+//     sender while it runs. While the UI is stalled, at most maxUIWaiting
+//     progress batches wait for it; past that, the oldest become one marker
+//     that says how many updates were skipped, with an exact count, placed
+//     before the next non-progress event. Close waits for the worker to send
+//     everything. Non-progress events are never coalesced or dropped.
 //   - The first run-log write error and the first replay error are kept and
 //     returned by Err. After a write error nothing more is written, because
 //     the log may end in a torn line. After a replay error the UI has
@@ -339,6 +361,18 @@ func (s *Sink) showProgressLocked(e contract.Event) {
 		return
 	}
 	s.uiWaiting = addProgress(s.uiWaiting, e, s.lastNonProgress, true)
+	if len(s.uiWaiting) > maxUIWaiting {
+		s.uiWaiting = skipOldest(s.uiWaiting)
+	}
+}
+
+// skipOldest merges the two oldest batches of waiting into one skipped
+// marker in the second one's place, so the count stays exact and the
+// marker never moves past a non-progress event.
+func skipOldest(waiting []progressBatch) []progressBatch {
+	a, b := waiting[0], waiting[1]
+	waiting[1] = progressBatch{ev: b.ev, first: a.first, n: a.n + b.n, skipped: true}
+	return waiting[1:]
 }
 
 // showLocked sends a non-progress event to the UI after the progress that
