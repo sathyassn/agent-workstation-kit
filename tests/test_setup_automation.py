@@ -298,10 +298,10 @@ class ExecutionAutomationTests(unittest.TestCase):
                         pass
             self.assertFalse((top / "run").exists())
 
-            # Existing run directory with mode looser than 0700 (e.g. 0755) is refused.
+            # Existing run directory with any other mode looser than 0700 (e.g. 0750) is refused.
             run_dir = top / "run"
-            run_dir.mkdir(mode=0o755)
-            run_dir.chmod(0o755)
+            run_dir.mkdir(mode=0o750)
+            run_dir.chmod(0o750)
             with mock.patch.object(execution.sys, "platform", "darwin"), \
                  mock.patch.object(execution.os, "geteuid", return_value=0), \
                  mock.patch.object(execution, "MACOS_LOCK_ROOT", base), \
@@ -310,6 +310,7 @@ class ExecutionAutomationTests(unittest.TestCase):
                     with execution.host_apply_lock():
                         pass
             self.assertFalse((run_dir / "privileged-setup.lock").exists())
+            self.assertEqual(0o750, run_dir.lstat().st_mode & 0o777)
             run_dir.rmdir()
 
             # Symlinked run directory is refused.
@@ -346,10 +347,29 @@ class ExecutionAutomationTests(unittest.TestCase):
                 with execution.host_apply_lock():
                     run_dir = base / "agent-workstation-kit"
                     self.assertEqual(0o700, run_dir.lstat().st_mode & 0o777)
+                # Upgrade: an earlier executor left the directory at 0755 with its
+                # lock file. It is tightened in place on the same inode and the
+                # existing lock file is reused.
+                lock_file = run_dir / "privileged-setup.lock"
+                lock_inode = lock_file.lstat().st_ino
                 run_dir.chmod(0o755)
+                dir_inode = run_dir.lstat().st_ino
+                with execution.host_apply_lock():
+                    self.assertEqual(0o700, run_dir.lstat().st_mode & 0o777)
+                    self.assertEqual(dir_inode, run_dir.lstat().st_ino)
+                    self.assertEqual(lock_inode, lock_file.lstat().st_ino)
+                # Any other loose mode is still refused and left unchanged.
+                run_dir.chmod(0o750)
                 with self.assertRaisesRegex(ValueError, "mode 0700.*" + re.escape(str(run_dir))):
                     with execution.host_apply_lock():
                         pass
+                self.assertEqual(0o750, run_dir.lstat().st_mode & 0o777)
+                # A group- or world-writable directory fails the ownership check first.
+                run_dir.chmod(0o775)
+                with self.assertRaisesRegex(ValueError, "not group/world writable"):
+                    with execution.host_apply_lock():
+                        pass
+                self.assertEqual(0o775, run_dir.lstat().st_mode & 0o777)
 
     def test_macos_ci_lock_verifier_contend_exit_codes(self):
         spec = importlib.util.spec_from_file_location("verify_macos_host_lock", ROOT / "tests/verify_macos_host_lock.py")

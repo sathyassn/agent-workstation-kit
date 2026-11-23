@@ -181,8 +181,29 @@ def _ensure_root_directory(path, mode=0o755, *, require_exact_mode=False):
     if path.is_symlink() or not stat.S_ISDIR(info.st_mode):
         raise ValueError("privileged lock directory must be a regular directory: " + str(path))
     secure_root_path(path)
+    if require_exact_mode and stat.S_IMODE(info.st_mode) == LEGACY_LOCK_DIRECTORY_MODE and mode == 0o700:
+        _tighten_legacy_directory(path, info, mode)
+        info = path.lstat()
     if require_exact_mode and stat.S_IMODE(info.st_mode) != mode:
         raise ValueError("privileged lock directory must have mode " + format(mode, "04o") + ": " + str(path))
+
+
+# Earlier executors created the Linux lock directory as 0755. Tighten exactly
+# that mode in place, on the same root-owned inode, so an upgraded host keeps
+# its lock file and contention behaviour. Any other mode is still refused.
+LEGACY_LOCK_DIRECTORY_MODE = 0o755
+
+
+def _tighten_legacy_directory(path, info, mode):
+    descriptor = os.open(str(path), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        opened = os.fstat(descriptor)
+        if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino) or opened.st_uid != 0 \
+                or stat.S_IMODE(opened.st_mode) != LEGACY_LOCK_DIRECTORY_MODE:
+            raise ValueError("privileged lock directory changed during migration: " + str(path))
+        os.fchmod(descriptor, mode)
+    finally:
+        os.close(descriptor)
 
 
 def host_lock_directory():
