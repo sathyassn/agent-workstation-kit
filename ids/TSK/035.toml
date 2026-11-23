@@ -1,0 +1,11 @@
+id = "TSK-035"
+uid = "03c87cdc-150a-4dcb-843b-551ecc2c918a"
+kind = "TSK"
+title = "StateProvider write in the contracts"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-23T20:34:02Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
