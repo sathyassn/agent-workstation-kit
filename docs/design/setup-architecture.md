@@ -95,7 +95,7 @@ What the code does today, and the problem each fact causes:
 
 | Fact | Where | Consequence |
 |---|---|---|
-| `fleetctl run PROFILE PHASE --apply` runs a phase script directly | `scripts/fleetctl.py` (end of `main`) | No executor, lock, receipt or staged-root check. It is documented in `docs/runbooks/day-zero-linux.md`, `docs/02-linux-setup.md` (twice), `docs/03-macos-setup.md` and `docs/01a-onboarding-profile.md`. |
+| `fleetctl run PROFILE PHASE --apply` exits 2 and prints the `setup-workstation.sh` executor handoff (preview and read-only `audit` stay) | `scripts/fleetctl.py` (`print_executor_handoff`, `main`) | Previously ran phase scripts directly with no executor, lock, receipt or staged-root check; fixed in the frozen code and guarded by `tests/check_repository.py`. `wskit` replaces both entry points. |
 | Some root scripts are in no scope | `install-local-deb-linux.sh`, `install-ms-s1-r8127-dkms.sh`; the allowlist is in `scripts/lib/setup_scopes.py` | Vendor packages (NoMachine, browsers, editors) and a kernel driver apply outside every safeguard. |
 | The host lock checks `/var/run` with `secure_root_path` | `execute-setup.py` `host_apply_lock` | On macOS, `/var/run` is `root:daemon 0775`, so the check fails and **every macOS root scope exits 2 today**. T1 fixes this. |
 | The executor previews, applies, verifies and writes a receipt keyed by an input digest | `execute-setup.py` `execute()`, `phase_input()` | Good base. There is no backup, no intent record and no log file. The digest includes the executor's own source, so T1 invalidates existing receipts. Phases are idempotent, so the next run reapplies and re-records them. |

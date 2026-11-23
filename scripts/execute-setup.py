@@ -170,7 +170,7 @@ MACOS_LOCK_ROOT = Path("/Library/Application Support")
 LINUX_LOCK_ROOT = Path("/run")
 
 
-def _ensure_root_directory(path, mode=0o755):
+def _ensure_root_directory(path, mode=0o755, *, require_exact_mode=False):
     try:
         path.mkdir(mode=mode)
     except FileExistsError:
@@ -181,6 +181,8 @@ def _ensure_root_directory(path, mode=0o755):
     if path.is_symlink() or not stat.S_ISDIR(info.st_mode):
         raise ValueError("privileged lock directory must be a regular directory: " + str(path))
     secure_root_path(path)
+    if require_exact_mode and stat.S_IMODE(info.st_mode) != mode:
+        raise ValueError("privileged lock directory must have mode " + format(mode, "04o") + ": " + str(path))
 
 
 def host_lock_directory():
@@ -189,12 +191,12 @@ def host_lock_directory():
         top = MACOS_LOCK_ROOT / "agent-workstation-kit"
         _ensure_root_directory(top, 0o755)
         directory = top / "run"
-        _ensure_root_directory(directory, 0o755)
+        _ensure_root_directory(directory, 0o700, require_exact_mode=True)
         return directory
     runtime = LINUX_LOCK_ROOT.resolve()
     secure_root_path(runtime)
     directory = runtime / "agent-workstation-kit"
-    _ensure_root_directory(directory, 0o755)
+    _ensure_root_directory(directory, 0o700, require_exact_mode=True)
     return directory
 
 

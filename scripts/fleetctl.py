@@ -565,56 +565,114 @@ def phase_for(
 
 
 PHASES = ("base", "identity", "accounts", "remote-hardening", "agentctl", "shell", "user-tooling", "workloads", "resources", "audit")
-PHASE_SCOPE = {
-    "base": "packages",
-    "identity": "machine",
-    "accounts": "machine",
-    "remote-hardening": "machine",
-    "agentctl": "machine",
-    "shell": "agent",
-    "user-tooling": "agent",
-    "workloads": "machine (Linux) or agent (macOS)",
-    "resources": "resources",
-    "audit": "audit",
-}
 
 
-def print_executor_handoff(args: argparse.Namespace) -> None:
+def scope_for_phase(phase_name: str, platform: str) -> str | None:
+    sys.path.insert(0, str(ROOT / "scripts/lib"))
+    from setup_scopes import SCOPES
+    for scope, phases in SCOPES.get(platform, {}).items():
+        if phase_name in phases:
+            return scope
+    return None
+
+
+def print_executor_handoff(args: argparse.Namespace, profile: dict[str, Any]) -> None:
+    sys.path.insert(0, str(ROOT / "scripts/lib"))
+    from setup_scopes import expected_owner
+
+    platform = profile["machine"]["platform"]
+    hostname = profile["machine"]["hostname"]
+    scope = scope_for_phase(args.phase, platform)
+    if scope is None:
+        phase = phase_for(profile, args.phase, apply=False, recovery=False)
+        print(f"ERROR {args.phase}: {phase.note}", file=sys.stderr)
+        return
+
     fleet = str(args.fleet_root) if args.fleet_root else "FLEET"
-    profile = str(args.profile)
-    scope = PHASE_SCOPE.get(args.phase, "SCOPE")
-    scope_arg = scope if " " not in scope else "SCOPE"
+    profile_arg = str(args.profile)
+    owner = expected_owner(args.phase, platform)
+    is_root = owner == "root"
+
+    base_plan = [
+        "scripts/setup-workstation.sh", "plan",
+        "--fleet-root", fleet,
+        "--profile", profile_arg,
+        "--confirm-recovery-tested",
+    ]
+    if args.connection_context == "tailscale-ssh":
+        plan_commands = [
+            (
+                "Export the execution plan (Tailscale SSH)",
+                [*base_plan, "--connection-context", "tailscale-ssh", "--ssh-source-ip", args.ssh_source_ip or "SSH_SOURCE_IP", "--export-plan", "PRIVATE/execution-plan.json"],
+            ),
+        ]
+    elif args.connection_context == "local-console":
+        plan_commands = [
+            (
+                "Export the execution plan (local console)",
+                [*base_plan, "--connection-context", "local-console", "--export-plan", "PRIVATE/execution-plan.json"],
+            ),
+        ]
+    else:
+        plan_commands = [
+            (
+                "Export the execution plan (local console)",
+                [*base_plan, "--connection-context", "local-console", "--export-plan", "PRIVATE/execution-plan.json"],
+            ),
+            (
+                "Or over Tailscale SSH (capture ssh_peer=${SSH_CONNECTION%% *} before sudo)",
+                [*base_plan, "--connection-context", "tailscale-ssh", "--ssh-source-ip", "SSH_SOURCE_IP", "--export-plan", "PRIVATE/execution-plan.json"],
+            ),
+        ]
+
+    if is_root:
+        preview_cmd = [
+            "sudo", "/bin/bash",
+            "/opt/agent-workstation-kit/scripts/setup-workstation.sh", "run",
+            "--plan-file", "/opt/agent-workstation-fleet/plans/execution-plan.json",
+            "--scope", scope,
+        ]
+        apply_cmd = [
+            *preview_cmd,
+            "--apply",
+            "--approve-plan", "REVIEWED_EXECUTION_PLAN_ID",
+            "--confirm-target", hostname,
+            "--execution-context", "host",
+            "--confirm-recovery-tested",
+            "--journal", "/PRIVATE/ROOT_OWNED_DIRECTORY/setup.json",
+        ]
+    else:
+        preview_cmd = [
+            "scripts/setup-workstation.sh", "run",
+            "--plan-file", "PRIVATE/execution-plan.json",
+            "--scope", scope,
+        ]
+        apply_cmd = [
+            *preview_cmd,
+            "--apply",
+            "--approve-plan", "REVIEWED_EXECUTION_PLAN_ID",
+            "--confirm-target", hostname,
+            "--execution-context", "host",
+            "--journal", "/PRIVATE/PER_EXECUTOR_DIRECTORY/setup.json",
+        ]
+
     print(
         "ERROR run: fleetctl run --apply is disabled; apply only through "
         "scripts/setup-workstation.sh so locks, receipts, source digests and "
         "staged-root checks run.",
         file=sys.stderr,
     )
-    print(f"Scope for phase {args.phase!r}: {scope}", file=sys.stderr)
+    print(f"Scope for phase {args.phase!r} on {platform}: {scope} (run as {owner})", file=sys.stderr)
     print("Use the executor instead (preview first, then apply):", file=sys.stderr)
-    print(
-        f"  scripts/setup-workstation.sh plan --fleet-root {shlex.quote(fleet)} "
-        f"--profile {shlex.quote(profile)} --export-plan PRIVATE/execution-plan.json",
-        file=sys.stderr,
-    )
-    print(
-        f"  scripts/setup-workstation.sh run --plan-file PRIVATE/execution-plan.json "
-        f"--scope {scope_arg}",
-        file=sys.stderr,
-    )
-    print(
-        f"  scripts/setup-workstation.sh run --plan-file PRIVATE/execution-plan.json "
-        f"--scope {scope_arg} --apply --approve-plan ID --confirm-target HOST "
-        "--execution-context host --journal JOURNAL",
-        file=sys.stderr,
-    )
-    print(
-        "For root scopes, run the staged copy as root: "
-        "sudo /bin/bash /opt/agent-workstation-kit/scripts/setup-workstation.sh run "
-        "--plan-file /opt/agent-workstation-fleet/plans/execution-plan.json "
-        f"--scope {scope_arg} ...",
-        file=sys.stderr,
-    )
+    for label, command in plan_commands:
+        print(f"# {label}:", file=sys.stderr)
+        print(f"  {shlex.join(command)}", file=sys.stderr)
+    if is_root:
+        print("# Stage the reviewed plan to /opt/agent-workstation-fleet/plans/execution-plan.json, preview, then apply as root:", file=sys.stderr)
+    else:
+        print(f"# Preview, then apply as {owner}:", file=sys.stderr)
+    print(f"  {shlex.join(preview_cmd)}", file=sys.stderr)
+    print(f"  {shlex.join(apply_cmd)}", file=sys.stderr)
 
 
 def account_groups(account: str) -> set[str]:
@@ -1128,10 +1186,6 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    if args.command == "run" and args.apply:
-        print_executor_handoff(args)
-        return 2
-
     if args.command == "setup":
         if args.fleet_root is None:
             parser.error("setup requires --fleet-root")
@@ -1212,10 +1266,16 @@ def main() -> int:
     except ValueError as exc:
         print(f"ERROR profile: {exc}", file=sys.stderr)
         return 2
-    require_ready = bool(getattr(args, "ready", False) or getattr(args, "phase", "") == "audit")
+    require_ready = bool(
+        getattr(args, "ready", False)
+        or (getattr(args, "phase", "") == "audit" and not getattr(args, "apply", False))
+    )
     issues = validate_profile(profile, ready=require_ready)
     if issues:
         show_issues(issues)
+        return 2
+    if args.command == "run" and args.apply:
+        print_executor_handoff(args, profile)
         return 2
     if args.command == "setup":
         try:

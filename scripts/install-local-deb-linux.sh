@@ -7,15 +7,20 @@ script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck disable=SC1091
 source "$script_dir/lib/common.sh"
 
+UFW_DEFAULTS_FILE=/etc/default/ufw
+
 is_nomachine_package() {
   [[ "${1,,}" == *nomachine* ]]
 }
 
 require_active_firewall() {
-  local ufw_status=''
+  local ufw_status='' ufw_defaults=''
   command_exists ufw || die 'NoMachine requires an active UFW firewall, but ufw is not installed.'
   ufw_status=$(LC_ALL=C ufw status 2>/dev/null) || die 'Cannot verify UFW firewall status; refusing to install NoMachine.'
   grep -Fxq 'Status: active' <<<"$ufw_status" || die 'Refusing to install NoMachine while UFW firewall is inactive. Run remote-hardening first.'
+  [[ -f "$UFW_DEFAULTS_FILE" && -r "$UFW_DEFAULTS_FILE" && ! -L "$UFW_DEFAULTS_FILE" ]] || die "Cannot inspect $UFW_DEFAULTS_FILE; refusing to install NoMachine."
+  ufw_defaults=$(< "$UFW_DEFAULTS_FILE")
+  ufw_default_policies_are_safe "$ufw_defaults" || die 'Refusing to install NoMachine unless UFW default input and forward policies are DROP. Run remote-hardening first.'
 }
 
 main() {
@@ -36,7 +41,7 @@ Usage: install-local-deb-linux.sh --package FILE.deb --expected-sha256 HEX [--ap
 
 Download the package from the vendor using a human-reviewed path. Preview prints
 metadata and the actual checksum. Apply requires the independently recorded checksum.
-NoMachine packages additionally require an active UFW firewall before apply.
+NoMachine packages additionally require an active UFW firewall with DROP default policies before apply.
 EOF
         return 0
         ;;
@@ -73,7 +78,7 @@ EOF
     run apt-get install -y -- "$package_file"
   else
     if is_nomachine_package "$package_name"; then
-      log 'NoMachine package detected: apply requires an active UFW firewall.'
+      log 'NoMachine package detected: apply requires an active UFW firewall with DROP default policies.'
     fi
     log 'Preview only. Verify metadata and checksum against an independent vendor source before apply.'
   fi

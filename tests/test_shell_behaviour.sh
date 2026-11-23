@@ -141,10 +141,16 @@ run_deb_apply_as_root_stub() {
     # shellcheck source=../scripts/install-local-deb-linux.sh
     source "$repo_dir/scripts/install-local-deb-linux.sh"
     PATH="$deb_stubs:$PATH"
+    # shellcheck disable=SC2034
+    UFW_DEFAULTS_FILE="${STUB_UFW_DEFAULTS:-$fixture_dir/ufw-defaults-safe}"
     require_root_for_apply() { :; }
     main --package "$fixture_dir/example.deb" --expected-sha256 "$zero_sha256" --apply
   )
 }
+
+printf '%s\n' 'DEFAULT_INPUT_POLICY="DROP"' 'DEFAULT_FORWARD_POLICY="DROP"' >"$fixture_dir/ufw-defaults-safe"
+printf '%s\n' 'DEFAULT_INPUT_POLICY="ACCEPT"' 'DEFAULT_FORWARD_POLICY="DROP"' >"$fixture_dir/ufw-defaults-allow-in"
+printf '%s\n' 'DEFAULT_INPUT_POLICY="DROP"' 'DEFAULT_FORWARD_POLICY="ACCEPT"' >"$fixture_dir/ufw-defaults-allow-fwd"
 
 for pkg in nomachine nomachine-enterprise-desktop; do
   rm -f "$fixture_dir/apt.log"
@@ -156,6 +162,21 @@ for pkg in nomachine nomachine-enterprise-desktop; do
   grep -Fq 'UFW firewall is inactive' "$fixture_dir/deb.err"
   if [[ -e "$fixture_dir/apt.log" ]]; then
     printf 'Expected apt-get not to run when %s is refused.\n' "$pkg" >&2
+    exit 1
+  fi
+done
+
+# Active UFW with default allow (input or forward) or missing defaults must refuse NoMachine.
+for defaults_file in "$fixture_dir/ufw-defaults-allow-in" "$fixture_dir/ufw-defaults-allow-fwd" "$fixture_dir/ufw-defaults-missing"; do
+  rm -f "$fixture_dir/apt.log"
+  if STUB_DEB_PACKAGE=nomachine STUB_UFW_STATUS='Status: active' \
+    STUB_UFW_DEFAULTS="$defaults_file" STUB_APT_LOG="$fixture_dir/apt.log" \
+    run_deb_apply_as_root_stub >/dev/null 2>"$fixture_dir/deb.err"; then
+    printf 'Expected nomachine apply with unsafe UFW defaults (%s) to be refused.\n' "$defaults_file" >&2
+    exit 1
+  fi
+  if [[ -e "$fixture_dir/apt.log" ]]; then
+    printf 'Expected apt-get not to run when UFW defaults (%s) are unsafe.\n' "$defaults_file" >&2
     exit 1
   fi
 done
@@ -172,7 +193,8 @@ if [[ -e "$fixture_dir/apt.log" ]]; then
 fi
 
 rm -f "$fixture_dir/apt.log"
-STUB_DEB_PACKAGE=nomachine STUB_UFW_STATUS='Status: active' STUB_APT_LOG="$fixture_dir/apt.log" \
+STUB_DEB_PACKAGE=nomachine STUB_UFW_STATUS='Status: active' \
+  STUB_UFW_DEFAULTS="$fixture_dir/ufw-defaults-safe" STUB_APT_LOG="$fixture_dir/apt.log" \
   run_deb_apply_as_root_stub >/dev/null
 grep -Fq "install -y -- $expected_deb_path" "$fixture_dir/apt.log"
 

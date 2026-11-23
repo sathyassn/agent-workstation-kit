@@ -94,12 +94,26 @@ staged-root checks run:
 # Single-phase preview from the reviewed source checkout:
 ./scripts/fleetctl.py run /path/to/acme-ws-001.toml accounts
 
-# Export the reviewed execution bundle, then preview and apply the scope:
+# Export the reviewed execution bundle with recovery and connection context
+# (at a physical console or independently tested KVM):
 scripts/setup-workstation.sh plan --fleet-root /path/to/private-fleet \
   --profile machines/acme-ws-001.toml \
+  --confirm-recovery-tested --connection-context local-console \
   --export-plan /PRIVATE/EVIDENCE/execution-plan.json
 
-# Root scopes run from the root-owned staged copy after staging the bundle:
+# Or over named-user Tailscale SSH, capture ssh_peer=${SSH_CONNECTION%% *} first:
+scripts/setup-workstation.sh plan --fleet-root /path/to/private-fleet \
+  --profile machines/acme-ws-001.toml \
+  --confirm-recovery-tested --connection-context tailscale-ssh \
+  --ssh-source-ip "$ssh_peer" \
+  --export-plan /PRIVATE/EVIDENCE/execution-plan.json
+
+# Root scopes run from the root-owned staged copy after staging the bundle
+# (preview without --apply first, then apply as root):
+sudo /bin/bash /opt/agent-workstation-kit/scripts/setup-workstation.sh run \
+  --plan-file /opt/agent-workstation-fleet/plans/execution-plan.json \
+  --scope machine
+
 sudo /bin/bash /opt/agent-workstation-kit/scripts/setup-workstation.sh run \
   --plan-file /opt/agent-workstation-fleet/plans/execution-plan.json \
   --scope machine --apply --approve-plan REVIEWED_EXECUTION_PLAN_ID \

@@ -159,6 +159,16 @@ class DocumentationCheckTests(unittest.TestCase):
         )
         self.assertEqual([], check_repository.fleetctl_run_apply_issues(ROOT))
 
+    def test_onboarding_and_macos_identity_docs_use_complete_executor_commands(self) -> None:
+        onboarding = (ROOT / "docs/01a-onboarding-profile.md").read_text(encoding="utf-8")
+        self.assertIn("--confirm-recovery-tested --connection-context local-console", onboarding)
+        self.assertIn("--connection-context tailscale-ssh", onboarding)
+        self.assertIn("--ssh-source-ip", onboarding)
+        macos_guide = (ROOT / "docs/03-macos-setup.md").read_text(encoding="utf-8")
+        self.assertNotIn("install-machine-identity.py", macos_guide)
+        self.assertIn("--scope machine --apply", macos_guide)
+        self.assertIn("--confirm-recovery-tested --connection-context local-console", macos_guide)
+
 
 if __name__ == "__main__":
     unittest.main()
