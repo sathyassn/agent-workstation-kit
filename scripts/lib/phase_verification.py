@@ -1,5 +1,6 @@
 """Read-only postconditions for execution receipts; no provider authentication."""
 from __future__ import annotations
+from decimal import Decimal
 import ipaddress
 import json
 import os
@@ -303,7 +304,7 @@ RESOURCE_INPUT_KEYS = (
     ("allow_small_reserve", "--allow-small-reserve"),
 )
 AGENT_SLICE = Path("/etc/systemd/user/agent-work.slice")
-AGENT_PARENT_SLICE = Path("/etc/systemd/user/agent.slice")
+AGENT_PARENT_SLICE = Path("/etc/systemd/user/agent.slice.d/50-agent-workstation-kit.conf")
 RESOURCE_RECEIPT = Path("/var/lib/agent-workstation-kit/resource-policy/receipt.tsv")
 CGROUP_CONTROLLERS = Path("/sys/fs/cgroup/cgroup.controllers")
 OOMD_BINARIES = (Path("/usr/lib/systemd/systemd-oomd"), Path("/lib/systemd/systemd-oomd"))
@@ -314,8 +315,45 @@ DISPLAY_MANAGERS = (
     "sddm.service",
     "lightdm.service",
 )
+TIMESPAN_UNITS_USEC = {
+    "us": 1,
+    "ms": 1_000,
+    "s": 1_000_000,
+    "min": 60 * 1_000_000,
+    "h": 3600 * 1_000_000,
+    "d": 86400 * 1_000_000,
+    "w": 7 * 86400 * 1_000_000,
+}
 _WHOLE_NUMBER = re.compile(r"(0|[1-9][0-9]{0,5})")
 _GIB_NUMBER = re.compile(r"(0|[1-9][0-9]{0,5})(?:\.([0-9]{1,6}))?")
+_TIMESPAN_TOKEN = re.compile(r"([0-9]{1,12}(?:\.[0-9]{1,6})?)(us|ms|s|min|h|d|w)")
+
+
+def parse_systemd_timespan_usec(text):
+    """Parse systemd's formatted timespan into microseconds, or None for infinity.
+
+    Accepts space-separated parts in us, ms, s, min, h, d, w (such as '1min',
+    '2min 4s', '14s', '500ms'). Raises ValueError on empty or malformed text.
+    """
+    if not isinstance(text, str):
+        raise ValueError("timespan must be a string")
+    stripped = text.strip()
+    if not stripped:
+        raise ValueError("empty systemd timespan")
+    if stripped == "infinity":
+        return None
+    if stripped == "0":
+        return 0
+    total = Decimal(0)
+    for token in stripped.split():
+        match = _TIMESPAN_TOKEN.fullmatch(token)
+        if not match:
+            raise ValueError("malformed systemd timespan token: " + token)
+        part = Decimal(match.group(1)) * TIMESPAN_UNITS_USEC[match.group(2)]
+        if part != int(part):
+            raise ValueError("sub-microsecond systemd timespan: " + token)
+        total += part
+    return int(total)
 
 
 def strict_int(name, raw, lower, upper):
@@ -409,6 +447,20 @@ def host_swap_total_kib(swaps_path=Path("/proc/swaps")):
     return total
 
 
+def host_zram_swap_kib(swaps_path=Path("/proc/swaps")):
+    """Sum active /dev/zram* swap sizes in KiB from /proc/swaps."""
+    try:
+        lines = Path(swaps_path).read_text().splitlines()
+    except OSError:
+        return 0
+    total = 0
+    for line in lines:
+        fields = line.split()
+        if len(fields) >= 3 and fields[0].startswith("/dev/zram") and fields[2].isdigit():
+            total += int(fields[2])
+    return total
+
+
 def host_cpu_cores(cpuinfo_path=Path("/proc/cpuinfo")):
     """Count CPU cores from /proc/cpuinfo, falling back to os.cpu_count()."""
     try:
@@ -457,11 +509,12 @@ def measured_non_agent_kib(uid, cgroup_root=Path("/sys/fs/cgroup")):
     return (total_bytes * 3) // 2048
 
 
-def resource_values(profile, total, command=(), *, swap_total_kib=None, cpu_cores=None, desktop=None, planned_zram_kib=0):
+def resource_values(profile, total, command=(), *, swap_total_kib=None, cpu_cores=None, desktop=None, planned_zram_kib=None, active_zram_kib=None):
     """Mirror reserve-based sizing in common.sh and apply-resource-policy-linux.sh.
 
-    swap_total_kib is the active swap; planned_zram_kib is the zram the apply
-    configured that was not active yet, which counts toward the swap total.
+    swap_total_kib is the active swap (disk plus active_zram_kib). Whenever
+    planned_zram_kib > 0 (from --zram-percent), it replaces active_zram_kib in
+    the swap total rather than adding to it.
     """
     gib = 1024 * 1024
     min_slice = 2 * gib
@@ -471,6 +524,14 @@ def resource_values(profile, total, command=(), *, swap_total_kib=None, cpu_core
 
     if swap_total_kib is None:
         swap_total_kib = host_swap_total_kib()
+        if active_zram_kib is None:
+            active_zram_kib = host_zram_swap_kib()
+    elif active_zram_kib is None:
+        active_zram_kib = 0
+    if active_zram_kib < 0 or active_zram_kib > swap_total_kib:
+        raise ValueError("active zram swap cannot exceed total swap")
+    if planned_zram_kib is None:
+        planned_zram_kib = total * options["--zram-percent"] // 100
     if cpu_cores is None:
         cpu_cores = host_cpu_cores()
     if desktop is None:
@@ -512,7 +573,7 @@ def resource_values(profile, total, command=(), *, swap_total_kib=None, cpu_core
             raise ValueError("MemoryHigh must be positive and below MemoryMax")
 
     swap_pct = options["--swap-max-percent"]
-    swap_basis = swap_total_kib + planned_zram_kib
+    swap_basis = (swap_total_kib - active_zram_kib) + planned_zram_kib if planned_zram_kib > 0 else swap_total_kib
     if swap_pct is not None:
         swap_max = total * swap_pct // 100
     elif swap_basis == 0:
@@ -559,8 +620,13 @@ def read_resource_receipt(path=RESOURCE_RECEIPT):
         fields = line.split("\t")
         if fields[0] in ("input", "reading", "value") and len(fields) == 3:
             receipt[fields[0]][fields[1]] = fields[2]
-        elif fields == ["state", "complete"]:
-            receipt["complete"] = True
+        elif fields[0] == "state" and len(fields) == 2:
+            if fields[1] == "complete":
+                receipt["complete"] = True
+            elif fields[1] == "migrating":
+                receipt["complete"] = False
+            else:
+                raise ValueError("unknown resource receipt state: " + fields[1])
     return receipt
 
 
@@ -582,8 +648,14 @@ def receipt_resource_values(receipt, profile, command, agent):
     if reading.get("role") not in ("desktop", "headless"):
         raise ValueError("the resource receipt lacks the host role")
     numbers = {key: strict_reading(reading.get(key)) for key in ("ram_kib", "swap_kib", "zram_planned_kib", "cpu_cores")}
+    active_zram_kib = strict_reading(reading["zram_kib"]) if "zram_kib" in reading else 0
+    if active_zram_kib > numbers["swap_kib"]:
+        raise ValueError("the resource receipt zram_kib exceeds swap_kib")
+    if numbers["zram_planned_kib"] != numbers["ram_kib"] * options["--zram-percent"] // 100:
+        raise ValueError("the resource receipt zram_planned_kib does not match --zram-percent")
     values = resource_values(profile, numbers["ram_kib"], command, swap_total_kib=numbers["swap_kib"], cpu_cores=numbers["cpu_cores"],
-                             desktop=reading["role"] == "desktop", planned_zram_kib=numbers["zram_planned_kib"])
+                             desktop=reading["role"] == "desktop", planned_zram_kib=numbers["zram_planned_kib"],
+                             active_zram_kib=active_zram_kib)
     recorded = receipt["value"]
     expected = {
         "reserve_kib": values["reserve_kib"],
@@ -633,7 +705,7 @@ def effective_resource_problems(agent, uid, values, run=None, controllers_path=C
             "MemoryMax": str(int(values["MemoryMax"][:-1]) * 1024),
             "MemorySwapMax": str(int(values["MemorySwapMax"][:-1]) * 1024),
             "TasksMax": values["TasksMax"],
-            "CPUQuotaPerSecUSec": str(int(values["CPUQuota"][:-1]) // 100) + "s",
+            "CPUQuotaPerSecUSec": int(values["CPUQuota"][:-1]) * 10_000,
         },
         "agent.slice": {"CPUWeight": values["CPUWeight"]},
     }
@@ -644,7 +716,16 @@ def effective_resource_problems(agent, uid, values, run=None, controllers_path=C
             continue
         effective = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
         for key, value in properties.items():
-            if effective.get(key) != value:
+            if key == "CPUQuotaPerSecUSec":
+                raw = effective.get(key)
+                try:
+                    actual_usec = None if raw is None else parse_systemd_timespan_usec(raw)
+                except ValueError:
+                    problems.append("%s effective %s is malformed (%s), expected %dus (%s)" % (unit, key, raw, value, values["CPUQuota"]))
+                    continue
+                if actual_usec != value:
+                    problems.append("%s effective %s is %s, expected %dus (%s)" % (unit, key, "unset" if raw is None else raw, value, values["CPUQuota"]))
+            elif effective.get(key) != value:
                 problems.append("%s effective %s is %s, expected %s" % (unit, key, effective.get(key, "unset"), value))
     return problems
 
@@ -670,8 +751,8 @@ def agent_slice_text(agent, values, oomd):
 
 
 def agent_parent_slice_text(agent, values):
-    """Render agent.slice, which holds the agent's CPUWeight, as apply writes it."""
-    lines = ["# Managed by agent-workstation-kit apply-resource-policy-linux.sh; undo with --revert.", "[Unit]", "Description=Agent work CPU share for " + agent, "ConditionUser=" + agent, "", "[Slice]", "CPUWeight=" + values["CPUWeight"]]
+    """Render the agent.slice drop-in that holds the agent's CPUWeight."""
+    lines = ["# Managed by agent-workstation-kit apply-resource-policy-linux.sh; undo with --revert.", "[Unit]", "ConditionUser=" + agent, "", "[Slice]", "CPUWeight=" + values["CPUWeight"]]
     return "\n".join(lines) + "\n"
 
 
@@ -754,7 +835,7 @@ def verify_phase(plan, name, root):
             oomd = any(item.exists() for item in OOMD_BINARIES)
             problems = []
             for path, expected in ((AGENT_SLICE, agent_slice_text(agent, values, oomd)), (AGENT_PARENT_SLICE, agent_parent_slice_text(agent, values))):
-                if path.is_symlink() or not path.is_file() or path.stat().st_uid != 0 or stat.S_IMODE(path.stat().st_mode) != 0o644 or path.read_text() != expected:
+                if path.parent.is_symlink() or path.is_symlink() or not path.is_file() or path.stat().st_uid != 0 or stat.S_IMODE(path.stat().st_mode) != 0o644 or path.read_text() != expected:
                     problems.append(str(path) + " is missing, not root-owned 0644, or differs from the receipt")
             problems += effective_resource_problems(agent, uid, values)
             if not Path("/var/lib/systemd/linger/" + agent).exists():

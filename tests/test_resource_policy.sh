@@ -148,6 +148,33 @@ snapshot() {
   )
 }
 
+# assert_reverted DIR BEFORE: revert deleted the state folder, kept the
+# persistent lock file (0600 in 0755 parent), and restored everything else
+# byte-identically to BEFORE.
+file_mode() {
+  stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"
+}
+file_inode() {
+  stat -c %i "$1" 2>/dev/null || stat -f %i "$1"
+}
+strip_persistent_lock() {
+  grep -v -E '^(D \./var/lib/agent-workstation-kit|F \./var/lib/agent-workstation-kit/resource-policy\.lock 600 4294967295 0)$' || true
+}
+assert_reverted() {
+  local root=$1 before=$2 label=${3:-revert} actual
+  [[ ! -e "$root/var/lib/agent-workstation-kit/resource-policy" ]] || fail "$label left the state folder behind"
+  [[ -d "$root/var/lib/agent-workstation-kit" && ! -L "$root/var/lib/agent-workstation-kit" ]] || fail "$label removed the lock parent directory"
+  [[ $(file_mode "$root/var/lib/agent-workstation-kit") == 755 ]] || fail "$label left wrong mode on lock parent: $(file_mode "$root/var/lib/agent-workstation-kit")"
+  [[ -f "$root/var/lib/agent-workstation-kit/resource-policy.lock" && ! -L "$root/var/lib/agent-workstation-kit/resource-policy.lock" ]] || fail "$label removed the persistent lock file"
+  [[ $(file_mode "$root/var/lib/agent-workstation-kit/resource-policy.lock") == 600 ]] || fail "$label left wrong mode on lock file: $(file_mode "$root/var/lib/agent-workstation-kit/resource-policy.lock")"
+  actual=$(snapshot "$root" | strip_persistent_lock)
+  before=$(printf '%s\n' "$before" | strip_persistent_lock)
+  [[ "$actual" == "$before" ]] || {
+    diff <(printf '%s\n' "$before") <(printf '%s\n' "$actual") >&2 || true
+    fail "$label did not restore the fixture host exactly"
+  }
+}
+
 # policy DIR ARGS...: run the script against the fixture DIR. EXTRA_STUBS
 # names a directory of stubs that take precedence, to make a step fail.
 policy() {
@@ -169,12 +196,12 @@ receipt_of() {
 }
 
 # verify_slice_matches_verifier SLICE TOTAL SWAP CORES DESKTOP [FLAGS...]:
-# the phase verifier renders agent-work.slice and its parent agent.slice
-# (next to SLICE) exactly as apply wrote them. PLANNED_ZRAM_KIB adds zram.
+# the phase verifier renders agent-work.slice and its parent agent.slice drop-in
+# exactly as apply wrote them. PLANNED_ZRAM_KIB and ACTIVE_ZRAM_KIB mirror zram.
 verify_slice_matches_verifier() {
   local slice=$1 total=$2 swap_kib=$3 cores=$4 desktop=$5
   shift 5
-  python3 - "$repo_dir/scripts/lib" "$slice" "$total" "$swap_kib" "$cores" "$desktop" "${PLANNED_ZRAM_KIB:-0}" "$@" <<'EOF' || fail "phase verifier disagrees with $slice"
+  python3 - "$repo_dir/scripts/lib" "$slice" "$total" "$swap_kib" "$cores" "$desktop" "${PLANNED_ZRAM_KIB:-0}" "${ACTIVE_ZRAM_KIB:-0}" "$@" <<'EOF' || fail "phase verifier disagrees with $slice"
 import sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
@@ -185,10 +212,12 @@ swap_kib = int(sys.argv[4])
 cores = int(sys.argv[5])
 desktop = sys.argv[6] == "1"
 zram = int(sys.argv[7])
-command = ["apply-resource-policy-linux.sh", "--agent", "agent-01", *sys.argv[8:]]
-values = resource_values({"resources": {}}, total, command, swap_total_kib=swap_kib, cpu_cores=cores, desktop=desktop, planned_zram_kib=zram)
+active_zram = int(sys.argv[8])
+command = ["apply-resource-policy-linux.sh", "--agent", "agent-01", *sys.argv[9:]]
+values = resource_values({"resources": {}}, total, command, swap_total_kib=swap_kib, cpu_cores=cores, desktop=desktop,
+                         planned_zram_kib=zram, active_zram_kib=active_zram)
 for path, expected in ((slice_path, agent_slice_text("agent-01", values, True)),
-                       (slice_path.parent / "agent.slice", agent_parent_slice_text("agent-01", values))):
+                       (slice_path.parent / "agent.slice.d/50-agent-workstation-kit.conf", agent_parent_slice_text("agent-01", values))):
     if path.read_text() != expected:
         sys.stderr.write("EXPECTED:\n" + expected + "\nACTUAL:\n" + path.read_text())
         raise SystemExit(1)
@@ -211,7 +240,7 @@ command = ["apply-resource-policy-linux.sh", "--agent", "agent-01", *sys.argv[3:
 receipt = read_resource_receipt(root / "var/lib/agent-workstation-kit/resource-policy/receipt.tsv")
 values = receipt_resource_values(receipt, {"resources": {}}, command, "agent-01")
 for name, expected in (("agent-work.slice", agent_slice_text("agent-01", values, True)),
-                       ("agent.slice", agent_parent_slice_text("agent-01", values))):
+                       ("agent.slice.d/50-agent-workstation-kit.conf", agent_parent_slice_text("agent-01", values))):
     actual = (root / "etc/systemd/user" / name).read_text()
     if actual != expected:
         sys.stderr.write("EXPECTED:\n" + expected + "\nACTUAL:\n" + actual)
@@ -238,7 +267,7 @@ for expected in \
   'Outside the slice:  9.2 GiB (reserve 9.2 GiB: 8 GiB desktop default + 2% of RAM)' \
   'CPUWeight:          50 on agent.slice (default: 50; app.slice and session.slice keep 100)' \
   'CPUQuota:           3000% = (32 cores - 2 reserved) x 100% (formula: clamp(ceil(32 x 0.05), 2, 4))' \
-  'Would create /etc/systemd/user/agent.slice' \
+  'Would create /etc/systemd/user/agent.slice.d/50-agent-workstation-kit.conf' \
   'Would create /etc/systemd/user/agent-work.slice' \
   'Would replace /etc/sysctl.d/60-agent-workstation-swap.conf' \
   'Would remove /etc/systemd/system/user-1001.slice.d/50-agent-workstation.conf' \
@@ -265,9 +294,10 @@ check_formula_case() {
   root=$(new_host "matrix-$label" "$mem_gib" "$swap_gib" "$cores")
   STUB_GRAPHICAL_TARGET=$desktop policy "$root" --apply >/dev/null
   slice="$root/etc/systemd/user/agent-work.slice"
-  parent="$root/etc/systemd/user/agent.slice"
+  parent="$root/etc/systemd/user/agent.slice.d/50-agent-workstation-kit.conf"
+  [[ ! -e "$root/etc/systemd/user/agent.slice" ]] || fail "matrix $label wrote a whole agent.slice instead of a drop-in"
   for line in 'ConditionUser=agent-01' 'CPUWeight=50'; do
-    grep -Fxq "$line" "$parent" || fail "matrix $label agent.slice missing: $line (got: $(cat "$parent"))"
+    grep -Fxq "$line" "$parent" || fail "matrix $label agent.slice drop-in missing: $line (got: $(cat "$parent"))"
   done
   if grep -q '^CPUWeight=' "$slice"; then
     fail "matrix $label agent-work.slice still sets CPUWeight"
@@ -360,6 +390,36 @@ PLANNED_ZRAM_KIB=$((16 * 1048576)) verify_slice_matches_verifier "$host/etc/syst
   $((64 * 1048576)) $((8 * 1048576)) 16 1 --zram-percent 25
 verify_receipt_matches_verifier "$host" --zram-percent 25
 
+# Existing zram device resized UP: 8 GiB disk swap + 4 GiB active zram, resized
+# to 25% of 64 GiB (16 GiB). Active 4 GiB is replaced (not added, not kept):
+# 8 + 16 = 24 GiB -> MemorySwapMax = 6 GiB (6291456 K).
+host=$(new_host zram-resize-up 64 8 16)
+add_zram_generator "$host"
+printf '/dev/zram0\tpartition\t%d\t0\t100\n' $((4 * 1048576)) >>"$host/proc/swaps"
+zram_up=$(policy "$host" --zram-percent 25 --apply)
+grep -Fxq 'MemorySwapMax=6291456K' "$host/etc/systemd/user/agent-work.slice" ||
+  fail "zram resize up did not replace active zram: $(grep MemorySwapMax "$host/etc/systemd/user/agent-work.slice")"
+grep -Fq 'MemorySwapMax:      6.0 GiB = min(25% of (8.0 GiB disk swap + 16.0 GiB planned zram at 25% of RAM, replacing 4.0 GiB active zram), 8 GiB)' <<<"$zram_up" ||
+  fail "zram resize up derivation wrong: $(grep MemorySwapMax <<<"$zram_up")"
+PLANNED_ZRAM_KIB=$((16 * 1048576)) ACTIVE_ZRAM_KIB=$((4 * 1048576)) verify_slice_matches_verifier \
+  "$host/etc/systemd/user/agent-work.slice" $((64 * 1048576)) $((12 * 1048576)) 16 1 --zram-percent 25
+verify_receipt_matches_verifier "$host" --zram-percent 25
+
+# Existing zram device resized DOWN: 4 GiB disk swap + 28 GiB active zram,
+# resized to 25% of 64 GiB (16 GiB). Active 28 GiB is replaced:
+# 4 + 16 = 20 GiB -> MemorySwapMax = 5 GiB (5242880 K), not 8 GiB.
+host=$(new_host zram-resize-down 64 4 16)
+add_zram_generator "$host"
+printf '/dev/zram0\tpartition\t%d\t0\t100\n' $((28 * 1048576)) >>"$host/proc/swaps"
+zram_down=$(policy "$host" --zram-percent 25 --apply)
+grep -Fxq 'MemorySwapMax=5242880K' "$host/etc/systemd/user/agent-work.slice" ||
+  fail "zram resize down did not replace active zram: $(grep MemorySwapMax "$host/etc/systemd/user/agent-work.slice")"
+grep -Fq 'MemorySwapMax:      5.0 GiB = min(25% of (4.0 GiB disk swap + 16.0 GiB planned zram at 25% of RAM, replacing 28.0 GiB active zram), 8 GiB)' <<<"$zram_down" ||
+  fail "zram resize down derivation wrong: $(grep MemorySwapMax <<<"$zram_down")"
+PLANNED_ZRAM_KIB=$((16 * 1048576)) ACTIVE_ZRAM_KIB=$((28 * 1048576)) verify_slice_matches_verifier \
+  "$host/etc/systemd/user/agent-work.slice" $((64 * 1048576)) $((32 * 1048576)) 16 1 --zram-percent 25
+verify_receipt_matches_verifier "$host" --zram-percent 25
+
 # 5. Apply writes backups and receipt; repeat apply changes nothing; revert restores byte-identical state.
 host=$(new_host apply 64 8 16)
 before=$(snapshot "$host")
@@ -380,11 +440,12 @@ grep -Fxq 'daemon-reload' "$host.state/systemctl.log" || fail 'systemd was not r
 grep -Fxq -- '--user --machine=agent-01@ daemon-reload' "$host.state/systemctl.log" || fail 'user manager was not reloaded'
 receipt=$(receipt_of "$host")
 grep -Fq $'file\t/etc/sysctl.d/60-agent-workstation-swap.conf\treplaced' "$receipt" || fail 'receipt lacks the replaced file'
-grep -Fq $'file\t/etc/systemd/user/agent.slice\tcreated' "$receipt" || fail 'receipt lacks agent.slice'
+grep -Fq $'dir\t/etc/systemd/user/agent.slice.d\tcreated' "$receipt" || fail 'receipt lacks agent.slice.d creation'
+grep -Fq $'file\t/etc/systemd/user/agent.slice.d/50-agent-workstation-kit.conf\tcreated' "$receipt" || fail 'receipt lacks agent.slice drop-in'
 grep -Fq $'sysctl\tvm.swappiness\t60\t10' "$receipt" || fail 'receipt lacks the swappiness change'
 # The receipt keeps the approved inputs, the readings and every written value.
 for line in $'input\tcpu_weight\t-' $'input\tmemory_max_percent\t-' $'input\tzram_percent\t0' \
-  $'reading\tram_kib\t67108864' $'reading\tswap_kib\t8388608' $'reading\tzram_planned_kib\t0' \
+  $'reading\tram_kib\t67108864' $'reading\tswap_kib\t8388608' $'reading\tzram_kib\t0' $'reading\tzram_planned_kib\t0' \
   $'reading\tcpu_cores\t16' $'reading\trole\tdesktop' $'value\tmemory_max_kib\t57378079' \
   $'value\tcpu_weight\t50' $'value\tcpu_quota_percent\t1400' $'value\tswap_max_kib\t2097152' \
   $'value\tswappiness\t10' $'state\tcomplete'; do
@@ -410,16 +471,149 @@ if output=$(policy "$host" --memory-max-percent 85 --apply 2>&1); then
 fi
 grep -Fq 'differ from the approved inputs' <<<"$output" || fail "changed policy printed: $output"
 
-# Revert preview changes nothing; revert apply restores byte-identical files.
+# Revert preview changes nothing; revert apply reloads both managers and restores byte-identical files.
 policy "$host" --revert >/dev/null
 [[ "$(snapshot "$host")" == "$after" ]] || fail 'revert preview changed the fixture host'
+: >"$host.state/systemctl.log"
 policy "$host" --revert --apply >/dev/null
-[[ "$(snapshot "$host")" == "$before" ]] || {
-  diff <(printf '%s\n' "$before") <(snapshot "$host") >&2 || true
-  fail 'revert did not restore the fixture host exactly'
-}
+grep -Fxq 'daemon-reload' "$host.state/systemctl.log" || fail 'revert did not reload systemd'
+grep -Fxq -- '--user --machine=agent-01@ daemon-reload' "$host.state/systemctl.log" || fail 'revert did not reload the user manager'
+assert_reverted "$host" "$before" 'revert'
 [[ ! -f "$host.state/oomd-enabled" ]] || fail 'revert left systemd-oomd enabled'
 grep -Fxq 'disable-linger agent-01' "$host.state/loginctl.log" || fail 'revert did not disable linger'
+
+# Pre-existing agent.slice, sibling drop-in, and existing 50-agent-workstation-kit.conf:
+# apply backs up and replaces our drop-in without touching agent.slice or sibling drop-ins,
+# does not record creating agent.slice.d, and revert restores the earlier drop-in and keeps .d.
+host=$(new_host existing-dropin 64 8 16)
+mkdir -p "$host/etc/systemd/user/agent.slice.d"
+printf '[Unit]\nDescription=Vendor agent slice\n' >"$host/etc/systemd/user/agent.slice"
+printf '[Slice]\nIOWeight=80\n' >"$host/etc/systemd/user/agent.slice.d/10-local.conf"
+printf '[Slice]\nCPUWeight=80\n' >"$host/etc/systemd/user/agent.slice.d/50-agent-workstation-kit.conf"
+chmod 0640 "$host/etc/systemd/user/agent.slice.d/50-agent-workstation-kit.conf"
+before=$(snapshot "$host")
+policy "$host" --apply >/dev/null
+grep -Fxq 'Description=Vendor agent slice' "$host/etc/systemd/user/agent.slice" || fail 'apply altered pre-existing agent.slice'
+grep -Fxq 'IOWeight=80' "$host/etc/systemd/user/agent.slice.d/10-local.conf" || fail 'apply altered sibling drop-in'
+grep -Fxq 'CPUWeight=50' "$host/etc/systemd/user/agent.slice.d/50-agent-workstation-kit.conf" || fail 'apply did not replace existing drop-in'
+if grep -Fq $'dir\t/etc/systemd/user/agent.slice.d\tcreated' "$(receipt_of "$host")"; then
+  fail 'receipt recorded creating a pre-existing agent.slice.d'
+fi
+grep -Fq $'file\t/etc/systemd/user/agent.slice.d/50-agent-workstation-kit.conf\treplaced' "$(receipt_of "$host")" ||
+  fail 'receipt did not record replacing existing drop-in'
+policy "$host" --revert --apply >/dev/null
+assert_reverted "$host" "$before" 'existing drop-in revert'
+
+# Pre-existing empty agent.slice.d: revert removes the drop-in but leaves the directory.
+host=$(new_host existing-dropin-dir 64 8 16)
+mkdir -p "$host/etc/systemd/user/agent.slice.d"
+before=$(snapshot "$host")
+policy "$host" --apply >/dev/null
+if grep -Fq $'dir\t/etc/systemd/user/agent.slice.d\tcreated' "$(receipt_of "$host")"; then
+  fail 'receipt recorded creating a pre-existing empty agent.slice.d'
+fi
+policy "$host" --revert --apply >/dev/null
+assert_reverted "$host" "$before" 'pre-existing empty drop-in dir revert'
+[[ -d "$host/etc/systemd/user/agent.slice.d" ]] || fail 'revert removed a pre-existing agent.slice.d'
+
+# Migration from an earlier run of this branch that installed a whole /etc/systemd/user/agent.slice.
+# Helper: simulate an earlier run on HOST (optionally with an existing whole agent.slice beforehand).
+simulate_earlier_branch_apply() {
+  local root=$1 had_old_slice=$2 old_body=$3
+  policy "$root" --apply >/dev/null
+  local sd="$root/var/lib/agent-workstation-kit/resource-policy"
+  local rc="$sd/receipt.tsv"
+  # Replace the drop-in step in the receipt and on disk with the earlier whole agent.slice.
+  rm -f "$root/etc/systemd/user/agent.slice.d/50-agent-workstation-kit.conf"
+  rmdir "$root/etc/systemd/user/agent.slice.d" 2>/dev/null || true
+  cat >"$root/etc/systemd/user/agent.slice" <<'EOF'
+# Managed by agent-workstation-kit apply-resource-policy-linux.sh; undo with --revert.
+[Unit]
+Description=Agent work CPU share for agent-01
+ConditionUser=agent-01
+
+[Slice]
+CPUWeight=50
+EOF
+  cp "$root/etc/systemd/user/agent.slice" "$sd/installed/_etc_systemd_user_agent.slice"
+  rm -f "$sd/installed/_etc_systemd_user_agent.slice.d_50-agent-workstation-kit.conf"
+  local action=created backup=-
+  if [[ "$had_old_slice" == yes ]]; then
+    action=replaced
+    backup=_etc_systemd_user_agent.slice
+    printf '%s' "$old_body" >"$sd/backups/$backup"
+  fi
+  python3 - "$rc" "$action" "$backup" <<'EOF'
+import sys
+from pathlib import Path
+rc, action, backup = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+drop_dir_id = None
+out = []
+for line in rc.read_text().splitlines():
+    parts = line.split("\t")
+    if parts[:2] == ["reading", "zram_kib"]:
+        continue
+    if parts[0] == "begin" and len(parts) >= 4 and parts[2] == "dir" and parts[3] == "/etc/systemd/user/agent.slice.d":
+        drop_dir_id = parts[1]
+        continue
+    if drop_dir_id and parts == ["done", drop_dir_id]:
+        continue
+    if parts[0] == "begin" and len(parts) >= 4 and parts[3] == "/etc/systemd/user/agent.slice.d/50-agent-workstation-kit.conf":
+        out.append("\t".join(["begin", parts[1], "file", "/etc/systemd/user/agent.slice", action, backup, "_etc_systemd_user_agent.slice"]))
+        continue
+    out.append(line)
+rc.write_text("\n".join(out) + "\n")
+EOF
+}
+
+# Subcase A: earlier run created whole agent.slice -> preview names migration, apply removes it and writes drop-in, revert restores original host.
+host=$(new_host migrate-created 64 8 16)
+before=$(snapshot "$host")
+simulate_earlier_branch_apply "$host" no ''
+pre_mig=$(snapshot "$host")
+mig_preview=$(policy "$host")
+[[ "$(snapshot "$host")" == "$pre_mig" ]] || fail 'migration preview changed the host'
+grep -Fq 'Would migrate: remove /etc/systemd/user/agent.slice (installed by an earlier run)' <<<"$mig_preview" ||
+  fail "migration preview missing remove notice: $mig_preview"
+grep -Fq 'Would create /etc/systemd/user/agent.slice.d/50-agent-workstation-kit.conf' <<<"$mig_preview" ||
+  fail "migration preview missing drop-in creation: $mig_preview"
+policy "$host" --apply >/dev/null
+[[ ! -e "$host/etc/systemd/user/agent.slice" ]] || fail 'migration did not remove earlier kit-installed agent.slice'
+grep -Fxq 'CPUWeight=50' "$host/etc/systemd/user/agent.slice.d/50-agent-workstation-kit.conf" || fail 'migration did not write drop-in'
+verify_receipt_matches_verifier "$host"
+repeat=$(policy "$host" --apply)
+grep -Fq 'already applied' <<<"$repeat" || fail 'repeat apply after migration did not report already applied'
+policy "$host" --revert --apply >/dev/null
+assert_reverted "$host" "$before" 'revert after migration (created)'
+
+# Subcase B: earlier run replaced a pre-existing whole agent.slice -> migration restores backup before writing drop-in, revert keeps original agent.slice.
+host=$(new_host migrate-replaced 64 8 16)
+mkdir -p "$host/etc/systemd/user"
+orig_slice=$'[Unit]\nDescription=Existing admin slice\n'
+printf '%s' "$orig_slice" >"$host/etc/systemd/user/agent.slice"
+before=$(snapshot "$host")
+simulate_earlier_branch_apply "$host" yes "$orig_slice"
+mig_preview=$(policy "$host")
+grep -Fq 'Would migrate: restore /etc/systemd/user/agent.slice from its backup (installed by an earlier run)' <<<"$mig_preview" ||
+  fail "migration preview missing restore notice: $mig_preview"
+policy "$host" --apply >/dev/null
+[[ "$(cat "$host/etc/systemd/user/agent.slice")" == "$(printf '%s' "$orig_slice")" ]] ||
+  fail 'migration did not restore backed-up agent.slice'
+grep -Fxq 'CPUWeight=50' "$host/etc/systemd/user/agent.slice.d/50-agent-workstation-kit.conf" || fail 'migration did not write drop-in (replaced case)'
+verify_receipt_matches_verifier "$host"
+policy "$host" --revert --apply >/dev/null
+assert_reverted "$host" "$before" 'revert after migration (replaced)'
+
+# Subcase C: hand-edited earlier whole agent.slice -> migration refuses and changes nothing.
+host=$(new_host migrate-edited 64 8 16)
+simulate_earlier_branch_apply "$host" no ''
+printf 'CPUWeight=99\n' >>"$host/etc/systemd/user/agent.slice"
+edited=$(snapshot "$host")
+if output=$(policy "$host" --apply 2>&1); then
+  fail 'expected migration over hand-edited agent.slice to be refused'
+fi
+grep -Fq '/etc/systemd/user/agent.slice changed after apply' <<<"$output" || fail "edited migration printed: $output"
+[[ "$(snapshot "$host")" == "$edited" ]] || fail 'refused migration changed the host'
 
 # Changed memory and swap readings between apply, repeat apply and verify: the
 # repeat apply reuses the approved readings and changes nothing, and the
@@ -458,7 +652,7 @@ total=$((128 * 1024 * 1024))
 grep -Fxq "MemoryHigh=$((total * 60 / 100))K" "$host/etc/systemd/user/agent-work.slice" || fail 'flag share not used for MemoryHigh'
 grep -Fxq "MemoryMax=$((total * 75 / 100))K" "$host/etc/systemd/user/agent-work.slice" || fail 'flag share not used for MemoryMax'
 grep -Fxq 'MemorySwapMax=0K' "$host/etc/systemd/user/agent-work.slice" || fail 'flag share not used for MemorySwapMax'
-grep -Fxq 'CPUWeight=75' "$host/etc/systemd/user/agent.slice" || fail '--cpu-weight override not written to agent.slice'
+grep -Fxq 'CPUWeight=75' "$host/etc/systemd/user/agent.slice.d/50-agent-workstation-kit.conf" || fail '--cpu-weight override not written to agent.slice drop-in'
 grep -Fxq 'CPUQuota=1200%' "$host/etc/systemd/user/agent-work.slice" || fail '--reserve-cores override not written'
 grep -Fxq 'zram-size = ram * 25 / 100' "$host/etc/systemd/zram-generator.conf" || fail 'zram size not written'
 grep -Fxq 'vm.swappiness = 100' "$host/etc/sysctl.d/60-agent-workstation-swap.conf" || fail 'zram swappiness not used'
@@ -608,10 +802,7 @@ interrupt() {
   fi
   grep -Fq 'Apply stopped part way' <<<"$output" || fail "interrupted apply printed: $output"
   policy "$root" --revert --apply >/dev/null || fail "revert after an interrupted $label apply failed"
-  [[ "$(snapshot "$root")" == "$before" ]] || {
-    diff <(printf '%s\n' "$before") <(snapshot "$root") >&2 || true
-    fail "revert after an interrupted $label apply did not restore the host"
-  }
+  assert_reverted "$root" "$before" "revert after an interrupted $label apply"
 }
 # The mask step is recorded, then ln fails: the receipt lists a missing link.
 interrupt mask ln
@@ -636,18 +827,15 @@ while :; do
     grep -Fq 'stopped part way' <<<"$output" || fail "apply over a half-applied receipt printed: $output"
   fi
   policy "$root" --revert --apply >/dev/null 2>&1 || fail "revert after a stop at change $stop failed"
-  [[ "$(snapshot "$root")" == "$before" ]] || {
-    diff <(printf '%s\n' "$before") <(snapshot "$root") >&2 || true
-    fail "revert after a stop at change $stop did not restore the host"
-  }
+  assert_reverted "$root" "$before" "revert after a stop at change $stop"
   [[ ! -f "$root.state/oomd-enabled" ]] || fail "revert after a stop at change $stop left systemd-oomd enabled"
   stop=$((stop + 1))
 done
-((stop > 12)) || fail "fault injection covered only $((stop - 1)) changes"
+((stop > 13)) || fail "fault injection covered only $((stop - 1)) changes"
 
 # A revert killed after a restore can be run again to finish. Sampled at the
-# first, a middle and the last of the 13 restores to keep the run short.
-for stop in 1 5 9 13; do
+# first, middle and last of the 14 restores to keep the run short.
+for stop in 1 5 9 14; do
   root=$(new_host "stop-revert-$stop" 64)
   before=$(snapshot "$root")
   policy "$root" --apply >/dev/null
@@ -655,21 +843,20 @@ for stop in 1 5 9 13; do
     fail "revert was not stopped after restore $stop"
   fi
   policy "$root" --revert --apply >/dev/null 2>&1 || fail "revert after a revert stopped at restore $stop failed"
-  [[ "$(snapshot "$root")" == "$before" ]] || {
-    diff <(printf '%s\n' "$before") <(snapshot "$root") >&2 || true
-    fail "revert after a revert stopped at restore $stop did not restore the host"
-  }
+  assert_reverted "$root" "$before" "revert after a revert stopped at restore $stop"
 done
 
-# The state directory is locked for the whole apply and revert.
+# Persistent lock at /var/lib/agent-workstation-kit/resource-policy.lock:
+# held for the whole apply or revert, refuses a second apply and a revert,
+# and stays valid even after revert deletes the state folder.
 hold_lock() {
-  local dir=$1 ready="$work/lock-ready"
+  local target=$1 ready="$work/lock-ready"
   rm -f "$ready"
   python3 -c 'import fcntl, os, sys, time
-fd = os.open(sys.argv[1], os.O_RDONLY)
+fd = os.open(sys.argv[1], os.O_CREAT | os.O_RDWR, 0o600)
 fcntl.flock(fd, fcntl.LOCK_EX)
 open(sys.argv[2], "w").close()
-time.sleep(120)' "$dir" "$ready" &
+time.sleep(120)' "$target" "$ready" &
   lock_pid=$!
   until [[ -e "$ready" ]]; do sleep 0.1; done
 }
@@ -679,27 +866,96 @@ release_lock() {
   lock_pid=''
 }
 host=$(new_host locked-apply 64)
-mkdir -p "$host/var/lib/agent-workstation-kit/resource-policy"
-hold_lock "$host/var/lib/agent-workstation-kit/resource-policy"
+mkdir -p "$host/var/lib/agent-workstation-kit"
+hold_lock "$host/var/lib/agent-workstation-kit/resource-policy.lock"
 before=$(snapshot "$host")
 if output=$(policy "$host" --apply 2>&1); then
-  fail 'expected an apply to wait for the lock'
+  fail 'expected an apply to be refused while lock is held'
 fi
 release_lock
 grep -Fq 'holds the lock' <<<"$output" || fail "locked apply printed: $output"
 [[ ! -e "$(receipt_of "$host")" ]] || fail 'a locked apply wrote a receipt'
 host=$(new_host locked-revert 64)
 policy "$host" --apply >/dev/null
-hold_lock "$host/var/lib/agent-workstation-kit/resource-policy"
+hold_lock "$host/var/lib/agent-workstation-kit/resource-policy.lock"
 before=$(snapshot "$host")
 if output=$(policy "$host" --revert --apply 2>&1); then
-  fail 'expected a revert to wait for the lock'
+  fail 'expected a revert to be refused while lock is held'
 fi
 release_lock
 grep -Fq 'holds the lock' <<<"$output" || fail "locked revert printed: $output"
 [[ "$(snapshot "$host")" == "$before" ]] || fail 'a locked revert changed the fixture host'
 
-# A symbolic link in the state path (a parent directory or the receipt) is refused.
+# Revert that deletes the state folder keeps the persistent lock valid while
+# revert is still running and afterwards on the same inode.
+host=$(new_host lock-survives-revert 64)
+policy "$host" --apply >/dev/null
+lock_path="$host/var/lib/agent-workstation-kit/resource-policy.lock"
+lock_inode=$(file_inode "$lock_path")
+mkdir -p "$work/lock-hook"
+cat >"$work/lock-hook/sync" <<'EOF'
+#!/bin/sh
+if [ "${1:-}" = "--" ] && [ "${2:-}" = "$LOCK_HOOK_PARENT" ] && [ ! -e "$LOCK_HOOK_STATE_DIR" ]; then
+  [ -f "$LOCK_HOOK_FILE" ] || { echo "lock file missing after state_dir deletion" >&2; exit 1; }
+  if output=$(TMPDIR="$LOCK_HOOK_TMP" STUB_STATE="$LOCK_HOOK_STUB_STATE" AWK_RESOURCE_TEST_ROOT="$LOCK_HOOK_ROOT" \
+      PATH="$LOCK_HOOK_STUBS:$PATH" "$LOCK_HOOK_BASH" "$LOCK_HOOK_SCRIPT" --agent agent-01 --apply 2>&1); then
+    echo "concurrent apply succeeded after revert deleted state_dir" >&2
+    exit 1
+  fi
+  printf '%s\n' "$output" >"$LOCK_HOOK_MARKER"
+fi
+exit 0
+EOF
+chmod 0755 "$work/lock-hook/sync"
+LOCK_HOOK_PARENT="$host/var/lib/agent-workstation-kit" \
+  LOCK_HOOK_STATE_DIR="$host/var/lib/agent-workstation-kit/resource-policy" \
+  LOCK_HOOK_FILE="$lock_path" \
+  LOCK_HOOK_TMP="$work/tmp" \
+  LOCK_HOOK_STUB_STATE="$host.state" \
+  LOCK_HOOK_ROOT="$host" \
+  LOCK_HOOK_STUBS="$stubs" \
+  LOCK_HOOK_BASH="$BASH" \
+  LOCK_HOOK_SCRIPT="$script" \
+  LOCK_HOOK_MARKER="$work/lock-hook/checked" \
+  EXTRA_STUBS="$work/lock-hook" policy "$host" --revert --apply >/dev/null
+[[ -f "$work/lock-hook/checked" ]] || fail 'post-delete lock check hook never ran'
+grep -Fq 'holds the lock' "$work/lock-hook/checked" ||
+  fail "concurrent apply after state_dir deletion printed: $(cat "$work/lock-hook/checked")"
+[[ ! -e "$host/var/lib/agent-workstation-kit/resource-policy" ]] || fail 'revert did not delete state_dir'
+[[ -f "$lock_path" && $(file_inode "$lock_path") == "$lock_inode" ]] || fail 'revert replaced or removed the lock file inode'
+[[ $(file_mode "$lock_path") == 600 ]] || fail 'lock file mode changed after revert'
+policy "$host" --apply >/dev/null || fail 'fresh apply after revert failed'
+[[ $(file_inode "$lock_path") == "$lock_inode" ]] || fail 'fresh apply replaced the persistent lock file inode'
+
+# Durability: each newly created state folder and its parent are flushed via
+# sync before the first destination policy file is written.
+host=$(new_host durability 64 8 16)
+mkdir -p "$work/sync-record"
+cat >"$work/sync-record/sync" <<'EOF'
+#!/bin/sh
+phase=before_dest
+if [ -e "$SYNC_HOST/etc/systemd/user/agent.slice.d/50-agent-workstation-kit.conf" ] ||
+   [ -e "$SYNC_HOST/etc/systemd/user/agent-work.slice" ] ||
+   [ -L "$SYNC_HOST/etc/systemd/system/tmp.mount" ] ||
+   [ ! -e "$SYNC_HOST/etc/systemd/system/user-1001.slice.d/50-agent-workstation.conf" ] ||
+   ! grep -Fxq 'vm.swappiness = 30' "$SYNC_HOST/etc/sysctl.d/60-agent-workstation-swap.conf"; then
+  phase=after_dest
+fi
+printf '%s %s\n' "$phase" "$*" >>"$SYNC_LOG"
+exit 0
+EOF
+chmod 0755 "$work/sync-record/sync"
+SYNC_HOST="$host" SYNC_LOG="$work/sync-record/log" EXTRA_STUBS="$work/sync-record" policy "$host" --apply >/dev/null
+for pair in \
+  "$host/var/lib/agent-workstation-kit $host/var/lib" \
+  "$host/var/lib/agent-workstation-kit/resource-policy $host/var/lib/agent-workstation-kit" \
+  "$host/var/lib/agent-workstation-kit/resource-policy/backups $host/var/lib/agent-workstation-kit/resource-policy" \
+  "$host/var/lib/agent-workstation-kit/resource-policy/installed $host/var/lib/agent-workstation-kit/resource-policy"; do
+  grep -Fxq "before_dest -- $pair" "$work/sync-record/log" ||
+    fail "durability sync missing before first destination change: $pair (log: $(cat "$work/sync-record/log"))"
+done
+
+# A symbolic link in the state path (parent, lock file, or receipt) is refused.
 host=$(new_host state-link 64)
 mkdir -p "$work/state-elsewhere"
 ln -s "$work/state-elsewhere" "$host/var/lib/agent-workstation-kit"
@@ -708,6 +964,13 @@ if output=$(policy "$host" --apply 2>&1); then
 fi
 grep -Fq '/var/lib/agent-workstation-kit is a symbolic link' <<<"$output" || fail "symlinked state printed: $output"
 [[ -z "$(ls -A "$work/state-elsewhere")" ]] || fail 'apply wrote through a symlinked state directory'
+host=$(new_host lock-link 64)
+mkdir -p "$host/var/lib/agent-workstation-kit"
+ln -s "$work/state-elsewhere/lock" "$host/var/lib/agent-workstation-kit/resource-policy.lock"
+if output=$(policy "$host" --apply 2>&1); then
+  fail 'expected a symlinked lock file to be refused'
+fi
+grep -Fq 'resource-policy.lock is a symbolic link' <<<"$output" || fail "symlinked lock printed: $output"
 host=$(new_host receipt-link 64)
 policy "$host" --apply >/dev/null
 receipt=$(receipt_of "$host")
@@ -765,18 +1028,19 @@ EOF
 # The host audit (validate-host.sh) checks both slices through
 # resource_slice_problems: an applied host passes, and each unsafe value fails.
 applied="$work/matrix-desktop-16/etc/systemd/user"
-[[ -z "$(resource_slice_problems "$applied/agent-work.slice" "$applied/agent.slice" agent-01)" ]] ||
-  fail "an applied host has slice problems: $(resource_slice_problems "$applied/agent-work.slice" "$applied/agent.slice" agent-01)"
+[[ -z "$(resource_slice_problems "$applied/agent-work.slice" "$applied/agent.slice.d/50-agent-workstation-kit.conf" agent-01)" ]] ||
+  fail "an applied host has slice problems: $(resource_slice_problems "$applied/agent-work.slice" "$applied/agent.slice.d/50-agent-workstation-kit.conf" agent-01)"
 slice_problem() {
   local label=$1 pattern=$2 edit=$3 target=${4:-work} dir="$work/audit-$1"
-  mkdir -p "$dir"
-  cp "$applied/agent-work.slice" "$applied/agent.slice" "$dir/"
+  mkdir -p "$dir/agent.slice.d"
+  cp "$applied/agent-work.slice" "$dir/"
+  cp "$applied/agent.slice.d/50-agent-workstation-kit.conf" "$dir/agent.slice.d/"
   if [[ "$target" == work ]]; then
     sed "$edit" "$applied/agent-work.slice" >"$dir/agent-work.slice"
   else
-    sed "$edit" "$applied/agent.slice" >"$dir/agent.slice"
+    sed "$edit" "$applied/agent.slice.d/50-agent-workstation-kit.conf" >"$dir/agent.slice.d/50-agent-workstation-kit.conf"
   fi
-  grep -Fq "$pattern" <<<"$(resource_slice_problems "$dir/agent-work.slice" "$dir/agent.slice" agent-01)" ||
+  grep -Fq "$pattern" <<<"$(resource_slice_problems "$dir/agent-work.slice" "$dir/agent.slice.d/50-agent-workstation-kit.conf" agent-01)" ||
     fail "audit $label did not report: $pattern"
 }
 slice_problem max-below-2gib 'MemoryMax is missing or below 2 GiB' 's/^MemoryMax=.*/MemoryMax=1048576K/'
@@ -785,7 +1049,12 @@ slice_problem quota-below-100 'CPUQuota is missing or below 100%' 's/^CPUQuota=.
 slice_problem quota-overflow 'CPUQuota is missing or below 100%' 's/^CPUQuota=.*/CPUQuota=18446744073709551666%/'
 slice_problem no-swap-max 'MemorySwapMax is missing' '/^MemorySwapMax=/d'
 slice_problem weight-on-work 'sets CPUWeight, which belongs on agent.slice' 's/^ManagedOOMMemoryPressure=kill$/CPUWeight=50/'
-slice_problem no-parent-weight 'agent.slice CPUWeight is missing' '/^CPUWeight=/d' parent
+slice_problem no-parent-weight 'agent.slice drop-in CPUWeight is missing' '/^CPUWeight=/d' parent
+mkdir -p "$work/audit-link-dir"
+ln -s "$applied/agent.slice.d" "$work/audit-link-dir/agent.slice.d"
+grep -Fq 'agent.slice drop-in is missing or is a symbolic link' \
+  <<<"$(resource_slice_problems "$applied/agent-work.slice" "$work/audit-link-dir/agent.slice.d/50-agent-workstation-kit.conf" agent-01)" ||
+  fail 'audit did not report symlinked agent.slice.d'
 
 # 11. The terminal wrapper runs the shell directly when the policy is absent,
 # and falls back to the plain shell with a warning when the scope fails.

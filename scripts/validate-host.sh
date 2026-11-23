@@ -167,13 +167,13 @@ if [[ $(uname -s) == Linux ]]; then
 
       uid=$(id -u "$agent_account")
       resource_slice=/etc/systemd/user/agent-work.slice
-      resource_parent=/etc/systemd/user/agent.slice
+      resource_parent=/etc/systemd/user/agent.slice.d/50-agent-workstation-kit.conf
       # Both slices, with the values read as text: MemoryMax of at least 2 GiB,
       # MemoryHigh strictly below it, MemorySwapMax set, CPUQuota of at least
-      # 100%, TasksMax in range, and CPUWeight on the parent agent.slice.
+      # 100%, TasksMax in range, and CPUWeight on the parent agent.slice drop-in.
       slice_problems=$(resource_slice_problems "$resource_slice" "$resource_parent" "$agent_account")
       if [[ -z "$slice_problems" ]]; then
-        pass "agent-work.slice for $agent_account: MemoryMax=$(unit_value "$resource_slice" MemoryMax), MemoryHigh=$(unit_value "$resource_slice" MemoryHigh), MemorySwapMax=$(unit_value "$resource_slice" MemorySwapMax), CPUQuota=$(unit_value "$resource_slice" CPUQuota), TasksMax=$(unit_value "$resource_slice" TasksMax); agent.slice CPUWeight=$(unit_value "$resource_parent" CPUWeight)"
+        pass "agent-work.slice for $agent_account: MemoryMax=$(unit_value "$resource_slice" MemoryMax), MemoryHigh=$(unit_value "$resource_slice" MemoryHigh), MemorySwapMax=$(unit_value "$resource_slice" MemorySwapMax), CPUQuota=$(unit_value "$resource_slice" CPUQuota), TasksMax=$(unit_value "$resource_slice" TasksMax); agent.slice drop-in CPUWeight=$(unit_value "$resource_parent" CPUWeight)"
       else
         while IFS= read -r problem; do
           fail "$problem"

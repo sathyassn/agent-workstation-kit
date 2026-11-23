@@ -23,7 +23,7 @@ Reserve-based sizing is the default (read at run time):
   Memory reserve = fixed part (8 GiB desktop, 2 GiB headless) + 2% of RAM
   MemoryMax      = RAM - reserve (refused below 2 GiB)
   MemoryHigh     = MemoryMax - min(10% of MemoryMax, 8 GiB)
-  MemorySwapMax  = min(25% of (swap + planned zram), 8 GiB); 0 with no swap
+  MemorySwapMax  = min(25% of (disk swap + planned zram, or active swap), 8 GiB); 0 with no swap
   CPUWeight      = 50 on agent.slice (app.slice and session.slice keep 100)
   CPUQuota       = (cores - clamp(ceil(cores * 0.05), 2, 4)) * 100%
 
@@ -166,13 +166,16 @@ stop_point() {
 
 slice_name=agent-work.slice
 slice_path=/etc/systemd/user/$slice_name
-parent_slice_path=/etc/systemd/user/agent.slice
+parent_slice_dir=/etc/systemd/user/agent.slice.d
+parent_slice_path=$parent_slice_dir/50-agent-workstation-kit.conf
+old_parent_slice_path=/etc/systemd/user/agent.slice
 sysctl_path=/etc/sysctl.d/60-agent-workstation-swap.conf
 zram_path=/etc/systemd/zram-generator.conf
 tmp_mask_path=/etc/systemd/system/tmp.mount
 old_dropin=/etc/systemd/system/user-$uid.slice.d/50-agent-workstation.conf
 legacy_dropin=/etc/systemd/system/user-$uid.slice.d/50-agent-fleet.conf
 state_parent=/var/lib/agent-workstation-kit
+lock_file=$state_parent/resource-policy.lock
 state_dir=$state_parent/resource-policy
 receipt=$state_dir/receipt.tsv
 tmp_suffix=.agent-workstation-tmp
@@ -188,21 +191,51 @@ reload_managers() {
   fi
 }
 
-# The state directory, the receipt and every parent must be real directories
-# and files: a link could redirect root's writes or a revert's restores.
+# The state directory, lock file, receipt and every parent must be real
+# directories and files: a link could redirect root's writes or a revert's restores.
 refuse_state_links() {
   local path
-  for path in /var /var/lib "$state_parent" "$state_dir" "$state_dir/backups" "$state_dir/installed" "$receipt"; do
+  for path in /var /var/lib "$state_parent" "$lock_file" "$state_dir" "$state_dir/backups" "$state_dir/installed" "$receipt"; do
     [[ ! -L "$(host_path "$path")" ]] || die "$path is a symbolic link; the resource-policy state must not be. Review it by hand."
   done
 }
 
-# Hold an exclusive lock on the state directory until this process exits, so
-# an apply and a revert never run at the same time.
+# create_durable_dir PATH MODE: create PATH and flush both the new folder and
+# its parent to disk when it does not exist yet.
+create_durable_dir() {
+  local path=$1 mode=$2 target
+  target=$(host_path "$path")
+  if [[ ! -d "$target" ]]; then
+    [[ ! -e "$target" && ! -L "$target" ]] || die "$path exists and is not a directory; review it by hand."
+    install -d -m "$mode" "${owner_args[@]}" "$target"
+    sync -- "$target" "$(dirname -- "$target")"
+  fi
+}
+
+# Hold an exclusive lock on a persistent file outside the state directory until
+# this process exits, so an apply and a revert never run at the same time and
+# deleting the state directory on revert keeps the lock valid.
+lock_held=false
 lock_state() {
+  local target old_umask created_lock=false
+  [[ "$lock_held" != true ]] || return 0
   command -v flock >/dev/null 2>&1 || die 'flock (util-linux) is required to lock the resource-policy state.'
-  exec 9<"$(host_path "$state_dir")"
-  flock -n 9 || die "Another apply or revert holds the lock on $state_dir; wait for it to finish."
+  refuse_state_links
+  create_durable_dir "$state_parent" 0755
+  refuse_state_links
+  target=$(host_path "$lock_file")
+  [[ ! -d "$target" ]] || die "$lock_file is a directory; review it by hand."
+  [[ -e "$target" ]] || created_lock=true
+  old_umask=$(umask)
+  umask 077
+  exec 9>>"$target"
+  umask "$old_umask"
+  flock -n 9 || die "Another apply or revert holds the lock on $lock_file; wait for it to finish."
+  chmod 0600 "$target"
+  if [[ "$created_lock" == true ]]; then
+    sync -- "$target" "$(dirname -- "$target")"
+  fi
+  lock_held=true
 }
 
 # write_atomic SOURCE DEST [MODE]: copy SOURCE to a temporary file in DEST's
@@ -275,7 +308,13 @@ load_receipt() {
       done) step_done[$a]=true ;;
       reverting) step_reverting[$a]=true ;;
       undone) step_undone[$a]=true ;;
-      state) [[ "$a" != complete ]] || receipt_complete=true ;;
+      state)
+        case "$a" in
+          complete) receipt_complete=true ;;
+          migrating) receipt_complete=false ;;
+          *) die "Unknown state in $receipt: $a" ;;
+        esac
+        ;;
       *)
         [[ "$receipt_version" == 1 ]] || die "Unknown line in $receipt: $kind"
         # Version 1: kind path action backup installed, recorded before each
@@ -293,8 +332,10 @@ load_receipt() {
 # ---------------------------------------------------------------------------
 if [[ "$revert" == true ]]; then
   refuse_state_links
+  if [[ "$APPLY_CHANGES" == true && ( -e "$(host_path "$lock_file")" || -e "$(host_path "$receipt")" ) ]]; then
+    lock_state
+  fi
   [[ -f "$(host_path "$receipt")" ]] || die "No receipt at $receipt; there is nothing to revert."
-  [[ "$APPLY_CHANGES" != true ]] || lock_state
   load_receipt
 
   problems=()
@@ -366,14 +407,28 @@ if [[ "$revert" == true ]]; then
     current=$(host_path "$path")
     record reverting "$id"
     case "${step_kind[$id]}:$action" in
-      file:created) rm -f -- "$current" "$current$tmp_suffix" ;;
+      file:created)
+        rm -f -- "$current" "$current$tmp_suffix"
+        if [[ -d "$(dirname -- "$current")" ]]; then
+          sync -- "$(dirname -- "$current")"
+        fi
+        ;;
       file:replaced|file:removed)
         write_atomic "$(host_path "$state_dir/backups/${step_backup[$id]}")" "$current"
         ;;
-      mask:*) rm -f -- "$current" ;;
+      mask:*)
+        rm -f -- "$current"
+        if [[ -d "$(dirname -- "$current")" ]]; then
+          sync -- "$(dirname -- "$current")"
+        fi
+        ;;
       dir:*)
         if [[ -d "$current" ]]; then
-          rmdir -- "$current" 2>/dev/null || warn "$path is not empty; left in place."
+          if rmdir -- "$current" 2>/dev/null; then
+            sync -- "$(dirname -- "$current")"
+          else
+            warn "$path is not empty; left in place."
+          fi
         fi
         ;;
       sysctl:*) printf '%s\n' "$action" >"$(host_path /proc/sys/vm/swappiness)" ;;
@@ -385,7 +440,7 @@ if [[ "$revert" == true ]]; then
   done
   reload_managers
   rm -rf -- "$(host_path "$state_dir")"
-  rmdir -- "$(host_path "$state_parent")" 2>/dev/null || true
+  sync -- "$(host_path "$state_parent")"
   log 'Resource policy reverted. Running agent work keeps its cgroup until it restarts; zram and /tmp return to their earlier state at the next reboot.'
   exit 0
 fi
@@ -472,25 +527,27 @@ fi
 
 zram_swaps=0
 disk_swaps=0
-swap_total_kib=0
+disk_swap_kib=0
+zram_swap_kib=0
 while read -r swap_name _ swap_size _; do
   case "$swap_name" in
     Filename|'') ;;
     /dev/zram*)
       zram_swaps=$((zram_swaps + 1))
-      [[ "$swap_size" =~ ^[0-9]{1,15}$ ]] && swap_total_kib=$((swap_total_kib + swap_size))
+      [[ "$swap_size" =~ ^[0-9]{1,15}$ ]] && zram_swap_kib=$((zram_swap_kib + swap_size))
       ;;
     *)
       disk_swaps=$((disk_swaps + 1))
-      [[ "$swap_size" =~ ^[0-9]{1,15}$ ]] && swap_total_kib=$((swap_total_kib + swap_size))
+      [[ "$swap_size" =~ ^[0-9]{1,15}$ ]] && disk_swap_kib=$((disk_swap_kib + swap_size))
       ;;
   esac
 done <"$(host_path /proc/swaps)"
+swap_total_kib=$((disk_swap_kib + zram_swap_kib))
 
-# zram this apply configures and that is not active yet counts toward the swap
-# total, so MemorySwapMax is sized for the swap the host has after reboot.
+# Whenever --zram-percent is set, its planned size replaces any active zram
+# in the swap total so MemorySwapMax is sized for the swap after reboot.
 zram_planned_kib=0
-if ((zram_percent > 0 && zram_swaps == 0)); then
+if ((zram_percent > 0)); then
   zram_planned_kib=$((total_kib * zram_percent / 100))
 fi
 
@@ -524,8 +581,12 @@ declare -A inputs=(
   [oomd_pressure_percent]=$oomd_pressure_percent [swappiness]=$swappiness_mode [zram_percent]=$zram_percent
   [tmp]=$tmp_mode [allow_small_reserve]=$allow_small_reserve
 )
+if [[ "$APPLY_CHANGES" == true && ( -e "$(host_path "$lock_file")" || -e "$(host_path "$receipt")" ) ]]; then
+  lock_state
+fi
 receipt_present=false
 reuse_readings=false
+migrate_parent_step=''
 if [[ -e "$(host_path "$receipt")" ]]; then
   receipt_present=true
   load_receipt
@@ -545,19 +606,30 @@ if [[ -e "$(host_path "$receipt")" ]]; then
   for key in ram_kib swap_kib zram_planned_kib cpu_cores; do
     [[ "${r_reading[$key]:-}" =~ ^[0-9]{1,15}$ ]] || die "The receipt at $receipt lacks the reading $key; review it by hand."
   done
+  if [[ -n ${r_reading[zram_kib]:-} ]]; then
+    [[ "${r_reading[zram_kib]}" =~ ^[0-9]{1,15}$ ]] || die "The receipt at $receipt has an unreadable reading zram_kib; review it by hand."
+    receipt_zram_kib=${r_reading[zram_kib]}
+  else
+    receipt_zram_kib=0
+  fi
+  ((receipt_zram_kib <= r_reading[swap_kib])) || die "The receipt at $receipt has zram_kib above swap_kib; review it by hand."
   [[ "${r_reading[role]:-}" == desktop || "${r_reading[role]:-}" == headless ]] ||
     die "The receipt at $receipt lacks the host role; review it by hand."
-  for key in ram_kib swap_kib cpu_cores; do
+  for key in ram_kib swap_kib zram_kib cpu_cores; do
     case "$key" in
       ram_kib) now=$total_kib ;;
       swap_kib) now=$swap_total_kib ;;
+      zram_kib) now=$zram_swap_kib ;;
       cpu_cores) now=$cpu_cores ;;
     esac
+    [[ "$key" != zram_kib || -n ${r_reading[zram_kib]:-} ]] || continue
     [[ "$now" == "${r_reading[$key]}" ]] ||
       warn "The host now reads $key=$now; the approved reading ${r_reading[$key]} from the receipt is kept. Revert and apply again to resize."
   done
   total_kib=${r_reading[ram_kib]}
   swap_total_kib=${r_reading[swap_kib]}
+  zram_swap_kib=$receipt_zram_kib
+  disk_swap_kib=$((swap_total_kib - zram_swap_kib))
   zram_planned_kib=${r_reading[zram_planned_kib]}
   cpu_cores=${r_reading[cpu_cores]}
   if [[ "${r_reading[role]}" != "$role_label" ]]; then
@@ -567,6 +639,12 @@ if [[ -e "$(host_path "$receipt")" ]]; then
   fi
   swappiness=${r_value[swappiness]:--}
   [[ "$swappiness" != - ]] || swappiness=''
+  for id in "${step_ids[@]}"; do
+    [[ -z ${step_undone[$id]:-} ]] || continue
+    if [[ "${step_kind[$id]}" == file && "${step_path[$id]}" == "$old_parent_slice_path" ]]; then
+      migrate_parent_step=$id
+    fi
+  done
 fi
 
 role_default_gib=2
@@ -631,7 +709,11 @@ else
   memory_high_derivation="$(gib "$memory_max") MemoryMax - $(gib "$high_margin") (min(10% of MemoryMax, 8 GiB))"
 fi
 
-swap_basis_kib=$((swap_total_kib + zram_planned_kib))
+if ((zram_planned_kib > 0)); then
+  swap_basis_kib=$((disk_swap_kib + zram_planned_kib))
+else
+  swap_basis_kib=$swap_total_kib
+fi
 if [[ -n "$swap_max_percent" ]]; then
   swap_max=$((total_kib * swap_max_percent / 100))
   swap_max_derivation="${swap_max_percent}% of $(gib "$total_kib") RAM (override: --swap-max-percent)"
@@ -639,8 +721,10 @@ else
   swap_max=$(calculate_swap_max_kib "$swap_basis_kib")
   if ((swap_basis_kib == 0)); then
     swap_max_derivation='no swap configured (formula: min(25% of swap, 8 GiB))'
+  elif ((zram_planned_kib > 0 && zram_swap_kib > 0)); then
+    swap_max_derivation="min(25% of ($(gib "$disk_swap_kib") disk swap + $(gib "$zram_planned_kib") planned zram at ${zram_percent}% of RAM, replacing $(gib "$zram_swap_kib") active zram), 8 GiB)"
   elif ((zram_planned_kib > 0)); then
-    swap_max_derivation="min(25% of ($(gib "$swap_total_kib") swap + $(gib "$zram_planned_kib") planned zram at ${zram_percent}% of RAM), 8 GiB)"
+    swap_max_derivation="min(25% of ($(gib "$disk_swap_kib") swap + $(gib "$zram_planned_kib") planned zram at ${zram_percent}% of RAM), 8 GiB)"
   else
     swap_max_derivation="min(25% of $(gib "$swap_total_kib") swap, 8 GiB)"
   fi
@@ -715,20 +799,22 @@ if [[ "$mask_tmp" == true && -L "$(host_path "$tmp_mask_path")" ]]; then
   mask_tmp=false
 fi
 
-for path in "$parent_slice_path" "$slice_path" "$sysctl_path" "$zram_path" "$old_dropin" "${oomd_vendor_dropins[@]}"; do
+for path in "$parent_slice_dir" "$parent_slice_path" "$old_parent_slice_path" "$slice_path" "$sysctl_path" "$zram_path" "$old_dropin" "${oomd_vendor_dropins[@]}"; do
   [[ ! -L "$(host_path "$path")" ]] || die "$path is a symbolic link; review it by hand."
 done
+[[ ! -e "$(host_path "$parent_slice_dir")" || -d "$(host_path "$parent_slice_dir")" ]] ||
+  die "$parent_slice_dir exists and is not a directory; review it by hand."
 
 # ---------------------------------------------------------------------------
 # Render the desired files.
 # ---------------------------------------------------------------------------
 # agent.slice is the parent systemd implies from the name agent-work.slice. It
 # sits beside app.slice and session.slice in the agent's user manager, so its
-# CPUWeight is what competes with the desktop there.
+# CPUWeight is what competes with the desktop there. Write it as a drop-in so
+# other definitions or vendor settings on agent.slice are not shadowed.
 cat >"$work_dir/parent-slice" <<EOF
 # Managed by agent-workstation-kit apply-resource-policy-linux.sh; undo with --revert.
 [Unit]
-Description=Agent work CPU share for $agent_account
 ConditionUser=$agent_account
 
 [Slice]
@@ -837,15 +923,43 @@ printf '  zram:               %s\n' "$( ((zram_percent > 0)) && printf 'zram0 at
 printf '  /tmp policy:        %s\n\n' "$([[ "$mask_tmp" == true ]] && printf 'disk-backed from the next boot (mask tmp.mount)' || printf 'unchanged')"
 
 if [[ "$receipt_present" == true ]]; then
-  if ((${#changes[@]} == 0)); then
-    log "Policy already applied as recorded in $receipt; nothing to change."
-    exit 0
+  if [[ -z "$migrate_parent_step" ]]; then
+    if ((${#changes[@]} == 0)); then
+      log "Policy already applied as recorded in $receipt; nothing to change."
+      exit 0
+    fi
+    die "A receipt from an earlier apply exists at $receipt and the host no longer matches it. Run --revert first, then preview and apply again."
   fi
-  die "A receipt from an earlier apply exists at $receipt and the host no longer matches it. Run --revert first, then preview and apply again."
+  for change in "${changes[@]}"; do
+    IFS='|' read -r kind path _ _ <<<"$change"
+    if [[ "$kind" != file || "$path" != "$parent_slice_path" ]]; then
+      die "A receipt from an earlier apply exists at $receipt and the host no longer matches it. Run --revert first, then preview and apply again."
+    fi
+  done
+  old_action=${step_action[$migrate_parent_step]}
+  old_installed=$(host_path "$state_dir/installed/${step_installed[$migrate_parent_step]}")
+  old_current=$(host_path "$old_parent_slice_path")
+  if [[ -L "$old_current" ]]; then
+    die "$old_parent_slice_path is now a symbolic link; review it by hand."
+  elif [[ ! -e "$old_current" ]]; then
+    [[ "$old_action" != replaced ]] || die "$old_parent_slice_path was deleted after apply; review it by hand."
+  elif [[ "$old_action" == created || "$old_action" == replaced ]]; then
+    { [[ -f "$old_installed" ]] && cmp -s "$old_installed" "$old_current"; } ||
+      die "$old_parent_slice_path changed after apply; review it by hand."
+  else
+    die "Unsupported receipt action for $old_parent_slice_path ($old_action); review it by hand."
+  fi
 fi
 
-if ((${#changes[@]} == 0)); then
+if ((${#changes[@]} == 0)) && [[ -z "$migrate_parent_step" ]]; then
   log 'Nothing on this host differs from the policy.'
+fi
+if [[ -n "$migrate_parent_step" ]]; then
+  if [[ "${step_action[$migrate_parent_step]}" == created ]]; then
+    log "Would migrate: remove $old_parent_slice_path (installed by an earlier run)"
+  else
+    log "Would migrate: restore $old_parent_slice_path from its backup (installed by an earlier run)"
+  fi
 fi
 for change in "${changes[@]}"; do
   IFS='|' read -r kind path action _ <<<"$change"
@@ -857,7 +971,11 @@ for change in "${changes[@]}"; do
     service) log "Would run systemctl enable --now $path" ;;
   esac
 done
-log "Would write the receipt $receipt"
+if [[ -n "$migrate_parent_step" ]]; then
+  log "Would update the receipt $receipt"
+else
+  log "Would write the receipt $receipt"
+fi
 
 if [[ "$APPLY_CHANGES" != true ]]; then
   log 'Preview only. Re-run with --apply after review.'
@@ -865,27 +983,50 @@ if [[ "$APPLY_CHANGES" != true ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Apply: lock, back up, record the intent, change, record completion; one
-# step at a time, every file written atomically.
+# Apply: lock, flush state dirs, back up, record intent, change, record done;
+# one step at a time, every file written atomically.
 # ---------------------------------------------------------------------------
-install -d -m 0700 "${owner_args[@]}" "$(host_path "$state_dir")" \
-  "$(host_path "$state_dir/backups")" "$(host_path "$state_dir/installed")"
-refuse_state_links
 lock_state
-[[ ! -e "$(host_path "$receipt")" ]] || die "A receipt appeared at $receipt after the preview; preview again."
-{
-  printf 'version\t2\nagent\t%s\n' "$agent_account"
-  for key in "${input_keys[@]}"; do printf 'input\t%s\t%s\n' "$key" "${inputs[$key]}"; done
-  printf 'reading\tram_kib\t%s\nreading\tswap_kib\t%s\nreading\tzram_planned_kib\t%s\nreading\tcpu_cores\t%s\nreading\trole\t%s\n' \
-    "$total_kib" "$swap_total_kib" "$zram_planned_kib" "$cpu_cores" "$role_label"
-  for key in "${value_keys[@]}"; do printf 'value\t%s\t%s\n' "$key" "${values[$key]}"; done
-} >"$work_dir/receipt"
-write_atomic "$work_dir/receipt" "$(host_path "$receipt")" 0600
+create_durable_dir "$state_dir" 0700
+create_durable_dir "$state_dir/backups" 0700
+create_durable_dir "$state_dir/installed" 0700
+refuse_state_links
 trap 'warn "Apply stopped part way. Undo what it changed with: apply-resource-policy-linux.sh --agent $agent_account --revert --apply"' ERR
 
 step=0
+if [[ -n "$migrate_parent_step" ]]; then
+  for id in "${step_ids[@]}"; do
+    if [[ "$id" =~ ^[0-9]+$ ]] && ((id > step)); then
+      step=$id
+    fi
+  done
+  record state migrating
+  record reverting "$migrate_parent_step"
+  if [[ "${step_action[$migrate_parent_step]}" == created ]]; then
+    rm -f -- "$old_current" "$old_current$tmp_suffix"
+    if [[ -d "$(dirname -- "$old_current")" ]]; then
+      sync -- "$(dirname -- "$old_current")"
+    fi
+  else
+    write_atomic "$(host_path "$state_dir/backups/${step_backup[$migrate_parent_step]}")" "$old_current"
+  fi
+  stop_point
+  record undone "$migrate_parent_step"
+  log "Migrated: reverted $old_parent_slice_path"
+else
+  [[ ! -e "$(host_path "$receipt")" ]] || die "A receipt appeared at $receipt after the preview; preview again."
+  {
+    printf 'version\t2\nagent\t%s\n' "$agent_account"
+    for key in "${input_keys[@]}"; do printf 'input\t%s\t%s\n' "$key" "${inputs[$key]}"; done
+    printf 'reading\tram_kib\t%s\nreading\tswap_kib\t%s\nreading\tzram_kib\t%s\nreading\tzram_planned_kib\t%s\nreading\tcpu_cores\t%s\nreading\trole\t%s\n' \
+      "$total_kib" "$swap_total_kib" "$zram_swap_kib" "$zram_planned_kib" "$cpu_cores" "$role_label"
+    for key in "${value_keys[@]}"; do printf 'value\t%s\t%s\n' "$key" "${values[$key]}"; done
+  } >"$work_dir/receipt"
+  write_atomic "$work_dir/receipt" "$(host_path "$receipt")" 0600
+fi
+
 ensure_dir() {
-  local dir=$1 missing=() index
+  local dir=$1 missing=() index target
   while [[ ! -d "$(host_path "$dir")" ]]; do
     missing+=("$dir")
     dir=$(dirname "$dir")
@@ -893,7 +1034,9 @@ ensure_dir() {
   for ((index = ${#missing[@]} - 1; index >= 0; index--)); do
     step=$((step + 1))
     record begin "$step" dir "${missing[index]}" created - -
-    install -d -m 0755 "${owner_args[@]}" "$(host_path "${missing[index]}")"
+    target=$(host_path "${missing[index]}")
+    install -d -m 0755 "${owner_args[@]}" "$target"
+    sync -- "$target" "$(dirname -- "$target")"
     stop_point
     record 'done' "$step"
   done
@@ -931,6 +1074,7 @@ for change in "${changes[@]}"; do
       step=$((step + 1))
       record begin "$step" mask "$path" created - -
       ln -s /dev/null "$dest"
+      sync -- "$(dirname -- "$dest")"
       ;;
     sysctl:*)
       step=$((step + 1))

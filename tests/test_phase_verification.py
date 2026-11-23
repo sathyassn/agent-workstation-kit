@@ -253,13 +253,13 @@ GIB = 1024 * 1024
 COMMAND = ["apply-resource-policy-linux.sh", "--agent", "agent-01"]
 
 
-def receipt_text(inputs=None, readings=None, values=None, complete=True):
+def receipt_text(inputs=None, readings=None, values=None, complete=True, states=None):
     """A version 2 receipt as apply writes it for 64 GiB desktop, 8 GiB swap, 16 cores."""
     lines = ["version\t2", "agent\tagent-01"]
     base_inputs = pv.resource_receipt_inputs(pv.resource_options(COMMAND))
     base_inputs.update(inputs or {})
     lines += ["input\t%s\t%s" % item for item in base_inputs.items()]
-    base_readings = {"ram_kib": str(64 * GIB), "swap_kib": str(8 * GIB), "zram_planned_kib": "0", "cpu_cores": "16", "role": "desktop"}
+    base_readings = {"ram_kib": str(64 * GIB), "swap_kib": str(8 * GIB), "zram_kib": "0", "zram_planned_kib": "0", "cpu_cores": "16", "role": "desktop"}
     base_readings.update(readings or {})
     lines += ["reading\t%s\t%s" % item for item in base_readings.items()]
     base_values = {"reserve_kib": "9730785", "memory_max_kib": "57378079", "memory_high_kib": "51640272", "swap_max_kib": "2097152",
@@ -267,8 +267,10 @@ def receipt_text(inputs=None, readings=None, values=None, complete=True):
                    "swappiness": "10", "zram_percent": "0"}
     base_values.update(values or {})
     lines += ["value\t%s\t%s" % item for item in base_values.items()]
-    lines += ["begin\t1\tfile\t/etc/systemd/user/agent.slice\tcreated\t-\t_etc_systemd_user_agent.slice", "done\t1"]
-    if complete:
+    lines += ["begin\t1\tfile\t/etc/systemd/user/agent.slice.d/50-agent-workstation-kit.conf\tcreated\t-\t_etc_systemd_user_agent.slice.d_50-agent-workstation-kit.conf", "done\t1"]
+    if states is not None:
+        lines += ["state\t" + state for state in states]
+    elif complete:
         lines.append("state\tcomplete")
     return "\n".join(lines) + "\n"
 
@@ -283,12 +285,20 @@ class ResourcePolicyTests(unittest.TestCase):
         path.write_text(receipt_text(**kwargs))
         return pv.read_resource_receipt(path)
 
-    def test_cpu_weight_lives_on_the_parent_agent_slice(self):
+    def test_cpu_weight_lives_on_the_parent_agent_slice_dropin(self):
+        self.assertEqual(Path("/etc/systemd/user/agent.slice.d/50-agent-workstation-kit.conf"), pv.AGENT_PARENT_SLICE)
         values = pv.resource_values({"resources": {}}, 64 * GIB, COMMAND + ["--cpu-weight", "75"], swap_total_kib=8 * GIB, cpu_cores=16, desktop=True)
         self.assertNotIn("CPUWeight", pv.agent_slice_text("agent-01", values, True))
         parent = pv.agent_parent_slice_text("agent-01", values)
-        self.assertIn("\nConditionUser=agent-01\n", parent)
+        self.assertIn("[Unit]\nConditionUser=agent-01\n", parent)
+        self.assertNotIn("Description=", parent)
         self.assertTrue(parent.endswith("[Slice]\nCPUWeight=75\n"))
+
+    def test_migrating_receipt_is_incomplete(self):
+        with self.assertRaises(ValueError):
+            pv.receipt_resource_values(self.receipt(states=["complete", "migrating"]), {"resources": {}}, COMMAND, "agent-01")
+        values = pv.receipt_resource_values(self.receipt(states=["complete", "migrating", "complete"]), {"resources": {}}, COMMAND, "agent-01")
+        self.assertEqual("57378079K", values["MemoryMax"])
 
     def test_measure_is_informational(self):
         plain = pv.resource_values({"resources": {}}, 60 * GIB, COMMAND, swap_total_kib=8 * GIB, cpu_cores=16, desktop=True)
@@ -328,9 +338,42 @@ class ResourcePolicyTests(unittest.TestCase):
                                      swap_total_kib=0, cpu_cores=16, desktop=True)
         self.assertEqual("60397977K", allowed["MemoryMax"])
 
-    def test_planned_zram_counts_toward_the_swap_total(self):
-        values = pv.resource_values({"resources": {}}, 64 * GIB, COMMAND, swap_total_kib=8 * GIB, cpu_cores=16, desktop=True, planned_zram_kib=16 * GIB)
-        self.assertEqual("6291456K", values["MemorySwapMax"])
+    def test_planned_zram_counts_toward_the_swap_total_and_replaces_active_zram(self):
+        # No existing zram device: 8 GiB disk + 16 GiB planned zram = 24 GiB -> 6 GiB.
+        no_dev = pv.resource_values({"resources": {}}, 64 * GIB, COMMAND + ["--zram-percent", "25"],
+                                    swap_total_kib=8 * GIB, active_zram_kib=0, cpu_cores=16, desktop=True)
+        self.assertEqual("6291456K", no_dev["MemorySwapMax"])
+        # Existing 4 GiB zram resized up to 16 GiB: 8 GiB disk + 16 GiB planned = 24 GiB -> 6 GiB (not 7 GiB or 3 GiB).
+        resized_up = pv.resource_values({"resources": {}}, 64 * GIB, COMMAND + ["--zram-percent", "25"],
+                                        swap_total_kib=12 * GIB, active_zram_kib=4 * GIB, cpu_cores=16, desktop=True)
+        self.assertEqual("6291456K", resized_up["MemorySwapMax"])
+        # Existing 28 GiB zram resized down to 16 GiB: 4 GiB disk + 16 GiB planned = 20 GiB -> 5 GiB (not 8 GiB).
+        resized_down = pv.resource_values({"resources": {}}, 64 * GIB, COMMAND + ["--zram-percent", "25"],
+                                          swap_total_kib=32 * GIB, active_zram_kib=28 * GIB, cpu_cores=16, desktop=True)
+        self.assertEqual("5242880K", resized_down["MemorySwapMax"])
+        # Receipt derivation mirrors zram resize up and down and rejects zram_kib > swap_kib.
+        up_receipt = self.receipt(
+            inputs={"zram_percent": "25"},
+            readings={"swap_kib": str(12 * GIB), "zram_kib": str(4 * GIB), "zram_planned_kib": str(16 * GIB)},
+            values={"swap_max_kib": str(6 * GIB), "zram_percent": "25"},
+        )
+        self.assertEqual("6291456K", pv.receipt_resource_values(up_receipt, {"resources": {}}, COMMAND + ["--zram-percent", "25"], "agent-01")["MemorySwapMax"])
+        down_receipt = self.receipt(
+            inputs={"zram_percent": "25"},
+            readings={"swap_kib": str(32 * GIB), "zram_kib": str(28 * GIB), "zram_planned_kib": str(16 * GIB)},
+            values={"swap_max_kib": str(5 * GIB), "zram_percent": "25"},
+        )
+        self.assertEqual("5242880K", pv.receipt_resource_values(down_receipt, {"resources": {}}, COMMAND + ["--zram-percent", "25"], "agent-01")["MemorySwapMax"])
+        with self.assertRaises(ValueError):
+            pv.receipt_resource_values(
+                self.receipt(readings={"swap_kib": str(4 * GIB), "zram_kib": str(8 * GIB)}),
+                {"resources": {}}, COMMAND, "agent-01",
+            )
+        with tempfile.TemporaryDirectory() as directory:
+            swaps = Path(directory) / "swaps"
+            swaps.write_text("Filename\tType\tSize\tUsed\tPriority\n/swap.img\tfile\t8388608\t0\t-2\n/dev/zram0\tpartition\t4194304\t0\t100\n")
+            self.assertEqual(12 * GIB, pv.host_swap_total_kib(swaps))
+            self.assertEqual(4 * GIB, pv.host_zram_swap_kib(swaps))
 
     def test_values_come_from_the_receipt_not_the_host(self):
         with mock.patch.object(pv, "host_swap_total_kib", side_effect=AssertionError("re-read swap")), \
@@ -351,6 +394,25 @@ class ResourcePolicyTests(unittest.TestCase):
             with self.subTest(label), self.assertRaises(ValueError):
                 pv.receipt_resource_values(self.receipt(**receipt), {"resources": {}}, command, agent)
 
+    def test_systemd_timespan_parser(self):
+        valid = (
+            ("1min", 60_000_000),
+            ("2min 4s", 124_000_000),
+            ("14s", 14_000_000),
+            ("500ms", 500_000),
+            ("250us", 250),
+            ("1h 30min", 5_400_000_000),
+            ("1d 2h", 93_600_000_000),
+            ("1w", 604_800_000_000),
+            ("infinity", None),
+        )
+        for text, expected in valid:
+            with self.subTest(text=text):
+                self.assertEqual(expected, pv.parse_systemd_timespan_usec(text))
+        for bad in ("", "   ", "14", "14sec", "1min bogus", "-5s", "50%", "1.5us", "min", "infinity 1s"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                pv.parse_systemd_timespan_usec(bad)
+
     def test_effective_values_and_cpu_delegation_are_checked(self):
         values = pv.resource_values({"resources": {}}, 64 * GIB, COMMAND, swap_total_kib=8 * GIB, cpu_cores=16, desktop=True)
         live = {
@@ -370,6 +432,28 @@ class ResourcePolicyTests(unittest.TestCase):
             controllers = Path(directory) / "cgroup.controllers"
             controllers.write_text("cpuset cpu io memory pids\n")
             self.assertEqual([], pv.effective_resource_problems("agent-01", 1001, values, run("cpu memory pids"), controllers))
+            # Systemd timespan formats: 1min (6000%), 2min 4s (12400%), 14s (1400%), 500ms (50%).
+            for quota, formatted in (("6000%", "1min"), ("12400%", "2min 4s"), ("1400%", "14s"), ("50%", "500ms")):
+                with self.subTest(quota=quota, formatted=formatted):
+                    case_values = {**values, "CPUQuota": quota}
+                    live["agent-work.slice"] = (
+                        "MemoryHigh=%d\nMemoryMax=%d\nMemorySwapMax=%d\nTasksMax=8192\nCPUQuotaPerSecUSec=%s\n"
+                        % (51640272 * 1024, 57378079 * 1024, 2097152 * 1024, formatted)
+                    )
+                    self.assertEqual([], pv.effective_resource_problems("agent-01", 1001, case_values, run("cpu memory pids"), controllers))
+            # infinity means no quota; malformed values fail closed.
+            for bad_quota in ("infinity", "14bogus", ""):
+                with self.subTest(bad_quota=bad_quota):
+                    live["agent-work.slice"] = (
+                        "MemoryHigh=%d\nMemoryMax=%d\nMemorySwapMax=%d\nTasksMax=8192\nCPUQuotaPerSecUSec=%s\n"
+                        % (51640272 * 1024, 57378079 * 1024, 2097152 * 1024, bad_quota)
+                    )
+                    problems = pv.effective_resource_problems("agent-01", 1001, values, run("cpu memory pids"), controllers)
+                    self.assertTrue(any("CPUQuotaPerSecUSec" in problem for problem in problems), problems)
+            live["agent-work.slice"] = (
+                "MemoryHigh=%d\nMemoryMax=%d\nMemorySwapMax=%d\nTasksMax=8192\nCPUQuotaPerSecUSec=14s\n"
+                % (51640272 * 1024, 57378079 * 1024, 2097152 * 1024)
+            )
             self.assertIn("user@1001.service does not delegate the cpu controller",
                           pv.effective_resource_problems("agent-01", 1001, values, run("memory pids"), controllers))
             live["agent.slice"] = "CPUWeight=100\n"

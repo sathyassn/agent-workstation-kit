@@ -289,12 +289,12 @@ unit_value() {
 }
 
 # Print one line per problem with the installed resource-policy slices: WORK is
-# agent-work.slice (memory ceiling and CPUQuota) and PARENT is agent.slice
-# (CPUWeight). Prints nothing when both are sound. Values are read as text
-# and checked by length before any arithmetic.
+# agent-work.slice (memory ceiling and CPUQuota) and PARENT is the agent.slice
+# drop-in (CPUWeight). Prints nothing when both are sound. Values are read as
+# text and checked by length before any arithmetic.
 resource_slice_problems() {
   local work=$1 parent=$2 agent=$3 high max swap quota tasks weight
-  if [[ ! -f "$work" || -L "$work" ]]; then
+  if [[ ! -f "$work" || -L "$work" || -L "$(dirname -- "$work")" ]]; then
     printf 'agent-work.slice is missing or is a symbolic link\n'
   else
     grep -Fxq "ConditionUser=$agent" "$work" || printf 'agent-work.slice lacks ConditionUser=%s\n' "$agent"
@@ -319,13 +319,13 @@ resource_slice_problems() {
     fi
     [[ -z "$(unit_value "$work" CPUWeight)" ]] || printf 'agent-work.slice sets CPUWeight, which belongs on agent.slice\n'
   fi
-  if [[ ! -f "$parent" || -L "$parent" ]]; then
-    printf 'agent.slice is missing or is a symbolic link\n'
+  if [[ ! -f "$parent" || -L "$parent" || -L "$(dirname -- "$parent")" ]]; then
+    printf 'agent.slice drop-in is missing or is a symbolic link\n'
   else
-    grep -Fxq "ConditionUser=$agent" "$parent" || printf 'agent.slice lacks ConditionUser=%s\n' "$agent"
+    grep -Fxq "ConditionUser=$agent" "$parent" || printf 'agent.slice drop-in lacks ConditionUser=%s\n' "$agent"
     weight=$(unit_value "$parent" CPUWeight)
     if [[ ! "$weight" =~ ^[1-9][0-9]{0,4}$ ]] || ((weight > 10000)); then
-      printf 'agent.slice CPUWeight is missing or outside 1-10000 (%s)\n' "${weight:-unset}"
+      printf 'agent.slice drop-in CPUWeight is missing or outside 1-10000 (%s)\n' "${weight:-unset}"
     fi
   fi
 }
