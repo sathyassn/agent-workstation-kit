@@ -322,7 +322,8 @@ resource_slice_problems() {
   if [[ ! -f "$parent" || -L "$parent" || -L "$(dirname -- "$parent")" ]]; then
     printf 'agent.slice drop-in is missing or is a symbolic link\n'
   else
-    grep -Fxq "ConditionUser=$agent" "$parent" || printf 'agent.slice drop-in lacks ConditionUser=%s\n' "$agent"
+    [[ -z "$(unit_value "$parent" ConditionUser)" ]] ||
+      printf "agent.slice drop-in sets ConditionUser, which must be omitted so CPUWeight applies to every user's agent.slice\n"
     weight=$(unit_value "$parent" CPUWeight)
     if [[ ! "$weight" =~ ^[1-9][0-9]{0,4}$ ]] || ((weight > 10000)); then
       printf 'agent.slice drop-in CPUWeight is missing or outside 1-10000 (%s)\n' "${weight:-unset}"

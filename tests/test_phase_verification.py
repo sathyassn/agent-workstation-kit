@@ -253,14 +253,19 @@ GIB = 1024 * 1024
 COMMAND = ["apply-resource-policy-linux.sh", "--agent", "agent-01"]
 
 
-def receipt_text(inputs=None, readings=None, values=None, complete=True, states=None):
-    """A version 2 receipt as apply writes it for 64 GiB desktop, 8 GiB swap, 16 cores."""
-    lines = ["version\t2", "agent\tagent-01"]
+def receipt_text(inputs=None, readings=None, values=None, complete=True, states=None,
+                 version="2", formula="2", omit_formula=False, omit_readings=()):
+    """A version 2, formula 2 receipt as apply writes it for 64 GiB desktop, 8 GiB swap, 16 cores."""
+    lines = ["version\t" + version, "agent\tagent-01"]
+    if not omit_formula:
+        lines.append("formula\t" + formula)
     base_inputs = pv.resource_receipt_inputs(pv.resource_options(COMMAND))
     base_inputs.update(inputs or {})
     lines += ["input\t%s\t%s" % item for item in base_inputs.items()]
     base_readings = {"ram_kib": str(64 * GIB), "swap_kib": str(8 * GIB), "zram_kib": "0", "zram_planned_kib": "0", "cpu_cores": "16", "role": "desktop"}
     base_readings.update(readings or {})
+    for key in omit_readings:
+        base_readings.pop(key, None)
     lines += ["reading\t%s\t%s" % item for item in base_readings.items()]
     base_values = {"reserve_kib": "9730785", "memory_max_kib": "57378079", "memory_high_kib": "51640272", "swap_max_kib": "2097152",
                    "cpu_weight": "50", "cpu_quota_percent": "1400", "tasks_max": "8192", "oomd_pressure_percent": "60",
@@ -289,16 +294,24 @@ class ResourcePolicyTests(unittest.TestCase):
         self.assertEqual(Path("/etc/systemd/user/agent.slice.d/50-agent-workstation-kit.conf"), pv.AGENT_PARENT_SLICE)
         values = pv.resource_values({"resources": {}}, 64 * GIB, COMMAND + ["--cpu-weight", "75"], swap_total_kib=8 * GIB, cpu_cores=16, desktop=True)
         self.assertNotIn("CPUWeight", pv.agent_slice_text("agent-01", values, True))
-        parent = pv.agent_parent_slice_text("agent-01", values)
-        self.assertIn("[Unit]\nConditionUser=agent-01\n", parent)
+        parent = pv.agent_parent_slice_text(values)
+        self.assertNotIn("ConditionUser=", parent)
+        self.assertNotIn("[Unit]", parent)
         self.assertNotIn("Description=", parent)
         self.assertTrue(parent.endswith("[Slice]\nCPUWeight=75\n"))
 
-    def test_migrating_receipt_is_incomplete(self):
+    def test_old_receipts_and_unknown_states_are_refused(self):
+        earlier = "applied by an earlier version"
+        with self.assertRaisesRegex(ValueError, earlier):
+            self.receipt(version="1")
+        with self.assertRaisesRegex(ValueError, earlier):
+            self.receipt(omit_formula=True, inputs={"zram_percent": "25"}, readings={"zram_planned_kib": "0"})
+        with self.assertRaisesRegex(ValueError, earlier):
+            self.receipt(formula="1")
         with self.assertRaises(ValueError):
-            pv.receipt_resource_values(self.receipt(states=["complete", "migrating"]), {"resources": {}}, COMMAND, "agent-01")
-        values = pv.receipt_resource_values(self.receipt(states=["complete", "migrating", "complete"]), {"resources": {}}, COMMAND, "agent-01")
-        self.assertEqual("57378079K", values["MemoryMax"])
+            self.receipt(states=["complete", "migrating"])
+        with self.assertRaises(ValueError):
+            pv.receipt_resource_values(self.receipt(omit_readings=("zram_kib",)), {"resources": {}}, COMMAND, "agent-01")
 
     def test_measure_is_informational(self):
         plain = pv.resource_values({"resources": {}}, 60 * GIB, COMMAND, swap_total_kib=8 * GIB, cpu_cores=16, desktop=True)

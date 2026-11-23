@@ -64,9 +64,7 @@ root.
 `/etc/systemd/user/agent-work.slice`, under the agent account's user manager,
 with its CPU weight in a drop-in on the parent slice,
 `/etc/systemd/user/agent.slice.d/50-agent-workstation-kit.conf`, so any other
-definitions or vendor settings on `agent.slice` are not shadowed. If an earlier
-run of this script wrote a whole `/etc/systemd/user/agent.slice` (recorded in
-the receipt), re-running apply reverts that file before writing the drop-in.
+definitions or vendor settings on `agent.slice` are not shadowed.
 Earlier versions limited the whole `user-UID.slice`. That slice also holds the
 agent account's desktop, so a ceiling there throttled the desktop with the
 jobs, and it missed `agentctl` sessions completely: `sudo` keeps a delegated
@@ -83,8 +81,11 @@ rests on systemd's documented behaviour:
   inside the agent's user manager, so its `CPUWeight=50` is what keeps the
   agent account's desktop responsive while agents run. The `CPUQuota` hard cap
   stays on `agent-work.slice`.
-- Units in `/etc/systemd/user` are root-owned and load in every user manager;
-  `ConditionUser=` keeps both slices to the agent account.
+- Units in `/etc/systemd/user` are root-owned and load in every user manager.
+  `ConditionUser=` keeps `agent-work.slice` to the agent account. The
+  `agent.slice.d` drop-in omits `ConditionUser=`, so `CPUWeight=50` applies to
+  every user's `agent.slice`; that slice exists only as the implicit parent of
+  `agent-work.slice`, so a lower weight there is the intended policy for anyone.
 - systemd-oomd acts on user units (systemd 248 and newer), so the slice can
   carry `ManagedOOMMemoryPressure=kill` with its own pressure limit.
 - A system-level slice would need root to place each process in it, while
@@ -146,7 +147,7 @@ and source (formula or explicit override) before apply.
 | Memory reserve | `fixed + 2% of RAM` (never below the fixed part); fixed part is 8 GiB when `graphical.target` or a display manager is active, 2 GiB headless, or `--reserve-fixed-gib` | 8 GiB desktop or 2 GiB headless + 2% of RAM | Preview |
 | Memory ceiling | `MemoryMax = RAM - reserve` (refuses when below 2 GiB); `MemoryHigh = MemoryMax - min(10% of MemoryMax, 8 GiB)` | Reserve-based formula | New and restarted work in the slice |
 | Swap for agent work | `MemorySwapMax = min(25% of total swap, 8 GiB)`, where total swap is disk swap plus the planned zram when `--zram-percent` is set (replacing any existing zram size rather than adding to it), or active swap otherwise; `0` when there is none | Formula from `/proc/swaps` and `--zram-percent` | Same |
-| CPU controls | `CPUWeight=50` in `/etc/systemd/user/agent.slice.d/50-agent-workstation-kit.conf` (`app.slice` and `session.slice` keep 100); `reserved = clamp(ceil(cores * 0.05), 2, 4)`, lowered on 1 or 2 CPUs so agent work keeps one core, and `CPUQuota = (cores - reserved) * 100%` on `agent-work.slice` | Formula from `/proc/cpuinfo` | Same |
+| CPU controls | `CPUWeight=50` in `/etc/systemd/user/agent.slice.d/50-agent-workstation-kit.conf` (omits `ConditionUser=`, so it applies to every user's `agent.slice`; `app.slice` and `session.slice` keep 100); `reserved = clamp(ceil(cores * 0.05), 2, 4)`, lowered on 1 or 2 CPUs so agent work keeps one core, and `CPUQuota = (cores - reserved) * 100%` on `agent-work.slice` | Formula from `/proc/cpuinfo` | Same |
 | systemd-oomd | Enabled; kills in the slice above the pressure limit (states `enabled`, `enabled-runtime`, `static` and `alias` count as enabled) | 60% | At once |
 | oomd scope | Overrides each vendor oomd drop-in for `user@.service` and `-.slice` with `ManagedOOM...=auto`, so oomd acts only on `agent-work.slice` | | At once |
 | Swappiness | `vm.swappiness`: 100 with zram, 10 with disk swap only, unchanged with no swap | auto | At once |
@@ -216,8 +217,11 @@ with a warning, and `--tmp disk` refuses it.
 The script refuses, with a message, when systemd is not the init system, is
 older than 248, the unified cgroup v2 memory or cpu controller is missing, the
 user manager does not delegate memory and cpu, `--zram-percent` is set without
-`systemd-zram-generator`, the shares break the reserve, or the state
-directory, lock file, receipt or one of their parents is a symbolic link.
+`systemd-zram-generator`, the shares break the reserve, an existing receipt
+comes from an earlier version or formula, the state directory, lock file,
+receipt or one of their parents is a symbolic link, or `/var/lib`,
+`/var/lib/agent-workstation-kit` or an existing lock file is not root-owned
+(or a parent directory is group- or world-writable).
 
 **Receipt and exact undo.** Apply copies each file it replaces or removes into
 `/var/lib/agent-workstation-kit/resource-policy/backups/` before changing it,
@@ -226,9 +230,11 @@ and records every change (files, directories created by this apply such as
 oomd service) in `receipt.tsv` there. Each newly created state folder
 (`/var/lib/agent-workstation-kit`, `resource-policy`, `backups/` and
 `installed/`) and its parent are flushed to disk before the first policy file
-is written. The receipt also keeps the approved inputs (every flag), the
-readings the values came from (RAM, active swap, active zram, planned zram,
-cores, host role) and every value written. A repeat apply with the same inputs
+is written. The receipt also keeps the formula version, the approved inputs
+(every flag), the readings the values came from (RAM, active swap, active
+zram, planned zram, cores, host role) and every value written. A receipt from
+an earlier version or formula is refused without migration; revert it with the
+version that applied it, then apply again. A repeat apply with the same inputs
 reuses those readings and changes nothing, even when the host now reads a
 different amount of memory or swap; it says which reading changed. Different
 inputs are refused until you revert. The phase verifier derives the expected
@@ -240,8 +246,14 @@ to disk, then renamed over the destination, so a file is either the old or the
 new version. Apply and revert hold an exclusive lock on a persistent file,
 `/var/lib/agent-workstation-kit/resource-policy.lock` (`0600` in a `0755`
 root-owned parent), which revert never removes even when it deletes
-`resource-policy/`, so two runs never interleave. Revert reloads both the
-system manager and the affected user manager, as apply does.
+`resource-policy/`, so two runs never interleave. Before locking, the script
+checks that `/var/lib` and `/var/lib/agent-workstation-kit` are real
+root-owned directories that are not group- or world-writable and that any
+existing lock file is a root-owned regular file, opens the lock descriptor
+relative to `/var/lib/agent-workstation-kit`, and confirms through
+`/proc/self/fd/9` that the open descriptor resolves to the expected root-owned
+regular file. Revert reloads both the system manager and the affected user
+manager, as apply does.
 
 ```bash
 # Preview, then apply after review (root, from the staged copy)

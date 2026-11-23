@@ -168,7 +168,6 @@ slice_name=agent-work.slice
 slice_path=/etc/systemd/user/$slice_name
 parent_slice_dir=/etc/systemd/user/agent.slice.d
 parent_slice_path=$parent_slice_dir/50-agent-workstation-kit.conf
-old_parent_slice_path=/etc/systemd/user/agent.slice
 sysctl_path=/etc/sysctl.d/60-agent-workstation-swap.conf
 zram_path=/etc/systemd/zram-generator.conf
 tmp_mask_path=/etc/systemd/system/tmp.mount
@@ -200,6 +199,59 @@ refuse_state_links() {
   done
 }
 
+# check_trusted_dir PATH: require PATH to be a real directory (not a symlink),
+# owned by root (UID 0), and not group- or world-writable.
+check_trusted_dir() {
+  local path=$1 target stat_out owner mode ftype
+  target=$(host_path "$path")
+  [[ ! -L "$target" ]] || die "$path is a symbolic link; the resource-policy state must not be. Review it by hand."
+  [[ -d "$target" ]] || die "$path is not a real directory; review it by hand."
+  stat_out=$(stat -c '%u %a %F' -- "$target") || die "Cannot inspect $path; review it by hand."
+  IFS=' ' read -r owner mode ftype <<<"$stat_out"
+  [[ "$ftype" == directory ]] || die "$path is not a real directory ($ftype); review it by hand."
+  [[ "$owner" == 0 ]] || die "$path is owned by UID $owner, not root (0); review it by hand."
+  [[ "$mode" =~ ^[0-7]{3,4}$ ]] || die "Cannot read permissions of $path; review it by hand."
+  (( (8#$mode & 8#022) == 0 )) || die "$path is group- or world-writable (mode $mode); review it by hand."
+}
+
+# check_trusted_lock_file PATH: an existing lock file must be a regular file
+# owned by root (UID 0), never a symlink or special file.
+check_trusted_lock_file() {
+  local path=$1 target stat_out owner ftype
+  target=$(host_path "$path")
+  [[ ! -L "$target" ]] || die "$path is a symbolic link; the resource-policy state must not be. Review it by hand."
+  [[ ! -d "$target" ]] || die "$path is a directory; review it by hand."
+  stat_out=$(stat -c '%u %F' -- "$target") || die "Cannot inspect $path; review it by hand."
+  IFS=' ' read -r owner ftype <<<"$stat_out"
+  [[ "$ftype" == 'regular file' || "$ftype" == 'regular empty file' ]] ||
+    die "$path is not a regular file ($ftype); review it by hand."
+  [[ "$owner" == 0 ]] || die "$path is owned by UID $owner, not root (0); review it by hand."
+}
+
+# verify_lock_fd EXPECTED_PATH: after opening fd 9, confirm through
+# /proc/self/fd/9 (Linux) that it resolves to EXPECTED_PATH, and through
+# stat -L that it is a regular file owned by root.
+verify_lock_fd() {
+  local expected_path=$1 fd_path stat_out fd_owner fd_ftype
+  if [[ -z "$fs_root" || -L /proc/self/fd/9 ]]; then
+    [[ -L /proc/self/fd/9 ]] || { exec 9>&-; die "Cannot verify open lock descriptor /proc/self/fd/9; review $lock_file by hand."; }
+    fd_path=$(readlink -- /proc/self/fd/9) || { exec 9>&-; die "Cannot read /proc/self/fd/9; review $lock_file by hand."; }
+    [[ "$fd_path" == "$expected_path" ]] ||
+      { exec 9>&-; die "Lock descriptor resolved to $fd_path instead of $expected_path; review $lock_file by hand."; }
+    stat_out=$(stat -L -c '%u %F' -- /proc/self/fd/9) ||
+      { exec 9>&-; die "Cannot inspect /proc/self/fd/9; review $lock_file by hand."; }
+  else
+    # Unprivileged fixture test on a non-Linux host (macOS) without /proc/self/fd.
+    stat_out=$(stat -L -c '%u %F' -- /dev/fd/9) ||
+      { exec 9>&-; die "Cannot inspect /dev/fd/9; review $lock_file by hand."; }
+  fi
+  IFS=' ' read -r fd_owner fd_ftype <<<"$stat_out"
+  [[ "$fd_ftype" == 'regular file' || "$fd_ftype" == 'regular empty file' ]] ||
+    { exec 9>&-; die "Lock descriptor is not a regular file ($fd_ftype); review $lock_file by hand."; }
+  [[ "$fd_owner" == 0 ]] ||
+    { exec 9>&-; die "Lock descriptor is owned by UID $fd_owner, not root (0); review $lock_file by hand."; }
+}
+
 # create_durable_dir PATH MODE: create PATH and flush both the new folder and
 # its parent to disk when it does not exist yet.
 create_durable_dir() {
@@ -217,20 +269,41 @@ create_durable_dir() {
 # deleting the state directory on revert keeps the lock valid.
 lock_held=false
 lock_state() {
-  local target old_umask created_lock=false
+  local parent_target target lock_name expected_path old_pwd old_umask created_lock=false
   [[ "$lock_held" != true ]] || return 0
   command -v flock >/dev/null 2>&1 || die 'flock (util-linux) is required to lock the resource-policy state.'
   refuse_state_links
-  create_durable_dir "$state_parent" 0755
+  check_trusted_dir /var/lib
+  parent_target=$(host_path "$state_parent")
+  if [[ -e "$parent_target" || -L "$parent_target" ]]; then
+    check_trusted_dir "$state_parent"
+  else
+    create_durable_dir "$state_parent" 0755
+    check_trusted_dir "$state_parent"
+  fi
   refuse_state_links
   target=$(host_path "$lock_file")
-  [[ ! -d "$target" ]] || die "$lock_file is a directory; review it by hand."
-  [[ -e "$target" ]] || created_lock=true
+  lock_name=${lock_file##*/}
+  if [[ -e "$target" || -L "$target" ]]; then
+    check_trusted_lock_file "$lock_file"
+  else
+    created_lock=true
+  fi
+  old_pwd=$PWD
   old_umask=$(umask)
   umask 077
-  exec 9>>"$target"
+  cd -P -- "$parent_target" || { umask "$old_umask"; die "Cannot enter $state_parent; review it by hand."; }
+  expected_path=$PWD/$lock_name
+  if [[ -z "$fs_root" && "$expected_path" != "$lock_file" ]]; then
+    cd -- "$old_pwd" || true
+    umask "$old_umask"
+    die "$lock_file resolved to $expected_path instead of $lock_file; review it by hand."
+  fi
+  exec 9>>"$lock_name"
+  cd -- "$old_pwd" || { exec 9>&-; umask "$old_umask"; die "Cannot return to $old_pwd."; }
   umask "$old_umask"
-  flock -n 9 || die "Another apply or revert holds the lock on $lock_file; wait for it to finish."
+  verify_lock_fd "$expected_path"
+  flock -n 9 || { exec 9>&-; die "Another apply or revert holds the lock on $lock_file; wait for it to finish."; }
   chmod 0600 "$target"
   if [[ "$created_lock" == true ]]; then
     sync -- "$target" "$(dirname -- "$target")"
@@ -266,7 +339,10 @@ work_dir=$(mktemp -d)
 trap 'rm -rf "$work_dir"' EXIT
 
 # ---------------------------------------------------------------------------
-# Receipt. Version 2 lines (tab-separated, '-' for an unset value):
+# Receipt. Version 2, formula 2 lines (tab-separated, '-' for an unset value):
+#   version 2
+#   agent ACCOUNT
+#   formula 2            formula version that sized this policy
 #   input KEY VALUE      approved inputs (flags, normalised)
 #   reading KEY VALUE    host readings the values were derived from
 #   value KEY VALUE      every resolved value written to the host
@@ -275,29 +351,59 @@ trap 'rm -rf "$work_dir"' EXIT
 #   reverting ID         recorded before revert restores it
 #   undone ID            recorded after revert restored it
 #   state complete       the apply finished
-# Version 1 receipts (no inputs; one line per change) are still reverted.
+# Receipts from an earlier receipt version or formula version are refused.
 # ---------------------------------------------------------------------------
+current_receipt_version=2
+current_formula_version=2
+earlier_receipt_msg="This host's resource policy was applied by an earlier version. Revert it with the version that applied it, then apply again."
 declare -A r_input=() r_reading=() r_value=()
 declare -A step_kind=() step_path=() step_action=() step_backup=() step_installed=() step_done=() step_undone=()
 declare -A step_reverting=()
 step_ids=()
 receipt_version=''
+receipt_formula=''
 receipt_complete=false
 
 load_receipt() {
-  local file line kind a b c d e f index=0
+  local file line kind a b c d e f first_kind first_val first_extra
+  r_input=() r_reading=() r_value=()
+  step_kind=() step_path=() step_action=() step_backup=() step_installed=() step_done=() step_undone=()
+  step_reverting=()
+  step_ids=()
+  receipt_version=''
+  receipt_formula=''
+  receipt_complete=false
   file=$(host_path "$receipt")
   mapfile -t receipt_lines <"$file"
-  case "${receipt_lines[0]:-}" in
-    $'version\t1') receipt_version=1 ;;
-    $'version\t2') receipt_version=2 ;;
-    *) die "Unsupported receipt format in $receipt." ;;
-  esac
+  IFS=$'\t' read -r first_kind first_val first_extra <<<"${receipt_lines[0]:-}"
+  [[ "$first_kind" == version && "$first_val" =~ ^[1-9][0-9]{0,5}$ && -z "$first_extra" ]] ||
+    die "Unsupported receipt format in $receipt."
+  receipt_version=$first_val
+  if ((receipt_version < current_receipt_version)); then
+    die "$earlier_receipt_msg"
+  fi
+  if ((receipt_version > current_receipt_version)); then
+    die "Unsupported receipt format in $receipt (version $receipt_version)."
+  fi
   [[ "${receipt_lines[1]:-}" == $'agent\t'"$agent_account" ]] || die 'The receipt belongs to another agent account; refusing.'
   for line in "${receipt_lines[@]:2}"; do
-    index=$((index + 1))
+    IFS=$'\t' read -r kind a b _ <<<"$line"
+    if [[ "$kind" == formula ]]; then
+      [[ -z "$receipt_formula" && "$a" =~ ^[1-9][0-9]{0,5}$ && -z "$b" ]] ||
+        die "Unsupported receipt formula marker in $receipt."
+      receipt_formula=$a
+    fi
+  done
+  if [[ -z "$receipt_formula" ]] || ((receipt_formula < current_formula_version)); then
+    die "$earlier_receipt_msg"
+  fi
+  if ((receipt_formula > current_formula_version)); then
+    die "Unsupported receipt formula version in $receipt ($receipt_formula)."
+  fi
+  for line in "${receipt_lines[@]:2}"; do
     IFS=$'\t' read -r kind a b c d e f <<<"$line"
     case "$kind" in
+      formula) ;;
       input) r_input[$a]=$b ;;
       reading) r_reading[$a]=$b ;;
       value) r_value[$a]=$b ;;
@@ -311,18 +417,10 @@ load_receipt() {
       state)
         case "$a" in
           complete) receipt_complete=true ;;
-          migrating) receipt_complete=false ;;
           *) die "Unknown state in $receipt: $a" ;;
         esac
         ;;
-      *)
-        [[ "$receipt_version" == 1 ]] || die "Unknown line in $receipt: $kind"
-        # Version 1: kind path action backup installed, recorded before each
-        # change, with no completion record.
-        step_ids+=("v1-$index")
-        step_kind[v1-$index]=$kind step_path[v1-$index]=$a step_action[v1-$index]=$b
-        step_backup[v1-$index]=$c step_installed[v1-$index]=$d
-        ;;
+      *) die "Unknown line in $receipt: $kind" ;;
     esac
   done
 }
@@ -332,11 +430,16 @@ load_receipt() {
 # ---------------------------------------------------------------------------
 if [[ "$revert" == true ]]; then
   refuse_state_links
-  if [[ "$APPLY_CHANGES" == true && ( -e "$(host_path "$lock_file")" || -e "$(host_path "$receipt")" ) ]]; then
+  if [[ "$APPLY_CHANGES" == true && ( -e "$(host_path "$lock_file")" || -L "$(host_path "$lock_file")" ) ]]; then
     lock_state
   fi
   [[ -f "$(host_path "$receipt")" ]] || die "No receipt at $receipt; there is nothing to revert."
   load_receipt
+  if [[ "$APPLY_CHANGES" == true && "$lock_held" != true ]]; then
+    lock_state
+    [[ -f "$(host_path "$receipt")" ]] || die "The receipt at $receipt disappeared while waiting for the lock."
+    load_receipt
+  fi
 
   problems=()
   for id in "${step_ids[@]}"; do
@@ -581,17 +684,14 @@ declare -A inputs=(
   [oomd_pressure_percent]=$oomd_pressure_percent [swappiness]=$swappiness_mode [zram_percent]=$zram_percent
   [tmp]=$tmp_mode [allow_small_reserve]=$allow_small_reserve
 )
-if [[ "$APPLY_CHANGES" == true && ( -e "$(host_path "$lock_file")" || -e "$(host_path "$receipt")" ) ]]; then
+if [[ "$APPLY_CHANGES" == true && ( -e "$(host_path "$lock_file")" || -L "$(host_path "$lock_file")" ) ]]; then
   lock_state
 fi
 receipt_present=false
 reuse_readings=false
-migrate_parent_step=''
 if [[ -e "$(host_path "$receipt")" ]]; then
   receipt_present=true
   load_receipt
-  [[ "$receipt_version" == 2 ]] ||
-    die "The receipt at $receipt comes from an earlier version of this script. Run --revert --apply first, then preview and apply again."
   [[ "$receipt_complete" == true ]] ||
     die "An earlier apply stopped part way ($receipt). Run --revert --apply first, then preview and apply again."
   inputs_differ=()
@@ -603,16 +703,12 @@ if [[ -e "$(host_path "$receipt")" ]]; then
     die "The options differ from the approved inputs in $receipt. Run --revert --apply first, then preview and apply again."
   fi
   reuse_readings=true
-  for key in ram_kib swap_kib zram_planned_kib cpu_cores; do
+  for key in ram_kib swap_kib zram_kib zram_planned_kib cpu_cores; do
     [[ "${r_reading[$key]:-}" =~ ^[0-9]{1,15}$ ]] || die "The receipt at $receipt lacks the reading $key; review it by hand."
   done
-  if [[ -n ${r_reading[zram_kib]:-} ]]; then
-    [[ "${r_reading[zram_kib]}" =~ ^[0-9]{1,15}$ ]] || die "The receipt at $receipt has an unreadable reading zram_kib; review it by hand."
-    receipt_zram_kib=${r_reading[zram_kib]}
-  else
-    receipt_zram_kib=0
-  fi
-  ((receipt_zram_kib <= r_reading[swap_kib])) || die "The receipt at $receipt has zram_kib above swap_kib; review it by hand."
+  ((r_reading[zram_kib] <= r_reading[swap_kib])) || die "The receipt at $receipt has zram_kib above swap_kib; review it by hand."
+  ((r_reading[zram_planned_kib] == r_reading[ram_kib] * zram_percent / 100)) ||
+    die "The receipt at $receipt has zram_planned_kib (${r_reading[zram_planned_kib]}) that does not match --zram-percent ($zram_percent); review it by hand."
   [[ "${r_reading[role]:-}" == desktop || "${r_reading[role]:-}" == headless ]] ||
     die "The receipt at $receipt lacks the host role; review it by hand."
   for key in ram_kib swap_kib zram_kib cpu_cores; do
@@ -622,13 +718,12 @@ if [[ -e "$(host_path "$receipt")" ]]; then
       zram_kib) now=$zram_swap_kib ;;
       cpu_cores) now=$cpu_cores ;;
     esac
-    [[ "$key" != zram_kib || -n ${r_reading[zram_kib]:-} ]] || continue
     [[ "$now" == "${r_reading[$key]}" ]] ||
       warn "The host now reads $key=$now; the approved reading ${r_reading[$key]} from the receipt is kept. Revert and apply again to resize."
   done
   total_kib=${r_reading[ram_kib]}
   swap_total_kib=${r_reading[swap_kib]}
-  zram_swap_kib=$receipt_zram_kib
+  zram_swap_kib=${r_reading[zram_kib]}
   disk_swap_kib=$((swap_total_kib - zram_swap_kib))
   zram_planned_kib=${r_reading[zram_planned_kib]}
   cpu_cores=${r_reading[cpu_cores]}
@@ -639,12 +734,6 @@ if [[ -e "$(host_path "$receipt")" ]]; then
   fi
   swappiness=${r_value[swappiness]:--}
   [[ "$swappiness" != - ]] || swappiness=''
-  for id in "${step_ids[@]}"; do
-    [[ -z ${step_undone[$id]:-} ]] || continue
-    if [[ "${step_kind[$id]}" == file && "${step_path[$id]}" == "$old_parent_slice_path" ]]; then
-      migrate_parent_step=$id
-    fi
-  done
 fi
 
 role_default_gib=2
@@ -799,7 +888,7 @@ if [[ "$mask_tmp" == true && -L "$(host_path "$tmp_mask_path")" ]]; then
   mask_tmp=false
 fi
 
-for path in "$parent_slice_dir" "$parent_slice_path" "$old_parent_slice_path" "$slice_path" "$sysctl_path" "$zram_path" "$old_dropin" "${oomd_vendor_dropins[@]}"; do
+for path in "$parent_slice_dir" "$parent_slice_path" "$slice_path" "$sysctl_path" "$zram_path" "$old_dropin" "${oomd_vendor_dropins[@]}"; do
   [[ ! -L "$(host_path "$path")" ]] || die "$path is a symbolic link; review it by hand."
 done
 [[ ! -e "$(host_path "$parent_slice_dir")" || -d "$(host_path "$parent_slice_dir")" ]] ||
@@ -811,12 +900,11 @@ done
 # agent.slice is the parent systemd implies from the name agent-work.slice. It
 # sits beside app.slice and session.slice in the agent's user manager, so its
 # CPUWeight is what competes with the desktop there. Write it as a drop-in so
-# other definitions or vendor settings on agent.slice are not shadowed.
+# other definitions or vendor settings on agent.slice are not shadowed. Omit
+# ConditionUser= so CPUWeight applies to every user's agent.slice; that slice
+# exists only as the implicit parent of agent-work.slice.
 cat >"$work_dir/parent-slice" <<EOF
 # Managed by agent-workstation-kit apply-resource-policy-linux.sh; undo with --revert.
-[Unit]
-ConditionUser=$agent_account
-
 [Slice]
 CPUWeight=$cpu_weight_value
 EOF
@@ -923,59 +1011,33 @@ printf '  zram:               %s\n' "$( ((zram_percent > 0)) && printf 'zram0 at
 printf '  /tmp policy:        %s\n\n' "$([[ "$mask_tmp" == true ]] && printf 'disk-backed from the next boot (mask tmp.mount)' || printf 'unchanged')"
 
 if [[ "$receipt_present" == true ]]; then
-  if [[ -z "$migrate_parent_step" ]]; then
-    if ((${#changes[@]} == 0)); then
-      log "Policy already applied as recorded in $receipt; nothing to change."
-      exit 0
-    fi
-    die "A receipt from an earlier apply exists at $receipt and the host no longer matches it. Run --revert first, then preview and apply again."
+  if ((${#changes[@]} == 0)); then
+    log "Policy already applied as recorded in $receipt; nothing to change."
+    exit 0
   fi
-  for change in "${changes[@]}"; do
-    IFS='|' read -r kind path _ _ <<<"$change"
-    if [[ "$kind" != file || "$path" != "$parent_slice_path" ]]; then
-      die "A receipt from an earlier apply exists at $receipt and the host no longer matches it. Run --revert first, then preview and apply again."
-    fi
-  done
-  old_action=${step_action[$migrate_parent_step]}
-  old_installed=$(host_path "$state_dir/installed/${step_installed[$migrate_parent_step]}")
-  old_current=$(host_path "$old_parent_slice_path")
-  if [[ -L "$old_current" ]]; then
-    die "$old_parent_slice_path is now a symbolic link; review it by hand."
-  elif [[ ! -e "$old_current" ]]; then
-    [[ "$old_action" != replaced ]] || die "$old_parent_slice_path was deleted after apply; review it by hand."
-  elif [[ "$old_action" == created || "$old_action" == replaced ]]; then
-    { [[ -f "$old_installed" ]] && cmp -s "$old_installed" "$old_current"; } ||
-      die "$old_parent_slice_path changed after apply; review it by hand."
-  else
-    die "Unsupported receipt action for $old_parent_slice_path ($old_action); review it by hand."
-  fi
+  die "A receipt from an earlier apply exists at $receipt and the host no longer matches it. Run --revert first, then preview and apply again."
 fi
 
-if ((${#changes[@]} == 0)) && [[ -z "$migrate_parent_step" ]]; then
+if ((${#changes[@]} == 0)); then
   log 'Nothing on this host differs from the policy.'
-fi
-if [[ -n "$migrate_parent_step" ]]; then
-  if [[ "${step_action[$migrate_parent_step]}" == created ]]; then
-    log "Would migrate: remove $old_parent_slice_path (installed by an earlier run)"
-  else
-    log "Would migrate: restore $old_parent_slice_path from its backup (installed by an earlier run)"
-  fi
 fi
 for change in "${changes[@]}"; do
   IFS='|' read -r kind path action _ <<<"$change"
   case "$kind" in
-    file) log "Would ${action%d} $path (backup first)" ;;
+    file)
+      if [[ "$path" == "$parent_slice_path" ]]; then
+        log "Would ${action%d} $path (backup first; applies CPUWeight=$cpu_weight_value to every user's agent.slice)"
+      else
+        log "Would ${action%d} $path (backup first)"
+      fi
+      ;;
     mask) log "Would mask tmp.mount: link $path to /dev/null" ;;
     sysctl) log "Would set vm.swappiness from $action to ${change##*|}" ;;
     linger) log "Would run loginctl enable-linger $path so its user manager runs at boot" ;;
     service) log "Would run systemctl enable --now $path" ;;
   esac
 done
-if [[ -n "$migrate_parent_step" ]]; then
-  log "Would update the receipt $receipt"
-else
-  log "Would write the receipt $receipt"
-fi
+log "Would write the receipt $receipt"
 
 if [[ "$APPLY_CHANGES" != true ]]; then
   log 'Preview only. Re-run with --apply after review.'
@@ -994,36 +1056,15 @@ refuse_state_links
 trap 'warn "Apply stopped part way. Undo what it changed with: apply-resource-policy-linux.sh --agent $agent_account --revert --apply"' ERR
 
 step=0
-if [[ -n "$migrate_parent_step" ]]; then
-  for id in "${step_ids[@]}"; do
-    if [[ "$id" =~ ^[0-9]+$ ]] && ((id > step)); then
-      step=$id
-    fi
-  done
-  record state migrating
-  record reverting "$migrate_parent_step"
-  if [[ "${step_action[$migrate_parent_step]}" == created ]]; then
-    rm -f -- "$old_current" "$old_current$tmp_suffix"
-    if [[ -d "$(dirname -- "$old_current")" ]]; then
-      sync -- "$(dirname -- "$old_current")"
-    fi
-  else
-    write_atomic "$(host_path "$state_dir/backups/${step_backup[$migrate_parent_step]}")" "$old_current"
-  fi
-  stop_point
-  record undone "$migrate_parent_step"
-  log "Migrated: reverted $old_parent_slice_path"
-else
-  [[ ! -e "$(host_path "$receipt")" ]] || die "A receipt appeared at $receipt after the preview; preview again."
-  {
-    printf 'version\t2\nagent\t%s\n' "$agent_account"
-    for key in "${input_keys[@]}"; do printf 'input\t%s\t%s\n' "$key" "${inputs[$key]}"; done
-    printf 'reading\tram_kib\t%s\nreading\tswap_kib\t%s\nreading\tzram_kib\t%s\nreading\tzram_planned_kib\t%s\nreading\tcpu_cores\t%s\nreading\trole\t%s\n' \
-      "$total_kib" "$swap_total_kib" "$zram_swap_kib" "$zram_planned_kib" "$cpu_cores" "$role_label"
-    for key in "${value_keys[@]}"; do printf 'value\t%s\t%s\n' "$key" "${values[$key]}"; done
-  } >"$work_dir/receipt"
-  write_atomic "$work_dir/receipt" "$(host_path "$receipt")" 0600
-fi
+[[ ! -e "$(host_path "$receipt")" ]] || die "A receipt appeared at $receipt after the preview; preview again."
+{
+  printf 'version\t%s\nagent\t%s\nformula\t%s\n' "$current_receipt_version" "$agent_account" "$current_formula_version"
+  for key in "${input_keys[@]}"; do printf 'input\t%s\t%s\n' "$key" "${inputs[$key]}"; done
+  printf 'reading\tram_kib\t%s\nreading\tswap_kib\t%s\nreading\tzram_kib\t%s\nreading\tzram_planned_kib\t%s\nreading\tcpu_cores\t%s\nreading\trole\t%s\n' \
+    "$total_kib" "$swap_total_kib" "$zram_swap_kib" "$zram_planned_kib" "$cpu_cores" "$role_label"
+  for key in "${value_keys[@]}"; do printf 'value\t%s\t%s\n' "$key" "${values[$key]}"; done
+} >"$work_dir/receipt"
+write_atomic "$work_dir/receipt" "$(host_path "$receipt")" 0600
 
 ensure_dir() {
   local dir=$1 missing=() index target

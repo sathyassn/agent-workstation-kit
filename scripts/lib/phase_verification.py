@@ -306,6 +306,9 @@ RESOURCE_INPUT_KEYS = (
 AGENT_SLICE = Path("/etc/systemd/user/agent-work.slice")
 AGENT_PARENT_SLICE = Path("/etc/systemd/user/agent.slice.d/50-agent-workstation-kit.conf")
 RESOURCE_RECEIPT = Path("/var/lib/agent-workstation-kit/resource-policy/receipt.tsv")
+RESOURCE_RECEIPT_VERSION = 2
+RESOURCE_FORMULA_VERSION = 2
+EARLIER_RECEIPT_ERROR = "This host's resource policy was applied by an earlier version. Revert it with the version that applied it, then apply again."
 CGROUP_CONTROLLERS = Path("/sys/fs/cgroup/cgroup.controllers")
 OOMD_BINARIES = (Path("/usr/lib/systemd/systemd-oomd"), Path("/lib/systemd/systemd-oomd"))
 DISPLAY_MANAGERS = (
@@ -605,7 +608,7 @@ def resource_values(profile, total, command=(), *, swap_total_kib=None, cpu_core
 
 
 def read_resource_receipt(path=RESOURCE_RECEIPT):
-    """Parse a version 2 resource-policy receipt into its recorded parts."""
+    """Parse a current resource-policy receipt into its recorded parts."""
     path = Path(path)
     # The receipt, its folder and the kit's state folder; /var and /var/lib too
     # for the installed location.
@@ -613,18 +616,37 @@ def read_resource_receipt(path=RESOURCE_RECEIPT):
     if any(item.is_symlink() for item in checked):
         raise ValueError("the resource receipt or a parent is a symbolic link")
     lines = path.read_text().splitlines()
-    if lines[:1] != ["version\t2"] or len(lines) < 2 or not lines[1].startswith("agent\t"):
+    if not lines:
         raise ValueError("unsupported resource receipt format")
-    receipt = {"agent": lines[1].split("\t", 1)[1], "input": {}, "reading": {}, "value": {}, "complete": False}
+    first = lines[0].split("\t")
+    if len(first) != 2 or first[0] != "version" or not re.fullmatch(r"[1-9][0-9]{0,5}", first[1]):
+        raise ValueError("unsupported resource receipt format")
+    version = int(first[1])
+    if version < RESOURCE_RECEIPT_VERSION:
+        raise ValueError(EARLIER_RECEIPT_ERROR)
+    if version > RESOURCE_RECEIPT_VERSION or len(lines) < 2 or not lines[1].startswith("agent\t"):
+        raise ValueError("unsupported resource receipt format")
+    formula = None
     for line in lines[2:]:
         fields = line.split("\t")
+        if fields[0] == "formula":
+            if formula is not None or len(fields) != 2 or not re.fullmatch(r"[1-9][0-9]{0,5}", fields[1]):
+                raise ValueError("unsupported resource receipt formula marker")
+            formula = int(fields[1])
+    if formula is None or formula < RESOURCE_FORMULA_VERSION:
+        raise ValueError(EARLIER_RECEIPT_ERROR)
+    if formula > RESOURCE_FORMULA_VERSION:
+        raise ValueError("unsupported resource receipt formula version")
+    receipt = {"agent": lines[1].split("\t", 1)[1], "formula": formula, "input": {}, "reading": {}, "value": {}, "complete": False}
+    for line in lines[2:]:
+        fields = line.split("\t")
+        if fields[0] == "formula":
+            continue
         if fields[0] in ("input", "reading", "value") and len(fields) == 3:
             receipt[fields[0]][fields[1]] = fields[2]
         elif fields[0] == "state" and len(fields) == 2:
             if fields[1] == "complete":
                 receipt["complete"] = True
-            elif fields[1] == "migrating":
-                receipt["complete"] = False
             else:
                 raise ValueError("unknown resource receipt state: " + fields[1])
     return receipt
@@ -637,6 +659,8 @@ def receipt_resource_values(receipt, profile, command, agent):
     belongs to this agent and plan, then recomputes from the recorded readings
     and requires the recorded values to match.
     """
+    if receipt.get("formula") != RESOURCE_FORMULA_VERSION:
+        raise ValueError(EARLIER_RECEIPT_ERROR)
     if not receipt["complete"]:
         raise ValueError("the resource apply did not finish")
     if receipt["agent"] != agent:
@@ -647,8 +671,8 @@ def receipt_resource_values(receipt, profile, command, agent):
     reading = receipt["reading"]
     if reading.get("role") not in ("desktop", "headless"):
         raise ValueError("the resource receipt lacks the host role")
-    numbers = {key: strict_reading(reading.get(key)) for key in ("ram_kib", "swap_kib", "zram_planned_kib", "cpu_cores")}
-    active_zram_kib = strict_reading(reading["zram_kib"]) if "zram_kib" in reading else 0
+    numbers = {key: strict_reading(reading.get(key)) for key in ("ram_kib", "swap_kib", "zram_kib", "zram_planned_kib", "cpu_cores")}
+    active_zram_kib = numbers["zram_kib"]
     if active_zram_kib > numbers["swap_kib"]:
         raise ValueError("the resource receipt zram_kib exceeds swap_kib")
     if numbers["zram_planned_kib"] != numbers["ram_kib"] * options["--zram-percent"] // 100:
@@ -750,9 +774,9 @@ def agent_slice_text(agent, values, oomd):
     return "\n".join(lines) + "\n"
 
 
-def agent_parent_slice_text(agent, values):
-    """Render the agent.slice drop-in that holds the agent's CPUWeight."""
-    lines = ["# Managed by agent-workstation-kit apply-resource-policy-linux.sh; undo with --revert.", "[Unit]", "ConditionUser=" + agent, "", "[Slice]", "CPUWeight=" + values["CPUWeight"]]
+def agent_parent_slice_text(values):
+    """Render the agent.slice drop-in that holds CPUWeight for every user's agent.slice."""
+    lines = ["# Managed by agent-workstation-kit apply-resource-policy-linux.sh; undo with --revert.", "[Slice]", "CPUWeight=" + values["CPUWeight"]]
     return "\n".join(lines) + "\n"
 
 
@@ -834,7 +858,7 @@ def verify_phase(plan, name, root):
             uid = pwd.getpwnam(agent).pw_uid
             oomd = any(item.exists() for item in OOMD_BINARIES)
             problems = []
-            for path, expected in ((AGENT_SLICE, agent_slice_text(agent, values, oomd)), (AGENT_PARENT_SLICE, agent_parent_slice_text(agent, values))):
+            for path, expected in ((AGENT_SLICE, agent_slice_text(agent, values, oomd)), (AGENT_PARENT_SLICE, agent_parent_slice_text(values))):
                 if path.parent.is_symlink() or path.is_symlink() or not path.is_file() or path.stat().st_uid != 0 or stat.S_IMODE(path.stat().st_mode) != 0o644 or path.read_text() != expected:
                     problems.append(str(path) + " is missing, not root-owned 0644, or differs from the receipt")
             problems += effective_resource_problems(agent, uid, values)
