@@ -1,0 +1,11 @@
+id = "TSK-037"
+uid = "e770adfd-6794-4658-95e7-b3b329905c80"
+kind = "TSK"
+title = "Logged, topology-aware host audit in the frozen scripts"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-23T21:28:32Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
