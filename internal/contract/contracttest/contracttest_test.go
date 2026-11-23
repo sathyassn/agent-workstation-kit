@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io/fs"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -807,5 +809,189 @@ func TestContractChecksCatchBrokenUnits(t *testing.T) {
 				t.Fatalf("expected failure containing %q, got %v", tc.wantErr, rep.errors)
 			}
 		})
+	}
+}
+
+// brokenSetStateTx runs SetState with one step of the required sequence
+// wrong, so each case proves checkTx notices that step.
+type brokenSetStateTx struct {
+	*FakeTx
+	writeBeforeSnapshot bool
+	emptyBackup         bool
+	noRestore           bool
+	receiptOnFailure    bool
+	callBeforeRefuse    bool
+}
+
+func (b *brokenSetStateTx) SetState(ctx context.Context, p contract.StateProvider, key contract.StateKey, want contract.State) error {
+	if b.callBeforeRefuse {
+		if _, err := p.Snapshot(ctx); err != nil {
+			return err
+		}
+	}
+	b.mu.Lock()
+	allowed := b.ownedStates[key]
+	b.mu.Unlock()
+	if !allowed {
+		return &contract.UndeclaredTargetError{Kind: contract.TargetStateKey, Target: string(key)}
+	}
+
+	var snap contract.Snapshot
+	var err error
+	if !b.writeBeforeSnapshot {
+		if snap, err = p.Snapshot(ctx); err != nil {
+			return err
+		}
+	}
+	writeErr := p.Write(ctx, key, want)
+	if b.writeBeforeSnapshot {
+		if snap, err = p.Snapshot(ctx); err != nil {
+			return err
+		}
+	}
+	if writeErr != nil && !b.noRestore {
+		if err := p.Restore(ctx, snap); err != nil {
+			return errors.Join(writeErr, err)
+		}
+	}
+	if writeErr != nil && !b.receiptOnFailure {
+		return writeErr
+	}
+
+	b.mu.Lock()
+	backup := b.recordBackupLocked(snap.Data)
+	if b.emptyBackup {
+		backup = ""
+	}
+	b.changes = append(b.changes, contract.AppliedChange{
+		Change: contract.Change{
+			Target: string(p.Name()) + ":" + string(key),
+			Action: contract.ActionSet,
+			After:  digestBytes([]byte(want.Value)),
+			Risk:   contract.RiskMedium,
+		},
+		Backup: backup,
+	})
+	b.mu.Unlock()
+	return writeErr
+}
+
+func TestContractChecksCatchBrokenSetStateSequence(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		broken  brokenSetStateTx
+		wantErr string
+	}{
+		{name: "writes before snapshot", broken: brokenSetStateTx{writeBeforeSnapshot: true}, wantErr: "Snapshot before Write"},
+		{name: "records an empty backup", broken: brokenSetStateTx{emptyBackup: true}, wantErr: "recorded no backup reference"},
+		{name: "does not restore after a failed write", broken: brokenSetStateTx{noRestore: true}, wantErr: "restored pre-Write value"},
+		{name: "records a receipt for a failed write", broken: brokenSetStateTx{receiptOnFailure: true}, wantErr: "receipt row for a failed Write"},
+		{name: "calls the provider before refusing", broken: brokenSetStateTx{callBeforeRefuse: true}, wantErr: "want no provider call"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rep := &fakeReporter{}
+			checkTx(rep, func(d contract.Description) contract.Tx {
+				b := tc.broken
+				b.FakeTx = NewFakeTx(d, nil)
+				return &b
+			})
+			if !rep.hasErrorContaining(tc.wantErr) {
+				t.Fatalf("expected failure containing %q, got %v", tc.wantErr, rep.errors)
+			}
+		})
+	}
+}
+
+// failingRestoreProvider writes and then fails, and also fails to restore.
+type failingRestoreProvider struct{ *FakeStateProvider }
+
+var errInjectedRestore = errors.New("injected restore failure")
+
+func (p *failingRestoreProvider) Write(ctx context.Context, key contract.StateKey, want contract.State) error {
+	if err := p.FakeStateProvider.Write(ctx, key, want); err != nil {
+		return err
+	}
+	return errInjectedWrite
+}
+
+func (p *failingRestoreProvider) Restore(_ context.Context, _ contract.Snapshot) error {
+	return errInjectedRestore
+}
+
+func TestFakeTxSetStateReportsRestoreFailure(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	tx := NewFakeTx(standardTestDescription(), nil)
+	p := &failingRestoreProvider{NewFakeStateProvider(contract.ProviderHostname, map[contract.StateKey]contract.State{
+		declaredState: {Value: "lab-ws-01"},
+	})}
+
+	err := tx.SetState(ctx, p, declaredState, contract.State{Value: "acme-ws-001"})
+	for _, want := range []error{errInjectedWrite, ErrStateRestoreFailed, errInjectedRestore} {
+		if !errors.Is(err, want) {
+			t.Errorf("SetState error %v does not wrap %v", err, want)
+		}
+	}
+	if n := len(tx.Changes()); n != 0 {
+		t.Errorf("SetState recorded %d receipt rows for a failed Write, want 0", n)
+	}
+}
+
+// overlapProvider fails the test when two provider calls run at once.
+type overlapProvider struct {
+	*FakeStateProvider
+	inFlight atomic.Int32
+	overlap  atomic.Bool
+}
+
+func (p *overlapProvider) enter() func() {
+	if p.inFlight.Add(1) > 1 {
+		p.overlap.Store(true)
+	}
+	time.Sleep(time.Millisecond)
+	return func() { p.inFlight.Add(-1) }
+}
+
+func (p *overlapProvider) Write(ctx context.Context, key contract.StateKey, want contract.State) error {
+	defer p.enter()()
+	return p.FakeStateProvider.Write(ctx, key, want)
+}
+
+func (p *overlapProvider) Snapshot(ctx context.Context) (contract.Snapshot, error) {
+	defer p.enter()()
+	return p.FakeStateProvider.Snapshot(ctx)
+}
+
+func TestFakeTxSetStateSerializesCalls(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	tx := NewFakeTx(standardTestDescription(), nil)
+	p := &overlapProvider{FakeStateProvider: NewFakeStateProvider(contract.ProviderHostname, map[contract.StateKey]contract.State{
+		declaredState: {Value: "lab-ws-01"},
+	})}
+
+	const callers = 8
+	var wg sync.WaitGroup
+	for i := range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := tx.SetState(ctx, p, declaredState, contract.State{Value: fmt.Sprintf("acme-ws-%03d", i)}); err != nil {
+				t.Errorf("SetState: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	if p.overlap.Load() {
+		t.Fatal("concurrent SetState calls overlapped inside the provider; want one call sequence at a time")
+	}
+	if n := len(tx.Changes()); n != callers {
+		t.Fatalf("SetState recorded %d receipt rows, want %d", n, callers)
 	}
 }

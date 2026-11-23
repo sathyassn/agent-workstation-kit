@@ -38,6 +38,10 @@ var (
 	ErrNilStateProvider = errors.New("state provider is nil")
 	// ErrTemplateNotFound reports RenderTemplate called with an unknown TemplateID.
 	ErrTemplateNotFound = errors.New("template not found")
+	// ErrStateRestoreFailed reports that SetState could not restore the
+	// provider's snapshot after a failed Write, so the provider may hold a
+	// partial write.
+	ErrStateRestoreFailed = errors.New("restore after failed state write")
 )
 
 const (
@@ -793,6 +797,9 @@ func (tx *FakeDeclarativeTx) BackingState() []byte {
 // FakeDeclarativeTx with SetState and Run.
 type FakeTx struct {
 	*FakeDeclarativeTx
+	// stateMu serializes SetState across snapshot, write and receipt, so
+	// two calls never interleave their backups and writes.
+	stateMu  sync.Mutex
 	runMu    sync.Mutex
 	commands []contract.Command
 	runFn    func(ctx context.Context, c contract.Command) (contract.CommandResult, error)
@@ -835,9 +842,12 @@ func (tx *FakeTx) SetRunner(fn func(ctx context.Context, c contract.Command) (co
 	tx.runFn = fn
 }
 
-// SetState refuses an undeclared key, snapshots the provider as the backup,
-// writes the key through the contract's Write, and logs the change for the
-// receipt.
+// SetState refuses an undeclared key before any provider call, snapshots the
+// provider as the backup, writes the key through the contract's Write, and
+// only then logs the change for the receipt. A failed Write is undone by
+// restoring the snapshot; a failed restore is reported as
+// ErrStateRestoreFailed alongside the Write error. No receipt row is
+// recorded for a failed Write. One mutex covers the whole sequence.
 func (tx *FakeTx) SetState(ctx context.Context, p contract.StateProvider, key contract.StateKey, want contract.State) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("set state %q: %w", key, err)
@@ -845,6 +855,9 @@ func (tx *FakeTx) SetState(ctx context.Context, p contract.StateProvider, key co
 	if p == nil {
 		return ErrNilStateProvider
 	}
+
+	tx.stateMu.Lock()
+	defer tx.stateMu.Unlock()
 
 	tx.mu.Lock()
 	allowed := tx.ownedStates[key]
@@ -864,7 +877,11 @@ func (tx *FakeTx) SetState(ctx context.Context, p contract.StateProvider, key co
 	}
 
 	if err := p.Write(ctx, key, want); err != nil {
-		return fmt.Errorf("write state %q: %w", key, err)
+		writeErr := fmt.Errorf("write state %q: %w", key, err)
+		if restoreErr := p.Restore(ctx, snap); restoreErr != nil {
+			return errors.Join(writeErr, fmt.Errorf("%w for %q: %w", ErrStateRestoreFailed, key, restoreErr))
+		}
+		return writeErr
 	}
 
 	tx.mu.Lock()

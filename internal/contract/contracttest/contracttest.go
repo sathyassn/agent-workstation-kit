@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -189,22 +190,89 @@ func standardTestDescription() contract.Description {
 	}
 }
 
-type contractStateProvider struct {
+// recordingStateProvider wraps the fake provider for checkTx. It records
+// each contract call in order and the snapshots it hands out, and can make
+// Write change the key and then fail, so the check can see whether a Tx
+// snapshots before writing and restores after a failed write.
+type recordingStateProvider struct {
 	inner *FakeStateProvider
+
+	mu        sync.Mutex
+	calls     []string
+	snapshots []contract.Snapshot
+	failWrite bool
 }
 
-func (p *contractStateProvider) Name() contract.StateProviderName { return p.inner.Name() }
-func (p *contractStateProvider) Read(ctx context.Context, key contract.StateKey) (contract.State, error) {
+var errInjectedWrite = errors.New("injected write failure")
+
+func (p *recordingStateProvider) record(call string) {
+	p.mu.Lock()
+	p.calls = append(p.calls, call)
+	p.mu.Unlock()
+}
+
+// reset clears the call log and returns what it held.
+func (p *recordingStateProvider) reset() ([]string, []contract.Snapshot) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	calls, snaps := p.calls, p.snapshots
+	p.calls, p.snapshots = nil, nil
+	return calls, snaps
+}
+
+func (p *recordingStateProvider) setFailWrite(fail bool) {
+	p.mu.Lock()
+	p.failWrite = fail
+	p.mu.Unlock()
+}
+
+func (p *recordingStateProvider) Name() contract.StateProviderName { return p.inner.Name() }
+func (p *recordingStateProvider) Read(ctx context.Context, key contract.StateKey) (contract.State, error) {
+	p.record(callRead)
 	return p.inner.Read(ctx, key)
 }
-func (p *contractStateProvider) Write(ctx context.Context, key contract.StateKey, want contract.State) error {
-	return p.inner.Write(ctx, key, want)
+func (p *recordingStateProvider) Write(ctx context.Context, key contract.StateKey, want contract.State) error {
+	p.record(callWrite)
+	if err := p.inner.Write(ctx, key, want); err != nil {
+		return err
+	}
+	p.mu.Lock()
+	fail := p.failWrite
+	p.mu.Unlock()
+	if fail {
+		return errInjectedWrite
+	}
+	return nil
 }
-func (p *contractStateProvider) Snapshot(ctx context.Context) (contract.Snapshot, error) {
-	return p.inner.Snapshot(ctx)
+func (p *recordingStateProvider) Snapshot(ctx context.Context) (contract.Snapshot, error) {
+	p.record(callSnapshot)
+	snap, err := p.inner.Snapshot(ctx)
+	if err == nil {
+		p.mu.Lock()
+		p.snapshots = append(p.snapshots, snap)
+		p.mu.Unlock()
+	}
+	return snap, err
 }
-func (p *contractStateProvider) Restore(ctx context.Context, s contract.Snapshot) error {
+func (p *recordingStateProvider) Restore(ctx context.Context, s contract.Snapshot) error {
+	p.record(callRestore)
 	return p.inner.Restore(ctx, s)
+}
+
+const (
+	callRead     = "Read"
+	callWrite    = "Write"
+	callSnapshot = "Snapshot"
+	callRestore  = "Restore"
+)
+
+func indexOf(calls []string, call string) int {
+	for i, c := range calls {
+		if c == call {
+			return i
+		}
+	}
+	return -1
 }
 
 func checkDeclarativeTx(r reporter, newTx func(contract.Description) contract.DeclarativeTx) {
@@ -289,19 +357,23 @@ func checkTx(r reporter, newTx func(contract.Description) contract.Tx) {
 		return
 	}
 
-	rawProvider := NewFakeStateProvider(contract.ProviderHostname, map[contract.StateKey]contract.State{
-		declaredState: {Value: "lab-ws-01"},
-	})
-	provider := &contractStateProvider{inner: rawProvider}
+	initialState := contract.State{Value: "lab-ws-01"}
+	provider := &recordingStateProvider{inner: NewFakeStateProvider(contract.ProviderHostname, map[contract.StateKey]contract.State{
+		declaredState: initialState,
+	})}
 
 	beforeProvSnap, err := provider.Snapshot(ctx)
 	if err != nil {
 		r.Errorf("StateProvider.Snapshot before refused SetState failed: %v", err)
 		return
 	}
+	provider.reset()
 	assertRefusedUnchanged(r, "SetState", inspector, contract.TargetStateKey, string(undeclaredState), func() error {
 		return tx.SetState(ctx, provider, undeclaredState, contract.State{Value: "bad"})
 	})
+	if calls, _ := provider.reset(); len(calls) != 0 {
+		r.Errorf("SetState on undeclared key called the provider %v before refusing; want no provider call", calls)
+	}
 	afterProvSnap, err := provider.Snapshot(ctx)
 	if err != nil {
 		r.Errorf("StateProvider.Snapshot after refused SetState failed: %v", err)
@@ -321,13 +393,28 @@ func checkTx(r reporter, newTx func(contract.Description) contract.Tx) {
 		r.Errorf("Run mutated backing state despite returning refusal error")
 	}
 
+	checkSetStateWriteFailure(ctx, r, tx, inspector, provider, initialState)
+
+	provider.reset()
 	beforeCount := len(inspector.Changes())
 	wantState := contract.State{Value: "acme-ws-001"}
 	if err := tx.SetState(ctx, provider, declaredState, wantState); err != nil {
 		r.Errorf("SetState on declared key failed: %v", err)
 	}
-	if len(inspector.Changes()) <= beforeCount {
+	calls, snaps := provider.reset()
+	checkSnapshotBeforeWrite(ctx, r, provider, calls, snaps, initialState)
+
+	changes := inspector.Changes()
+	if len(changes) <= beforeCount {
 		r.Errorf("SetState on declared key %q was not recorded for the receipt", declaredState)
+	} else {
+		assertRecordedChange(r, "SetState", changes[beforeCount:], string(provider.Name())+":"+string(declaredState), true)
+	}
+
+	// The restore check above put the key back; write it again so the
+	// read-back below sees the Tx's own effect.
+	if err := tx.SetState(ctx, provider, declaredState, wantState); err != nil {
+		r.Errorf("SetState on declared key failed: %v", err)
 	}
 	gotState, err := provider.Read(ctx, declaredState)
 	if err != nil {
@@ -335,6 +422,74 @@ func checkTx(r reporter, newTx func(contract.Description) contract.Tx) {
 	} else if gotState != wantState {
 		r.Errorf("StateProvider.Read(%q) after SetState = %+v, want %+v", declaredState, gotState, wantState)
 	}
+}
+
+// checkSnapshotBeforeWrite checks that SetState took a Snapshot before its
+// Write, and that restoring that snapshot gives back the pre-Write value.
+func checkSnapshotBeforeWrite(
+	ctx context.Context,
+	r reporter,
+	provider *recordingStateProvider,
+	calls []string,
+	snaps []contract.Snapshot,
+	initial contract.State,
+) {
+	r.Helper()
+
+	snapAt, writeAt := indexOf(calls, callSnapshot), indexOf(calls, callWrite)
+	if writeAt < 0 {
+		r.Errorf("SetState on declared key never called StateProvider.Write (calls %v)", calls)
+		return
+	}
+	if snapAt < 0 || snapAt > writeAt {
+		r.Errorf("SetState must call StateProvider.Snapshot before Write (calls %v)", calls)
+		return
+	}
+	backup := snaps[0]
+	if len(backup.Data) == 0 {
+		r.Errorf("SetState backup snapshot is empty")
+		return
+	}
+	if err := provider.Restore(ctx, backup); err != nil {
+		r.Errorf("StateProvider.Restore of the SetState backup failed: %v", err)
+		return
+	}
+	got, err := provider.Read(ctx, declaredState)
+	if err != nil || got != initial {
+		r.Errorf("state after Restore of the SetState backup = %+v (err %v), want the pre-Write value %+v", got, err, initial)
+	}
+	provider.reset()
+}
+
+// checkSetStateWriteFailure makes Write change the key and then fail. The Tx
+// must return an error, leave the provider at its pre-Write value and add no
+// receipt row.
+func checkSetStateWriteFailure(
+	ctx context.Context,
+	r reporter,
+	tx contract.Tx,
+	inspector TxInspector,
+	provider *recordingStateProvider,
+	initial contract.State,
+) {
+	r.Helper()
+
+	provider.setFailWrite(true)
+	defer provider.setFailWrite(false)
+
+	beforeCount := len(inspector.Changes())
+	err := tx.SetState(ctx, provider, declaredState, contract.State{Value: "half-written"})
+	if !errors.Is(err, errInjectedWrite) {
+		r.Errorf("SetState after a failed Write returned %v, want an error wrapping the Write error", err)
+	}
+	got, readErr := provider.Read(ctx, declaredState)
+	if readErr != nil || got != initial {
+		r.Errorf("state after a failed SetState Write = %+v (err %v), want the restored pre-Write value %+v", got, readErr, initial)
+	}
+	if len(inspector.Changes()) != beforeCount {
+		r.Errorf("SetState recorded a receipt row for a failed Write")
+	}
+	provider.reset()
 }
 
 func checkEmitOrder(r reporter, tx contract.DeclarativeTx, inspector TxInspector) {
