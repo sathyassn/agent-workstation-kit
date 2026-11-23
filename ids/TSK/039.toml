@@ -1,0 +1,11 @@
+id = "TSK-039"
+uid = "11632ba9-6d5c-4e11-ae52-055320c6d776"
+kind = "TSK"
+title = "Generated man pages for wskit"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-23T21:40:19Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
