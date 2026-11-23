@@ -696,9 +696,11 @@ previous stable point, or to the baseline taken before the first change.
   disk-backed or caches redirected off tmpfs; disk free-space floors with
   cleanup guidance; the resource runner wired into the agent settings
   bundle.
-- **macOS:** development volumes detected and confirmed; Spotlight and the
-  FSEvents on-disk log off for them; Time Machine excluded where a
-  destination exists (section 7b).
+- **macOS:** on the dedicated APFS development volume only, after the File
+  Provider check passes, Spotlight and the FSEvents on-disk log are off;
+  without one, a hand-over lists development folders for the Spotlight
+  privacy list; Time Machine excluded where a destination exists
+  (section 7b).
 - **Elsewhere,** the same approach: security hardening, pinned versions,
   update policy and log rotation.
 - **Rules:** defaults come from one table and may differ by purpose, tier
@@ -1369,8 +1371,9 @@ hours, while a guard that watched load and available memory stayed green.
   - agent-work swap (`MemorySwapMax`) = min(25% of the swap device,
     8 GiB), from the swap device, never from RAM;
   - CPU: a lower `CPUWeight` for agent work, reserved cores =
-    clamp(ceil(cores x 5%), 2, 4), and the agent slice's `CPUQuota` =
-    (cores - reserved) x 100%;
+    clamp(ceil(cores x 5%), 2, 4), lowered on a 1 or 2 core machine so agent
+    work keeps at least one core, and the agent slice's `CPUQuota` =
+    (cores - reserved) x 100%, never below 100%;
   - PSI thresholds (`systemd-oomd` and admission) stay percentages;
   - an explicit GB or core count overrides a value, and `plan` labels it
     as an override next to each derivation.
@@ -1406,10 +1409,13 @@ hours, while a guard that watched load and available memory stayed green.
   and package caches placed there use memory. The stage sets the policy: a
   disk-backed `/tmp`, or caches pointed at disk. The doctor reports tmpfs
   use.
-- **The session side** (a runner that caps each heavy job, and upkeep run
-  at triggers such as setup, clone and doctor, never on a timer) belongs to
-  the agent tooling, not the kit. The kit installs the machine-wide part
-  and checks for it.
+- **The session side** is split at one boundary. The kit's resources unit
+  ships the machine-wide controls and a small runner library and wrapper:
+  the memory-pressure signal and the admission and stop policy (on macOS,
+  stop admitting heavy jobs at warn and stop the newest at critical), with
+  its tests. The agent tooling calls it and decides when to run jobs.
+  Upkeep runs at triggers such as setup, clone and doctor, never on a
+  timer.
 
 ### 7b. Indexing on macOS development volumes
 
