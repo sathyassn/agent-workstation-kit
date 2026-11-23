@@ -1,0 +1,124 @@
+{
+  "schema_version": 1,
+  "binary": [],
+  "private_ipv4": [
+    {
+      "path": ".claude/settings.json",
+      "values": [
+        "169.254",
+        "172.16",
+        "172.17",
+        "172.18",
+        "172.19",
+        "172.20",
+        "172.21",
+        "172.22",
+        "172.23",
+        "172.24",
+        "172.25",
+        "172.26",
+        "172.27",
+        "172.28",
+        "172.29",
+        "172.30",
+        "172.31",
+        "192.168"
+      ],
+      "reason": "sandbox network deny list of private ranges"
+    },
+    {
+      "path": ".codeflow/.baseline/.claude/settings.json",
+      "values": [
+        "169.254",
+        "172.16",
+        "172.17",
+        "172.18",
+        "172.19",
+        "172.20",
+        "172.21",
+        "172.22",
+        "172.23",
+        "172.24",
+        "172.25",
+        "172.26",
+        "172.27",
+        "172.28",
+        "172.29",
+        "172.30",
+        "172.31",
+        "192.168"
+      ],
+      "reason": "CodeFlow baseline copy of the sandbox network deny list"
+    },
+    {
+      "path": "docs/13-public-release-checklist.md",
+      "values": [
+        "10.20",
+        "100.64",
+        "169.254",
+        "172.16",
+        "192.168"
+      ],
+      "reason": "the detector's documented ranges and examples"
+    },
+    {
+      "path": "scripts/lib/phase_verification.py",
+      "values": [
+        "100.64.0.1"
+      ],
+      "reason": "synthetic CGNAT address in a parser example"
+    },
+    {
+      "path": "tests/check_public_release.py",
+      "values": [
+        "10.0.0.0",
+        "10.20",
+        "10.20.0",
+        "100.64",
+        "100.64.0.0",
+        "169.254",
+        "169.254.0.0",
+        "172.16",
+        "172.16.0.0",
+        "192.168",
+        "192.168.0.0"
+      ],
+      "reason": "the detector's own range table and examples"
+    },
+    {
+      "path": "tests/test_fleetctl.py",
+      "values": [
+        "100.64.0.10"
+      ],
+      "reason": "synthetic CGNAT test address"
+    },
+    {
+      "path": "tests/test_machine_identity.py",
+      "values": [
+        "100.64.0.10",
+        "100.64.0.11",
+        "100.64.0.20"
+      ],
+      "reason": "synthetic CGNAT test addresses"
+    },
+    {
+      "path": "tests/test_phase_verification.py",
+      "values": [
+        "100.64.0.1",
+        "100.101.0.0"
+      ],
+      "reason": "synthetic CGNAT test addresses"
+    },
+    {
+      "path": "tests/test_public_scan_hardening.py",
+      "values": [
+        "10.1.2.3",
+        "100.64",
+        "169.254",
+        "172.16",
+        "192.168"
+      ],
+      "reason": "the detector's range labels and escaped test vectors"
+    }
+  ]
+}

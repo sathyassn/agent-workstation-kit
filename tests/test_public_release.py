@@ -25,9 +25,9 @@ public_release = importlib.util.module_from_spec(SPEC)
 sys.modules["check_public_release"] = public_release
 SPEC.loader.exec_module(public_release)
 
-# Low-entropy test-only HMAC values (never real secrets).
-TEST_PRIVATE_KEY = "test-private-000000000000000000000000"
-ALT_PRIVATE_KEY = "alt-private-0000000000000000000000000"
+# Test-only 64-hex HMAC keys (never real secrets).
+TEST_PRIVATE_KEY = "a1" * 32
+ALT_PRIVATE_KEY = "b2" * 32
 # Split synthetic canaries so this test file never holds them verbatim.
 SYNTH_PERSON = "canary" + "person9917"
 SYNTH_FULL_NAME = "canary" + "person" + " " + "nine"
@@ -40,6 +40,24 @@ def write_private_key(path: Path, value: str = TEST_PRIVATE_KEY, mode: int = 0o6
     if os.name == "posix":
         os.chmod(path, mode)
     return path
+
+
+def populate_rules(root: Path, key_hex: str = TEST_PRIVATE_KEY) -> None:
+    """Give every production rule one digest of an unused test value."""
+    key = bytes.fromhex(key_hex)
+    (root / "tests/public_scan_rules.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "algorithm": "hmac-sha256",
+                "rules": [
+                    {"id": "personal-name", "digests": [public_release.compute_digest(key, "personal-name", "unused-test-person")]},
+                    {"id": "private-network-name", "digests": [public_release.compute_digest(key, "private-network-name", "unused-test.internal")]},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 class PublicReleaseTests(unittest.TestCase):
@@ -250,7 +268,7 @@ class PublicReleaseTests(unittest.TestCase):
 
     def test_empty_file_listing_fails_closed(self) -> None:
         empty_proc = subprocess.CompletedProcess(
-            args=["git", "ls-files", "-z"], returncode=0, stdout="", stderr=""
+            args=["git", "ls-files", "-z"], returncode=0, stdout=b"", stderr=b""
         )
         with tempfile.TemporaryDirectory() as directory, mock.patch.object(
             public_release.subprocess,
@@ -415,13 +433,13 @@ class PublicReleaseTests(unittest.TestCase):
             )
             self.assertEqual(0, code, output)
             self.assertIn("synthetic", output.lower())
-            self.assertIn("maintainer", output.lower())
+            self.assertIn("public-scan workflow", output.lower())
             self.assertNotIn(
                 "keyed private-name rules not checked locally; CI runs them",
                 output,
             )
 
-    def test_keyed_scan_with_empty_digest_lists_prints_explicit_message(self) -> None:
+    def test_keyed_scan_fails_when_any_production_rule_has_no_digests(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             tracked = self.make_repository(root, include_license=True)
@@ -430,22 +448,13 @@ class PublicReleaseTests(unittest.TestCase):
                 {"GITHUB_ACTIONS": "true", "PUBLIC_SCAN_HMAC_KEY": TEST_PRIVATE_KEY},
             ):
                 with self.subTest(env=env):
-                    code, output = self.run_main(
-                        ["--root", str(root)],
-                        tracked=tracked,
-                        env=env,
-                    )
-                    self.assertEqual(0, code, output)
-                    self.assertIn("no keyed rules populated", output)
+                    code, output = self.run_main(["--root", str(root)], tracked=tracked, env=env)
+                    self.assertEqual(1, code, output)
+                    self.assertIn("no keyed rules populated for: personal-name, private-network-name", output)
 
-            # Once one rule has a digest, report only the still-empty rule.
-            key = TEST_PRIVATE_KEY.encode("utf-8")
-            person_digest = public_release.compute_digest(
-                key, "personal-name", "populated-only-test-person"
-            )
-            net_digest = public_release.compute_digest(
-                key, "private-network-name", "populated-only-test.internal"
-            )
+            # One populated rule is still a failure naming only the empty one.
+            key = bytes.fromhex(TEST_PRIVATE_KEY)
+            person_digest = public_release.compute_digest(key, "personal-name", "populated-only-test-person")
             (root / "tests/public_scan_rules.json").write_text(
                 json.dumps(
                     {
@@ -460,36 +469,26 @@ class PublicReleaseTests(unittest.TestCase):
                 encoding="utf-8",
             )
             code, output = self.run_main(
-                ["--root", str(root)],
-                tracked=tracked,
-                env={"PUBLIC_SCAN_HMAC_KEY": TEST_PRIVATE_KEY},
+                ["--root", str(root)], tracked=tracked, env={"PUBLIC_SCAN_HMAC_KEY": TEST_PRIVATE_KEY}
+            )
+            self.assertEqual(1, code, output)
+            self.assertIn("no keyed rules populated for: private-network-name;", output)
+
+            # Every rule populated passes.
+            populate_rules(root)
+            code, output = self.run_main(
+                ["--root", str(root)], tracked=tracked, env={"PUBLIC_SCAN_HMAC_KEY": TEST_PRIVATE_KEY}
             )
             self.assertEqual(0, code, output)
-            self.assertNotIn("no keyed rules populated", output)
-            self.assertIn("private-network-name", output)
 
-            # Once all rules have digests, no empty-rule warning is printed.
+            # Synthetic contributor runs keep the empty-production allowance.
             (root / "tests/public_scan_rules.json").write_text(
-                json.dumps(
-                    {
-                        "schema_version": 1,
-                        "algorithm": "hmac-sha256",
-                        "rules": [
-                            {"id": "personal-name", "digests": [person_digest]},
-                            {"id": "private-network-name", "digests": [net_digest]},
-                        ],
-                    }
-                ),
-                encoding="utf-8",
+                (ROOT / "tests/public_scan_rules.json").read_text(encoding="utf-8"), encoding="utf-8"
             )
             code, output = self.run_main(
-                ["--root", str(root)],
-                tracked=tracked,
-                env={"PUBLIC_SCAN_HMAC_KEY": TEST_PRIVATE_KEY},
+                ["--root", str(root)], tracked=tracked, env={"PUBLIC_SCAN_SYNTHETIC": "1"}
             )
             self.assertEqual(0, code, output)
-            self.assertNotIn("no keyed rules populated", output)
-            self.assertNotIn("have no digests populated", output)
 
     def test_synthetic_key_refused_in_private_mode_and_ambiguous_sources_refused(self) -> None:
         synthetic_key = (
@@ -517,6 +516,7 @@ class PublicReleaseTests(unittest.TestCase):
             root = Path(directory)
             tracked = self.make_repository(root, include_license=True)
             key_path = write_private_key(root / ".secrets/public-scan-hmac", mode=0o600)
+            populate_rules(root)
 
             code, output = self.run_main(["--root", str(root)], tracked=tracked)
             self.assertEqual(0, code, output)
@@ -562,7 +562,7 @@ class PublicReleaseTests(unittest.TestCase):
             )
             self.assertEqual(0, code, output)
             self.assertIn("synthetic", output.lower())
-            self.assertIn("maintainer", output.lower())
+            self.assertIn("public-scan workflow", output.lower())
 
             # Corrupting the production rule file with plaintext must fail even in synthetic mode.
             (root / "tests/public_scan_rules.json").write_text(
@@ -586,7 +586,7 @@ class PublicReleaseTests(unittest.TestCase):
             self.assertNotIn("plaintext-name", output)
 
     def test_keyed_matching_catches_personal_and_network_names_quietly(self) -> None:
-        key = TEST_PRIVATE_KEY.encode("utf-8")
+        key = bytes.fromhex(TEST_PRIVATE_KEY)
         person_single = "alpha" + "person73"
         person_full = "alpha" + "person" + " " + "beta"
         net_domain = "privnet73" + ".internal"
@@ -651,13 +651,14 @@ class PublicReleaseTests(unittest.TestCase):
                 "docs/sample.md:4: matched keyed rule 'personal-name'",
                 "docs/sample.md:5: matched keyed rule 'private-network-name'",
                 "docs/sample.md:6: matched keyed rule 'private-network-name'",
-                f"docs/{person_single}-notes.md:0: matched keyed rule 'personal-name'",
+                "docs/"
+                + public_release.path_component_id(key, f"{person_single}-notes.md")
+                + ":0: matched keyed rule 'personal-name'",
             }
             self.assertEqual(expected, set(findings))
 
-            # Line-content findings must never reveal matched tokens or the key.
-            line_findings = [f for f in findings if f.startswith("docs/sample.md:")]
-            joined = "\n".join(line_findings)
+            # No finding, path findings included, reveals a matched value or the key.
+            joined = "\n".join(findings)
             for secret_value in (person_single, person_full, net_domain, net_hyphen, TEST_PRIVATE_KEY):
                 self.assertNotIn(secret_value, joined.lower())
 
@@ -666,7 +667,7 @@ class PublicReleaseTests(unittest.TestCase):
                 root,
                 ["docs/sample.md"],
                 rules=rules,
-                key=ALT_PRIVATE_KEY.encode("utf-8"),
+                key=bytes.fromhex(ALT_PRIVATE_KEY),
             )
             self.assertEqual([], alt_findings)
 
@@ -677,9 +678,9 @@ class PublicReleaseTests(unittest.TestCase):
             ROOT / "tests/fixtures/public_scan/synthetic_rules.json",
             require_nonempty_digests=True,
         )
-        key = (
-            ROOT / "tests/fixtures/public_scan/synthetic_key.txt"
-        ).read_text(encoding="utf-8").strip().encode("utf-8")
+        key = bytes.fromhex(
+            (ROOT / "tests/fixtures/public_scan/synthetic_key.txt").read_text(encoding="utf-8").strip()
+        )
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -892,56 +893,63 @@ class PublicReleaseTests(unittest.TestCase):
             lines = stdout.getvalue().strip().splitlines()
             expected = [
                 public_release.compute_digest(
-                    TEST_PRIVATE_KEY.encode("utf-8"), "personal-name", SYNTH_PERSON
+                    bytes.fromhex(TEST_PRIVATE_KEY), "personal-name", SYNTH_PERSON
                 ),
                 public_release.compute_digest(
-                    TEST_PRIVATE_KEY.encode("utf-8"), "personal-name", SYNTH_FULL_NAME
+                    bytes.fromhex(TEST_PRIVATE_KEY), "personal-name", SYNTH_FULL_NAME
                 ),
             ]
             self.assertEqual(expected, lines)
             self.assertNotIn(SYNTH_PERSON, stdout.getvalue().lower())
             self.assertNotIn(TEST_PRIVATE_KEY, stdout.getvalue())
 
-    def test_ci_workflow_enforces_same_repo_secret_and_fork_synthetic_isolation(
-        self,
-    ) -> None:
-        workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-        # Extract individual steps from the workflow file by `- name:` blocks.
-        step_blocks = re.split(r"(?m)^      - name: ", workflow)[1:]
+    def test_keyed_scan_runs_from_the_base_commit_and_only_one_step_sees_the_key(self) -> None:
+        workflows = ROOT / ".github/workflows"
+        scan = (workflows / "public-scan.yml").read_text(encoding="utf-8")
+
+        # Triggers: pull_request_target runs this file from the default
+        # branch, so a pull request cannot edit the job that judges it.
+        self.assertRegex(scan, r"(?m)^  pull_request_target:$")
+        self.assertNotRegex(scan, r"(?m)^  pull_request:$")
+        self.assertRegex(scan, r"(?m)^permissions:\n  contents: read$")
+
+        step_blocks = re.split(r"(?m)^      - name: ", scan)[1:]
         steps = {block.splitlines()[0].strip(): block for block in step_blocks}
-
-        self.assertIn("Run public-release gate", steps)
-        self.assertIn("Run public-release gate (fork synthetic scan)", steps)
-
-        same_repo_step = steps["Run public-release gate"]
-        self.assertIn(
-            "if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository",
-            same_repo_step,
+        self.assertEqual(
+            ["Check out the trusted commit", "Fetch the commit to scan as git data", "Run the keyed scan on the tree"],
+            list(steps),
         )
-        self.assertIn(
-            "PUBLIC_SCAN_HMAC_KEY: ${{ secrets.PUBLIC_SCAN_HMAC_KEY }}",
-            same_repo_step,
-        )
-        self.assertNotIn("PUBLIC_SCAN_SYNTHETIC", same_repo_step)
-        self.assertNotIn("GITHUB_ACTIONS", same_repo_step)
-        self.assertIn("run: make public-check", same_repo_step)
 
-        fork_step = steps["Run public-release gate (fork synthetic scan)"]
-        self.assertIn(
-            "if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository",
-            fork_step,
-        )
-        self.assertNotIn("secrets.", fork_step)
-        self.assertIn('PUBLIC_SCAN_SYNTHETIC: "1"', fork_step)
-        self.assertIn("make public-check", fork_step)
-        self.assertIn("maintainer", fork_step.lower())
+        checkout = steps["Check out the trusted commit"]
+        self.assertIn("github.event.pull_request.base.sha", checkout)
+        self.assertNotIn("head.sha", checkout)
+        self.assertIn("persist-credentials: false", checkout)
 
-        # Least privilege: no other step may receive PUBLIC_SCAN_HMAC_KEY.
+        fetch = steps["Fetch the commit to scan as git data"]
+        self.assertIn("refs/pull/${PR_NUMBER}/head:refs/scan/head", fetch)
+        self.assertIn('"$fetched" != "$HEAD_SHA"', fetch)
+        for forbidden in ("checkout", "make ", "pip ", "npm ", "bash ", "./"):
+            self.assertNotIn(forbidden, fetch.split("run: |", 1)[1])
+
+        run = steps["Run the keyed scan on the tree"]
+        self.assertIn("PUBLIC_SCAN_HMAC_KEY: ${{ secrets.PUBLIC_SCAN_HMAC_KEY }}", run)
+        self.assertIn('run: python3 -I -B tests/check_public_release.py --tree "$TARGET_SHA"', run)
+        self.assertNotIn("make", run)
+
+        # Only that step names the secret, here and in every other workflow.
         for name, block in steps.items():
-            if name == "Run public-release gate":
-                continue
-            with self.subTest(step=name):
-                self.assertNotIn("PUBLIC_SCAN_HMAC_KEY", block)
+            if name != "Run the keyed scan on the tree":
+                with self.subTest(step=name):
+                    self.assertNotIn("secrets.", block)
+        for other in workflows.glob("*.yml"):
+            if other.name != "public-scan.yml":
+                with self.subTest(workflow=other.name):
+                    self.assertNotIn("PUBLIC_SCAN_HMAC_KEY", other.read_text(encoding="utf-8"))
+
+        # The pull_request CI job runs head code, so it scans synthetically.
+        ci = (workflows / "ci.yml").read_text(encoding="utf-8")
+        ci_steps = {b.splitlines()[0].strip(): b for b in re.split(r"(?m)^      - name: ", ci)[1:]}
+        self.assertIn('PUBLIC_SCAN_SYNTHETIC: "1"', ci_steps["Run public-release gate (synthetic scan)"])
 
 
 if __name__ == "__main__":

@@ -5,14 +5,14 @@
     {
       "id": "personal-name",
       "digests": [
-        "fe7b2730f5ad76f60b5d46d5c33909bbb800692eac0008b0f6577916ea01ca1a",
-        "95b58d328a85a8561db7fb974193350328e32e06d5fdc504635961b3aa7327df"
+        "150d4fd6af879b52bf951542eea01b4e352aee15fbaf3d444d883a67cf944aa6",
+        "1555a31cd32eb58e4730b8f18f65df640784ba3a580cd997398ac4141d29a6dc"
       ]
     },
     {
       "id": "private-network-name",
       "digests": [
-        "54ba0d990d6b6c017e3dcd8a06baa70072664b77aa91fbc97e95e5531c01c08a"
+        "27ffdce5a92fd84a83888dd3dceab8654f4466a7b83b04909eed0b644cf445c7"
       ]
     }
   ]

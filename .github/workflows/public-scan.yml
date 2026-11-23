@@ -1,0 +1,72 @@
+# public-scan: the keyed public-safety scan, the only job that sees
+# PUBLIC_SCAN_HMAC_KEY.
+#
+# It runs on `pull_request_target`, so GitHub runs this file from the default
+# branch, never from the pull request: a pull request that edits or deletes
+# this workflow cannot change the job that judges it. The job checks out the
+# pull request's base commit and runs that commit's scanner, rules and
+# exceptions. It fetches the pull request head only as git data and scans the
+# head commit's tree from git objects (`--tree`); it never checks out, builds
+# or runs head code. The secret is passed to the scan step alone, so fork pull
+# requests get the same keyed scan safely, and a same-repository branch's code
+# never sees the key. A push to main scans the pushed commit with that commit's
+# own scanner, which review already accepted.
+#
+# The required check is the job below: "public-scan / keyed scan".
+name: public-scan
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.event_name == 'pull_request_target' && format('{0}-pr-{1}', github.workflow, github.event.pull_request.number) || format('{0}-run-{1}', github.workflow, github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request_target' }}
+
+jobs:
+  keyed-scan:
+    name: keyed scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      # The trusted side: the pull request's base commit, otherwise the
+      # event's own commit. The scanner, rules and exceptions come from here.
+      - name: Check out the trusted commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Fetch the commit to scan as git data
+        id: target
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "pull_request_target" ]; then
+            git fetch --no-tags --depth=1 "https://github.com/${REPOSITORY}.git" "+refs/pull/${PR_NUMBER}/head:refs/scan/head"
+            fetched=$(git rev-parse refs/scan/head)
+            if [ "$fetched" != "$HEAD_SHA" ]; then
+              echo "::error::pull request head moved since this event; a newer run will scan it"
+              exit 1
+            fi
+            echo "sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+          else
+            echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run the keyed scan on the tree
+        env:
+          PUBLIC_SCAN_HMAC_KEY: ${{ secrets.PUBLIC_SCAN_HMAC_KEY }}
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+        run: python3 -I -B tests/check_public_release.py --tree "$TARGET_SHA"

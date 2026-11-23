@@ -1,11 +1,27 @@
 #!/usr/bin/env python3
-"""Check deterministic repository prerequisites and keyed public-safety rules."""
+"""Check repository prerequisites and the public-safety scan.
+
+The public-safety scan has two parts:
+
+- keyed rules: personal and private network names, matched by domain-separated
+  HMAC-SHA256 digests, so the rule file never holds or reveals a name;
+- a private IPv4 detector for the RFC 1918, CGNAT and link-local ranges, which
+  needs no rule and no key.
+
+It reads either the worktree or, with --tree, a commit's tree as git objects,
+so CI can scan a pull request's head without checking out or running its code.
+Diagnostics never print a matched value: a matching path component is shown as
+an opaque keyed id, and errors never echo input text.
+"""
 
 from __future__ import annotations
 
 import argparse
+import codecs
+import functools
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import re
@@ -13,7 +29,7 @@ import stat
 import subprocess
 import sys
 import unicodedata
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -31,6 +47,7 @@ REQUIRED = (
     "SECURITY.md",
     "SUPPORT.md",
     ".github/workflows/ci.yml",
+    ".github/workflows/public-scan.yml",
     ".github/dependabot.yml",
     ".github/pull_request_template.md",
     ".github/ISSUE_TEMPLATE/bug_report.yml",
@@ -57,6 +74,7 @@ DEPENDABOT_COMMIT_POLICY = (
 )
 
 DEFAULT_RULES_PATH = Path("tests/public_scan_rules.json")
+DEFAULT_EXCEPTIONS_PATH = Path("tests/public_scan_exceptions.json")
 DEFAULT_LOCAL_KEY_PATH = Path(".secrets/public-scan-hmac")
 SYNTHETIC_KEY_PATH = Path("tests/fixtures/public_scan/synthetic_key.txt")
 SYNTHETIC_RULES_PATH = Path("tests/fixtures/public_scan/synthetic_rules.json")
@@ -67,13 +85,18 @@ KEY_FILE_ENV_VAR = "PUBLIC_SCAN_HMAC_KEY_FILE"
 SYNTHETIC_ENV_VAR = "PUBLIC_SCAN_SYNTHETIC"
 GITHUB_ACTIONS_ENV_VAR = "GITHUB_ACTIONS"
 
-MIN_KEY_BYTES = 16
+KEY_BYTES = 32
+KEY_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 MAX_KEY_FILE_BYTES = 4096
+MAX_SCAN_FILE_BYTES = 20 * 1024 * 1024
 RULES_SCHEMA_VERSION = 1
 RULES_ALGORITHM = "hmac-sha256"
 HMAC_DOMAIN_PREFIX = "wskit-public-scan:v1"
+PATH_ID_DOMAIN = "wskit-public-scan:path-id:v1"
 ALLOWED_RULE_IDS = frozenset({"personal-name", "private-network-name"})
 DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+COMMIT_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 
 COMPOUND_TOKEN_RE = re.compile(r"[^\W_](?:[\w.-]*[^\W_])?", re.UNICODE)
 WORD_RUN_RE = re.compile(r"[^\W_]+", re.UNICODE)
@@ -82,13 +105,67 @@ CAMEL_SPLIT_RE = re.compile(
     re.UNICODE,
 )
 WHITESPACE_RE = re.compile(r"\s+")
+PUNCTUATION_RE = re.compile(r"[^\w\s]|_", re.UNICODE)
+JSON_ESCAPE_RE = re.compile(r"\\u([0-9a-fA-F]{4})")
+APOSTROPHES = "'‘’ʼʹ`´"
 MAX_DOT_SLICE_LABELS = 6
 LONG_DOT_CHAIN_THRESHOLD = 16
 LONG_DOT_CHAIN_WINDOW = 4
+WRAP_WINDOW_CHARS = 64
+# No name or host is longer; longer candidates are skipped and refused as values.
+MAX_CANDIDATE_CHARS = 128
+
+# Dotted decimal runs of two to four groups. A digit or a digit-dot before the
+# run, or a digit or dot-digit after it, means it is part of a longer number,
+# so it is not an address. A letter glued to either end is a break.
+DOTTED_DECIMAL_RE = re.compile(r"(?<!\d)(?<!\d\.)(\d{1,3}(?:\.\d{1,3}){1,3})(?!\d)(?!\.\d)")
+# A prefix continues when followed by a trailing dot, a CIDR suffix or a
+# wildcard octet, for example "10.20." or "10.20.0/16" or "10.20.x".
+PREFIX_CONTINUATION_RE = re.compile(r"\.(?!\d)|/\d|\.[x*](?![\w])")
+
+PRIVATE_RANGES = (
+    ("10/8", ipaddress.ip_network("10.0.0.0/8")),
+    ("172.16/12", ipaddress.ip_network("172.16.0.0/12")),
+    ("192.168/16", ipaddress.ip_network("192.168.0.0/16")),
+    ("100.64/10", ipaddress.ip_network("100.64.0.0/10")),
+    ("169.254/16", ipaddress.ip_network("169.254.0.0/16")),
+)
+# Two-group prefixes that are rare outside addresses are flagged bare; the
+# others need a continuation, because "10.5" and "100.75" are common numbers.
+DISTINCT_TWO_GROUP_RANGES = frozenset({"172.16/12", "192.168/16", "169.254/16"})
+
+# Latin lookalikes from other scripts, folded before tokenising. This covers
+# the letters a name or host can be spelled with; NFKC already folds
+# fullwidth and compatibility forms.
+CONFUSABLES = str.maketrans(
+    {
+        # Cyrillic
+        "а": "a", "А": "A", "в": "b", "В": "B",
+        "с": "c", "С": "C", "ԁ": "d", "е": "e",
+        "Е": "E", "һ": "h", "Н": "H", "і": "i",
+        "І": "I", "ј": "j", "Ј": "J", "к": "k",
+        "К": "K", "ӏ": "l", "м": "m", "М": "M",
+        "о": "o", "О": "O", "р": "p", "Р": "P",
+        "ԛ": "q", "ѕ": "s", "Ѕ": "S", "т": "t",
+        "Т": "T", "х": "x", "Х": "X", "у": "y",
+        "Ү": "Y", "ԝ": "w",
+        # Greek
+        "α": "a", "Α": "A", "Β": "B", "Ε": "E",
+        "Ζ": "Z", "Η": "H", "ι": "i", "Ι": "I",
+        "Κ": "K", "Μ": "M", "Ν": "N", "ο": "o",
+        "Ο": "O", "ρ": "p", "Ρ": "P", "Τ": "T",
+        "υ": "u", "Υ": "Y", "Χ": "X", "ν": "v",
+        # Latin variants
+        "ı": "i", "ȷ": "j", "ɡ": "g", "ɪ": "i",
+    }
+)
 
 
 class ScanConfigError(ValueError):
-    """Raised when keyed scan configuration, key material, or rules are invalid."""
+    """Raised when scan configuration, key material, rules or input are invalid.
+
+    Messages never contain input text.
+    """
 
 
 @dataclass(frozen=True)
@@ -106,6 +183,26 @@ class RuleSet:
     @property
     def digest_count(self) -> int:
         return sum(len(rule.digests) for rule in self.rules)
+
+    @property
+    def empty_rule_ids(self) -> tuple[str, ...]:
+        return tuple(sorted(rule.rule_id for rule in self.rules if not rule.digests))
+
+
+@dataclass(frozen=True)
+class Exceptions:
+    """Reviewed exceptions, read from the trusted checkout.
+
+    binary maps a path to the sha256 of the exact content allowed to be
+    non-text. private_ipv4 maps a path to the canonical addresses or prefixes
+    allowed in it.
+    """
+
+    binary: Mapping[str, str]
+    private_ipv4: Mapping[str, frozenset[str]]
+
+
+EMPTY_EXCEPTIONS = Exceptions(binary={}, private_ipv4={})
 
 
 @dataclass(frozen=True)
@@ -126,59 +223,243 @@ class ScanFinding:
         return f"{self.path}:{self.line}: matched keyed rule '{self.rule_id}'"
 
 
+@dataclass(frozen=True)
+class SourceFile:
+    """One tracked entry: its path, and its content or a reason it has none."""
+
+    path: str
+    content: bytes | None
+    symlink: bool = False
+    problem: str | None = None
+
+
+# --- normalisation and candidates -------------------------------------------
+
+
+def _decode_json_escapes(text: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        return chr(int(match.group(1), 16))
+
+    decoded = JSON_ESCAPE_RE.sub(replace, text)
+    # Join escaped surrogate pairs into one character; drop lone surrogates.
+    return decoded.encode("utf-16", "surrogatepass").decode("utf-16", "ignore")
+
+
+_APOSTROPHE_TABLE = {ord(ch): None for ch in APOSTROPHES}
+
+
+@functools.lru_cache(maxsize=65536)
+def normalize_text(text: str) -> str:
+    """Canonicalise text before tokenising, keeping case for camelCase splits.
+
+    JSON unicode escapes are decoded, then NFKC folds compatibility forms (a
+    fullwidth dot becomes "."), format and zero-width characters are removed,
+    Latin lookalikes are folded and apostrophes are dropped, so "O'Brien" and
+    "OBrien" give the same token.
+    """
+    if text.isascii() and "\\u" not in text:
+        # NFKC, format characters and lookalikes cannot change ASCII text.
+        return text.translate(_APOSTROPHE_TABLE)
+    decoded = _decode_json_escapes(text)
+    if not decoded.isascii():
+        decoded = unicodedata.normalize("NFKC", decoded)
+        decoded = "".join(ch for ch in decoded if unicodedata.category(ch) != "Cf").translate(CONFUSABLES)
+    return decoded.translate(_APOSTROPHE_TABLE)
+
+
 def normalize_value(value: str) -> str:
-    """Normalize a candidate token for deterministic keyed HMAC matching."""
-    normalized = unicodedata.normalize("NFKC", value).strip().casefold()
+    """Normalise one value for keyed HMAC matching; the owner hashes this form."""
+    normalized = normalize_text(value).strip().casefold()
     return WHITESPACE_RE.sub(" ", normalized)
 
 
+def canonical_octets(groups: str) -> tuple[int, ...] | None:
+    """Return the decimal octets of a dotted run, or None if one exceeds 255."""
+    octets = tuple(int(part, 10) for part in groups.split("."))
+    if any(octet > 255 for octet in octets):
+        return None
+    return octets
+
+
 def compute_digest(key: bytes, rule_id: str, value: str) -> str:
-    """Compute a domain-separated HMAC-SHA256 digest for one normalized value."""
-    if len(key) < MIN_KEY_BYTES:
-        raise ScanConfigError(
-            f"HMAC scan key must be at least {MIN_KEY_BYTES} bytes"
-        )
+    """Compute a domain-separated HMAC-SHA256 digest for one normalised value."""
+    if len(key) != KEY_BYTES:
+        raise ScanConfigError(f"HMAC scan key must be {KEY_BYTES} bytes")
     if rule_id not in ALLOWED_RULE_IDS:
-        raise ScanConfigError(f"unknown keyed scan rule id: {rule_id}")
+        raise ScanConfigError("unknown keyed scan rule id")
     normalized = normalize_value(value)
     if not normalized:
         raise ScanConfigError("value to hash must not be empty")
+    if len(normalized) > MAX_CANDIDATE_CHARS:
+        raise ScanConfigError(f"value to hash must be at most {MAX_CANDIDATE_CHARS} characters")
     payload = f"{HMAC_DOMAIN_PREFIX}:{rule_id}:{normalized}".encode("utf-8")
     return hmac.new(key, payload, hashlib.sha256).hexdigest()
+
+
+def _fold(value: str) -> str:
+    """Fold already-normalised text: casefold and collapse whitespace."""
+    return WHITESPACE_RE.sub(" ", value.strip().casefold())
+
+
+def _add(candidates: set[str], value: str) -> None:
+    folded = _fold(value)
+    if folded and len(folded) <= MAX_CANDIDATE_CHARS:
+        candidates.add(folded)
+
+
+@functools.lru_cache(maxsize=65536)
+def _cached_candidates(line: str) -> frozenset[str]:
+    return frozenset(_extract_candidates(line))
+
+
+def extract_candidates(line: str) -> frozenset[str]:
+    """Extract candidate values from one line of text (cached by line)."""
+    return _cached_candidates(line)
+
+
+def _extract_candidates(line: str) -> set[str]:
+    """Extract candidate values from one line of text.
+
+    Candidates are tokens, dot and hyphen slices, camelCase parts, two- and
+    three-word runs, canonical dotted-decimal runs and their prefixes, the
+    whole line, and the whole line with punctuation removed.
+    """
+    text = normalize_text(line)
+    candidates: set[str] = set()
+    words: list[str] = []
+
+    _add(candidates, text)
+    _add(candidates, PUNCTUATION_RE.sub(" ", text))
+
+    for match in DOTTED_DECIMAL_RE.finditer(text):
+        octets = canonical_octets(match.group(1))
+        if octets is None:
+            continue
+        for width in range(1, len(octets) + 1):
+            candidates.add(".".join(str(octet) for octet in octets[:width]))
+
+    for match in COMPOUND_TOKEN_RE.finditer(text):
+        raw_token = match.group(0)
+        _add(candidates, raw_token)
+
+        if "." in raw_token:
+            dot_parts = [p for p in raw_token.split(".") if p]
+            n_parts = len(dot_parts)
+            max_window = (
+                LONG_DOT_CHAIN_WINDOW
+                if n_parts > LONG_DOT_CHAIN_THRESHOLD
+                else min(n_parts, MAX_DOT_SLICE_LABELS)
+            )
+            for start in range(n_parts):
+                for width in range(1, min(max_window, n_parts - start) + 1):
+                    _add(candidates, ".".join(dot_parts[start : start + width]))
+
+        if "-" in raw_token:
+            for dot_seg in raw_token.split("."):
+                if "-" not in dot_seg:
+                    continue
+                dash_parts = [p for p in dot_seg.split("-") if p]
+                n_dash = len(dash_parts)
+                for start in range(n_dash):
+                    for width in range(1, min(LONG_DOT_CHAIN_WINDOW, n_dash - start) + 1):
+                        _add(candidates, "-".join(dash_parts[start : start + width]))
+
+        for run_match in WORD_RUN_RE.finditer(raw_token):
+            run = run_match.group(0)
+            norm_run = _fold(run)
+            if norm_run:
+                candidates.add(norm_run)
+            camel_parts = CAMEL_SPLIT_RE.findall(run)
+            if len(camel_parts) > 1:
+                for part in camel_parts:
+                    norm_part = _fold(part)
+                    if norm_part:
+                        candidates.add(norm_part)
+                        words.append(norm_part)
+            elif norm_run:
+                words.append(norm_run)
+
+    for idx in range(len(words)):
+        if idx + 1 < len(words):
+            candidates.add(f"{words[idx]} {words[idx + 1]}")
+        if idx + 2 < len(words):
+            candidates.add(f"{words[idx]} {words[idx + 1]} {words[idx + 2]}")
+
+    return candidates
+
+
+def private_ipv4_hits(line: str) -> list[tuple[str, str]]:
+    """Return (range label, canonical value) for each private address or prefix.
+
+    A full address is flagged when it lies in a private range. A three-group
+    prefix is flagged when it lies in one (a 10.x prefix needs a
+    continuation). A two-group prefix is flagged bare for 172.16/12,
+    192.168/16 and 169.254/16, and with a continuation for 10/8 and 100.64/10.
+    """
+    text = normalize_text(line)
+    hits: list[tuple[str, str]] = []
+    for match in DOTTED_DECIMAL_RE.finditer(text):
+        octets = canonical_octets(match.group(1))
+        if octets is None:
+            continue
+        continued = bool(PREFIX_CONTINUATION_RE.match(text, match.end()))
+        padded = octets + (0,) * (4 - len(octets))
+        address = ipaddress.ip_address(".".join(str(octet) for octet in padded))
+        for label, network in PRIVATE_RANGES:
+            if address not in network:
+                continue
+            # The prefix must pin the range: a lone "172.16" pins 172.16/12,
+            # but a lone "100.64" only pins it with its second octet in range,
+            # which padding already checked.
+            if len(octets) == 4:
+                flagged = True
+            elif len(octets) == 3:
+                flagged = continued or label != "10/8"
+            else:
+                flagged = continued or label in DISTINCT_TWO_GROUP_RANGES
+            if flagged:
+                hits.append((label, ".".join(str(octet) for octet in octets)))
+            break
+    return hits
+
+
+# --- rules, exceptions and keys ---------------------------------------------
 
 
 def _strict_json_object_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
     obj: dict[str, object] = {}
     for key, value in pairs:
         if key in obj:
-            raise ScanConfigError(f"duplicate JSON key in rule file: {key}")
+            raise ScanConfigError("duplicate JSON key in a scan configuration file")
         obj[key] = value
     return obj
 
 
-def load_rules(path: Path, *, require_nonempty_digests: bool = False) -> RuleSet:
-    """Load and strictly validate a digest-only keyed-scan rule file."""
+def _read_config_json(path: Path, label: str) -> object:
     if path.is_symlink():
-        raise ScanConfigError(f"rule file must not be a symlink: {path.name}")
+        raise ScanConfigError(f"{label} must not be a symlink")
     try:
         st = os.lstat(path)
     except OSError as exc:
-        raise ScanConfigError(f"rule file is missing or unreadable: {path.name}") from exc
+        raise ScanConfigError(f"{label} is missing or unreadable") from exc
     if not stat.S_ISREG(st.st_mode):
-        raise ScanConfigError(f"rule file is not a regular file: {path.name}")
+        raise ScanConfigError(f"{label} is not a regular file")
     try:
         raw_text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
-        raise ScanConfigError(f"rule file could not be read as UTF-8: {path.name}") from exc
+        raise ScanConfigError(f"{label} could not be read as UTF-8") from exc
     try:
-        data = json.loads(raw_text, object_pairs_hook=_strict_json_object_pairs)
+        return json.loads(raw_text, object_pairs_hook=_strict_json_object_pairs)
     except json.JSONDecodeError as exc:
-        raise ScanConfigError(f"rule file is not valid JSON: {path.name}") from exc
+        raise ScanConfigError(f"{label} is not valid JSON") from exc
 
+
+def load_rules(path: Path, *, require_nonempty_digests: bool = False) -> RuleSet:
+    """Load and strictly validate a digest-only keyed-scan rule file."""
+    data = _read_config_json(path, "rule file")
     if not isinstance(data, dict):
         raise ScanConfigError("rule file root must be a JSON object")
-    expected_top_keys = {"schema_version", "algorithm", "rules"}
-    if set(data.keys()) != expected_top_keys:
+    if set(data.keys()) != {"schema_version", "algorithm", "rules"}:
         raise ScanConfigError(
             "rule file must contain only schema_version, algorithm, and rules"
         )
@@ -188,7 +469,6 @@ def load_rules(path: Path, *, require_nonempty_digests: bool = False) -> RuleSet
         raise ScanConfigError(
             f"rule file schema_version must be integer {RULES_SCHEMA_VERSION}"
         )
-
     algorithm = data["algorithm"]
     if algorithm != RULES_ALGORITHM:
         raise ScanConfigError(f"rule file algorithm must be '{RULES_ALGORITHM}'")
@@ -212,10 +492,6 @@ def load_rules(path: Path, *, require_nonempty_digests: bool = False) -> RuleSet
         raw_digests = entry["digests"]
         if not isinstance(raw_digests, list):
             raise ScanConfigError(f"digests for rule '{rule_id}' must be a list")
-        if require_nonempty_digests and not raw_digests:
-            raise ScanConfigError(
-                f"synthetic rule '{rule_id}' must contain at least one HMAC digest"
-            )
         digests: set[str] = set()
         for item in raw_digests:
             if not isinstance(item, str) or not DIGEST_RE.fullmatch(item):
@@ -223,61 +499,94 @@ def load_rules(path: Path, *, require_nonempty_digests: bool = False) -> RuleSet
                     f"rule '{rule_id}' contains an entry that is not a lowercase 64-hex HMAC-SHA256 digest"
                 )
             if item in digests:
-                raise ScanConfigError(
-                    f"rule '{rule_id}' contains a duplicate HMAC digest"
-                )
+                raise ScanConfigError(f"rule '{rule_id}' contains a duplicate HMAC digest")
             digests.add(item)
         parsed_rules.append(KeyedRule(rule_id=rule_id, digests=frozenset(digests)))
 
     if seen_ids != ALLOWED_RULE_IDS:
         missing = sorted(ALLOWED_RULE_IDS - seen_ids)
+        raise ScanConfigError("rule file is missing required rule(s): " + ", ".join(missing))
+
+    ruleset = RuleSet(schema_version=schema_version, algorithm=algorithm, rules=tuple(parsed_rules))
+    if require_nonempty_digests and ruleset.empty_rule_ids:
         raise ScanConfigError(
-            "rule file is missing required rule(s): " + ", ".join(missing)
+            "no keyed rules populated for: "
+            + ", ".join(ruleset.empty_rule_ids)
+            + "; every keyed rule needs at least one digest (see docs/13-public-release-checklist.md)"
         )
-
-    return RuleSet(
-        schema_version=schema_version,
-        algorithm=algorithm,
-        rules=tuple(parsed_rules),
-    )
+    return ruleset
 
 
-def tracked_files(root: Path) -> tuple[list[str] | None, str | None]:
-    """Return tracked paths, or a concise error when listing fails or is empty."""
-    try:
-        result = subprocess.run(
-            ["git", "ls-files", "-z"],
-            cwd=root,
-            check=True,
-            capture_output=True,
-            text=True,
+def _valid_relative_path(value: object) -> bool:
+    if not isinstance(value, str) or not value or "\0" in value:
+        return False
+    path = Path(value)
+    return not path.is_absolute() and ".." not in path.parts
+
+
+def load_exceptions(path: Path) -> Exceptions:
+    """Load the reviewed exception list; a missing file means no exceptions."""
+    if not path.exists() and not path.is_symlink():
+        return EMPTY_EXCEPTIONS
+    data = _read_config_json(path, "exception file")
+    if not isinstance(data, dict) or set(data.keys()) != {"schema_version", "binary", "private_ipv4"}:
+        raise ScanConfigError(
+            "exception file must contain only schema_version, binary, and private_ipv4"
         )
-    except FileNotFoundError:
-        return None, "Git is unavailable"
-    except subprocess.CalledProcessError:
-        return None, "the directory is not a readable Git worktree"
-    except OSError as exc:
-        return None, f"Git could not be executed: {exc.strerror or type(exc).__name__}"
-    paths = [item for item in result.stdout.split("\0") if item]
-    if not paths:
-        return None, "tracked file listing is empty"
-    return paths, None
+    if data["schema_version"] != 1 or type(data["schema_version"]) is not int:
+        raise ScanConfigError("exception file schema_version must be integer 1")
+
+    binary: dict[str, str] = {}
+    if not isinstance(data["binary"], list):
+        raise ScanConfigError("exception file binary must be a list")
+    for entry in data["binary"]:
+        if not isinstance(entry, dict) or set(entry.keys()) != {"path", "sha256", "reason"}:
+            raise ScanConfigError("each binary exception must contain only path, sha256, and reason")
+        if not _valid_relative_path(entry["path"]) or entry["path"] in binary:
+            raise ScanConfigError("a binary exception has an invalid or duplicate path")
+        if not isinstance(entry["sha256"], str) or not SHA256_RE.fullmatch(entry["sha256"]):
+            raise ScanConfigError("a binary exception sha256 must be lowercase 64-hex")
+        if not isinstance(entry["reason"], str) or not entry["reason"].strip():
+            raise ScanConfigError("a binary exception needs a reason")
+        binary[entry["path"]] = entry["sha256"]
+
+    private: dict[str, frozenset[str]] = {}
+    if not isinstance(data["private_ipv4"], list):
+        raise ScanConfigError("exception file private_ipv4 must be a list")
+    for entry in data["private_ipv4"]:
+        if not isinstance(entry, dict) or set(entry.keys()) != {"path", "values", "reason"}:
+            raise ScanConfigError("each private_ipv4 exception must contain only path, values, and reason")
+        if not _valid_relative_path(entry["path"]) or entry["path"] in private:
+            raise ScanConfigError("a private_ipv4 exception has an invalid or duplicate path")
+        values = entry["values"]
+        if not isinstance(values, list) or not values:
+            raise ScanConfigError("a private_ipv4 exception needs a non-empty values list")
+        canonical: set[str] = set()
+        for value in values:
+            octets = canonical_octets(value) if isinstance(value, str) and re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){1,3}", value) else None
+            if octets is None or ".".join(str(o) for o in octets) != value:
+                raise ScanConfigError("a private_ipv4 exception value is not a canonical dotted address or prefix")
+            canonical.add(value)
+        if not isinstance(entry["reason"], str) or not entry["reason"].strip():
+            raise ScanConfigError("a private_ipv4 exception needs a reason")
+        private[entry["path"]] = frozenset(canonical)
+    return Exceptions(binary=binary, private_ipv4=private)
 
 
 def _parse_key_text(raw_text: str) -> bytes:
     cleaned = raw_text.strip()
     if not cleaned:
         raise ScanConfigError("HMAC scan key is missing or empty")
-    key_bytes = cleaned.encode("utf-8")
-    if len(key_bytes) < MIN_KEY_BYTES:
+    if not KEY_HEX_RE.fullmatch(cleaned):
         raise ScanConfigError(
-            f"HMAC scan key must be at least {MIN_KEY_BYTES} bytes"
+            "HMAC scan key must be exactly 64 lowercase hex characters (32 random bytes; "
+            "create one with: openssl rand -hex 32)"
         )
-    return key_bytes
+    return bytes.fromhex(cleaned)
 
 
 def load_synthetic_key(root: Path) -> bytes:
-    """Load the public non-secret synthetic key fixture for fork checks."""
+    """Load the public, non-secret synthetic key fixture."""
     key_path = root / SYNTHETIC_KEY_PATH
     if key_path.is_symlink():
         raise ScanConfigError("public synthetic key fixture must not be a symlink")
@@ -300,7 +609,10 @@ def load_key_from_file(
     root: Path,
     tracked: Sequence[str] | None,
 ) -> bytes:
-    """Load a private HMAC key from an untracked, owner-only regular file."""
+    """Load a private HMAC key from an untracked, owner-only regular file.
+
+    The mode check covers the permission bits only; it does not inspect ACLs.
+    """
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
         fd = os.open(key_path, flags)
@@ -338,12 +650,10 @@ def load_key_from_file(
     if tracked:
         tracked_set = set(tracked)
         if resolved_key.is_relative_to(resolved_root):
-            rel = resolved_key.relative_to(resolved_root).as_posix()
-            if rel in tracked_set:
+            if resolved_key.relative_to(resolved_root).as_posix() in tracked_set:
                 raise ScanConfigError("HMAC scan key file must not be tracked by Git")
         if key_path.is_relative_to(root):
-            rel_raw = key_path.relative_to(root).as_posix()
-            if rel_raw in tracked_set:
+            if key_path.relative_to(root).as_posix() in tracked_set:
                 raise ScanConfigError("HMAC scan key file must not be tracked by Git")
 
     try:
@@ -373,9 +683,7 @@ def resolve_key_material(
 
     synthetic_env = env.get(SYNTHETIC_ENV_VAR, "")
     if synthetic_env not in ("", "1"):
-        raise ScanConfigError(
-            f"invalid {SYNTHETIC_ENV_VAR} value; expected '1' or unset"
-        )
+        raise ScanConfigError(f"invalid {SYNTHETIC_ENV_VAR} value; expected '1' or unset")
     synthetic = synthetic_flag or (synthetic_env == "1")
 
     has_cli_key_file = key_file is not None
@@ -384,16 +692,10 @@ def resolve_key_material(
     explicit_private_sources = int(has_cli_key_file) + int(has_env_key_file) + int(has_env_key)
 
     if synthetic and explicit_private_sources > 0:
-        raise ScanConfigError(
-            "cannot combine synthetic scan mode with a private HMAC key source"
-        )
+        raise ScanConfigError("cannot combine synthetic scan mode with a private HMAC key source")
 
     if synthetic:
-        return KeyMaterial(
-            key=load_synthetic_key(root),
-            synthetic=True,
-            source=str(SYNTHETIC_KEY_PATH),
-        )
+        return KeyMaterial(key=load_synthetic_key(root), synthetic=True, source=str(SYNTHETIC_KEY_PATH))
 
     if explicit_private_sources > 1:
         raise ScanConfigError("specify only one HMAC key source")
@@ -401,13 +703,12 @@ def resolve_key_material(
     if has_cli_key_file:
         assert key_file is not None
         key_bytes = load_key_from_file(key_file, root=root, tracked=tracked)
-        source = str(key_file)
+        source = "--key-file"
     elif has_env_key_file:
         env_path_raw = env[KEY_FILE_ENV_VAR].strip()
         if not env_path_raw:
             raise ScanConfigError(f"{KEY_FILE_ENV_VAR} is set but empty")
-        env_path = Path(env_path_raw)
-        key_bytes = load_key_from_file(env_path, root=root, tracked=tracked)
+        key_bytes = load_key_from_file(Path(env_path_raw), root=root, tracked=tracked)
         source = KEY_FILE_ENV_VAR
     elif has_env_key:
         key_bytes = _parse_key_text(env[KEY_ENV_VAR])
@@ -427,110 +728,363 @@ def resolve_key_material(
         else:
             raise ScanConfigError(
                 "HMAC scan key is missing; provide PUBLIC_SCAN_HMAC_KEY, create untracked "
-                f"{DEFAULT_LOCAL_KEY_PATH} (mode 0600), or pass --synthetic for fork checks"
+                f"{DEFAULT_LOCAL_KEY_PATH} (mode 0600), or pass --synthetic for contributor checks"
             )
 
-    synthetic_path = root / SYNTHETIC_KEY_PATH
-    if synthetic_path.is_file() and not synthetic_path.is_symlink():
-        try:
-            public_synthetic = load_synthetic_key(root)
-        except ScanConfigError:
-            public_synthetic = b""
-        if public_synthetic and hmac.compare_digest(key_bytes, public_synthetic):
-            raise ScanConfigError(
-                "refusing to use the public synthetic key as a private HMAC key"
-            )
+    # The published synthetic key must never be accepted as the private key.
+    # If its fixture cannot be loaded the comparison cannot run, so fail.
+    try:
+        public_synthetic = load_synthetic_key(root)
+    except ScanConfigError as exc:
+        raise ScanConfigError(
+            "cannot verify the private key differs from the public synthetic key: " + str(exc)
+        ) from exc
+    if hmac.compare_digest(key_bytes, public_synthetic):
+        raise ScanConfigError("refusing to use the public synthetic key as a private HMAC key")
 
     return KeyMaterial(key=key_bytes, synthetic=False, source=source)
 
 
-def extract_candidates(line: str) -> set[str]:
-    """Extract normalized tokens, domain slices, camelCase parts, and word n-grams."""
-    candidates: set[str] = set()
-    words: list[str] = []
-
-    for match in COMPOUND_TOKEN_RE.finditer(line):
-        raw_token = match.group(0)
-        norm_token = normalize_value(raw_token)
-        if norm_token:
-            candidates.add(norm_token)
-
-        if "." in raw_token:
-            dot_parts = [p for p in raw_token.split(".") if p]
-            n_parts = len(dot_parts)
-            max_window = (
-                LONG_DOT_CHAIN_WINDOW
-                if n_parts > LONG_DOT_CHAIN_THRESHOLD
-                else min(n_parts, MAX_DOT_SLICE_LABELS)
-            )
-            for start in range(n_parts):
-                for width in range(1, min(max_window, n_parts - start) + 1):
-                    sliced = normalize_value(".".join(dot_parts[start : start + width]))
-                    if sliced:
-                        candidates.add(sliced)
-
-        if "-" in raw_token:
-            for dot_seg in raw_token.split("."):
-                if "-" not in dot_seg:
-                    continue
-                dash_parts = [p for p in dot_seg.split("-") if p]
-                n_dash = len(dash_parts)
-                for start in range(n_dash):
-                    for width in range(1, min(LONG_DOT_CHAIN_WINDOW, n_dash - start) + 1):
-                        sliced = normalize_value("-".join(dash_parts[start : start + width]))
-                        if sliced:
-                            candidates.add(sliced)
-
-        for run_match in WORD_RUN_RE.finditer(raw_token):
-            run = run_match.group(0)
-            norm_run = normalize_value(run)
-            if norm_run:
-                candidates.add(norm_run)
-            camel_parts = CAMEL_SPLIT_RE.findall(run)
-            if len(camel_parts) > 1:
-                for part in camel_parts:
-                    norm_part = normalize_value(part)
-                    if norm_part:
-                        candidates.add(norm_part)
-                        words.append(norm_part)
-            elif norm_run:
-                words.append(norm_run)
-
-    for idx in range(len(words)):
-        if idx + 1 < len(words):
-            candidates.add(f"{words[idx]} {words[idx + 1]}")
-        if idx + 2 < len(words):
-            candidates.add(f"{words[idx]} {words[idx + 1]} {words[idx + 2]}")
-
-    return candidates
+# --- sources ----------------------------------------------------------------
 
 
-def _match_candidates(
-    candidates: Iterable[str],
+def _split_nul_paths(raw: bytes) -> list[str]:
+    """Decode NUL-separated Git paths; any non-UTF-8 path fails the listing."""
+    try:
+        return [item.decode("utf-8") for item in raw.split(b"\0") if item]
+    except UnicodeDecodeError as exc:
+        raise ScanConfigError("tracked file listing contains a path that is not valid UTF-8") from exc
+
+
+def tracked_files(root: Path) -> tuple[list[str] | None, str | None]:
+    """Return tracked paths, or a concise error when listing fails or is empty."""
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "-z"],
+            cwd=root,
+            check=True,
+            capture_output=True,
+        )
+    except FileNotFoundError:
+        return None, "Git is unavailable"
+    except subprocess.CalledProcessError:
+        return None, "the directory is not a readable Git worktree"
+    except OSError as exc:
+        return None, f"Git could not be executed: {exc.strerror or type(exc).__name__}"
+    try:
+        paths = _split_nul_paths(result.stdout)
+    except ScanConfigError as exc:
+        return None, str(exc)
+    if not paths:
+        return None, "tracked file listing is empty"
+    return paths, None
+
+
+def worktree_sources(root: Path, tracked: Sequence[str]) -> Iterator[SourceFile]:
+    """Yield each tracked worktree entry, reading symlinks as their target text."""
+    root_resolved = root.resolve()
+    for relative in tracked:
+        rel_path = Path(relative)
+        if rel_path.is_absolute() or ".." in rel_path.parts:
+            yield SourceFile(relative, None, problem="invalid tracked path")
+            continue
+        full_path = root / rel_path
+        if full_path.is_symlink():
+            try:
+                target = os.readlink(full_path)
+            except OSError:
+                yield SourceFile(relative, None, problem="tracked symlink is unreadable")
+                continue
+            yield SourceFile(relative, os.fsencode(target), symlink=True)
+            continue
+        if not full_path.exists():
+            yield SourceFile(relative, None, problem="tracked file is missing from worktree")
+            continue
+        if not full_path.is_file():
+            yield SourceFile(relative, None, problem="tracked path is not a readable file")
+            continue
+        if not full_path.resolve().is_relative_to(root_resolved):
+            yield SourceFile(relative, None, problem="tracked file resolves outside repository root")
+            continue
+        try:
+            size = full_path.stat().st_size
+            if size > MAX_SCAN_FILE_BYTES:
+                yield SourceFile(relative, None, problem="tracked file is too large to scan")
+                continue
+            content = full_path.read_bytes()
+        except OSError:
+            yield SourceFile(relative, None, problem="tracked file is unreadable")
+            continue
+        yield SourceFile(relative, content)
+
+
+def _git(root: Path, args: Sequence[str], *, stdin: bytes | None = None) -> bytes:
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=root,
+            input=stdin,
+            check=True,
+            capture_output=True,
+        )
+    except FileNotFoundError as exc:
+        raise ScanConfigError("Git is unavailable") from exc
+    except subprocess.CalledProcessError as exc:
+        raise ScanConfigError("Git could not read the requested tree") from exc
+    except OSError as exc:
+        raise ScanConfigError("Git could not be executed") from exc
+    return result.stdout
+
+
+def tree_sources(root: Path, revision: str) -> tuple[list[str], list[SourceFile]]:
+    """Read every entry of a commit's tree as git objects, never as a checkout.
+
+    The revision must be a full commit SHA, so the scan is bound to an exact
+    commit and not to a name the requester controls.
+    """
+    if not COMMIT_RE.fullmatch(revision):
+        raise ScanConfigError("--tree needs a full lowercase commit SHA")
+    _git(root, ["cat-file", "-e", f"{revision}^{{commit}}"])
+    listing = _git(root, ["ls-tree", "-r", "-z", "--full-tree", revision])
+
+    entries: list[tuple[str, str, str, str]] = []
+    for record in listing.split(b"\0"):
+        if not record:
+            continue
+        meta, sep, raw_path = record.partition(b"\t")
+        fields = meta.split(b" ")
+        if not sep or len(fields) != 3:
+            raise ScanConfigError("Git returned a malformed tree listing")
+        try:
+            path = raw_path.decode("utf-8")
+            mode, kind, sha = (field.decode("ascii") for field in fields)
+        except UnicodeDecodeError as exc:
+            raise ScanConfigError("tracked file listing contains a path that is not valid UTF-8") from exc
+        entries.append((mode, kind, sha, path))
+    if not entries:
+        raise ScanConfigError("tracked file listing is empty")
+
+    blobs = [entry for entry in entries if entry[1] == "blob"]
+    contents: dict[str, bytes | None] = {}
+    if blobs:
+        sizes = _git(root, ["cat-file", "--batch-check"], stdin=b"".join(e[2].encode() + b"\n" for e in blobs))
+        wanted: list[str] = []
+        for line in sizes.splitlines():
+            parts = line.split(b" ")
+            if len(parts) != 3 or parts[1] != b"blob":
+                raise ScanConfigError("Git returned a malformed object listing")
+            sha = parts[0].decode("ascii")
+            if int(parts[2]) > MAX_SCAN_FILE_BYTES:
+                contents[sha] = None
+            else:
+                wanted.append(sha)
+        if wanted:
+            data = _git(root, ["cat-file", "--batch"], stdin=b"".join(s.encode() + b"\n" for s in wanted))
+            offset = 0
+            for sha in wanted:
+                header_end = data.index(b"\n", offset)
+                header = data[offset:header_end].split(b" ")
+                if len(header) != 3 or header[0].decode("ascii") != sha or header[1] != b"blob":
+                    raise ScanConfigError("Git returned a malformed object stream")
+                size = int(header[2])
+                start = header_end + 1
+                contents[sha] = data[start : start + size]
+                offset = start + size + 1
+
+    paths: list[str] = []
+    sources: list[SourceFile] = []
+    for mode, kind, sha, path in entries:
+        paths.append(path)
+        if kind != "blob":
+            sources.append(SourceFile(path, None, problem="tracked entry is not a file (submodule or other object)"))
+            continue
+        content = contents.get(sha)
+        if content is None:
+            sources.append(SourceFile(path, None, problem="tracked file is too large to scan"))
+            continue
+        sources.append(SourceFile(path, content, symlink=(mode == "120000")))
+    return paths, sources
+
+
+# --- decoding and scanning --------------------------------------------------
+
+
+def _looks_utf16(data: bytes) -> str | None:
+    """Return a UTF-16 codec name when data looks like NUL-interleaved ASCII."""
+    sample = data[:4096]
+    if len(sample) < 4:
+        return None
+    pairs = len(sample) // 2
+    even_nuls = sum(1 for i in range(0, pairs * 2, 2) if sample[i] == 0)
+    odd_nuls = sum(1 for i in range(1, pairs * 2, 2) if sample[i] == 0)
+    if odd_nuls >= pairs * 0.3 and even_nuls == 0:
+        return "utf-16-le"
+    if even_nuls >= pairs * 0.3 and odd_nuls == 0:
+        return "utf-16-be"
+    return None
+
+
+def decode_content(data: bytes) -> str:
+    """Decode file content strictly, raising ScanConfigError when it is not text.
+
+    UTF-8, with or without a BOM, is the expected encoding. UTF-16 is decoded
+    when a BOM or NUL-interleaved ASCII shows it. Anything else is not text.
+    """
+    try:
+        if data.startswith(codecs.BOM_UTF8):
+            return data[len(codecs.BOM_UTF8):].decode("utf-8")
+        if data.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+            return data.decode("utf-16")
+        codec = _looks_utf16(data)
+        if codec:
+            return data.decode(codec)
+        if b"\0" in data:
+            raise ScanConfigError("tracked file is binary, not text")
+        return data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ScanConfigError("tracked file is not valid UTF-8 or UTF-16 text") from exc
+
+
+def path_component_id(key: bytes, component: str) -> str:
+    """Return an opaque id for a path component; only the key holder can link it."""
+    digest = hmac.new(key, f"{PATH_ID_DOMAIN}:{component}".encode("utf-8"), hashlib.sha256)
+    return "<redacted-" + digest.hexdigest()[:12] + ">"
+
+
+class Scanner:
+    """Scan sources for keyed-rule matches and private addresses."""
+
+    def __init__(self, *, rules: RuleSet, key: bytes, exceptions: Exceptions = EMPTY_EXCEPTIONS) -> None:
+        self.rules = rules
+        self.key = key
+        self.exceptions = exceptions
+        self.active_rules = tuple(
+            (rule.rule_id, f"{HMAC_DOMAIN_PREFIX}:{rule.rule_id}:".encode("utf-8"), frozenset(bytes.fromhex(d) for d in rule.digests))
+            for rule in rules.rules
+            if rule.digests
+        )
+        self.cache: dict[str, tuple[str, ...]] = {}
+
+    def keyed_hits(self, candidates: Iterable[str]) -> set[str]:
+        matched: set[str] = set()
+        for candidate in candidates:
+            cached = self.cache.get(candidate)
+            if cached is None:
+                encoded = candidate.encode("utf-8")
+                cached = tuple(
+                    rule_id
+                    for rule_id, prefix, digests in self.active_rules
+                    if hmac.digest(self.key, prefix + encoded, "sha256") in digests
+                )
+                self.cache[candidate] = cached
+            matched.update(cached)
+        return matched
+
+    def _component_flagged(self, component: str) -> bool:
+        if self.keyed_hits(extract_candidates(component)):
+            return True
+        return bool(private_ipv4_hits(component))
+
+    def display_path(self, relative: str) -> str:
+        """Return the path with each matching component replaced by an opaque id."""
+        parts = relative.split("/")
+        return "/".join(
+            path_component_id(self.key, part) if self._component_flagged(part) else part
+            for part in parts
+        )
+
+    def scan_lines(self, text: str) -> list[tuple[int, str]]:
+        """Return (line number, label) findings for text, without any value."""
+        lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        found: list[tuple[int, str]] = []
+        per_line: list[set[str]] = []
+        for line in lines:
+            hits = self.keyed_hits(extract_candidates(line)) if line else set()
+            per_line.append(hits)
+        for number, line in enumerate(lines, start=1):
+            for rule_id in sorted(per_line[number - 1]):
+                found.append((number, f"matched keyed rule '{rule_id}'"))
+        # Join each line with the next to catch names split by a wrap: a
+        # trailing hyphen joins without a space, any other wrap with one.
+        for index in range(len(lines) - 1):
+            # A bounded window: the end of one line and the start of the next.
+            left = lines[index].rstrip()[-WRAP_WINDOW_CHARS:]
+            right = lines[index + 1].lstrip()[:WRAP_WINDOW_CHARS]
+            if not left or not right:
+                continue
+            joined = left[:-1] + right if left.endswith("-") else left + " " + right
+            hits = self.keyed_hits(extract_candidates(joined)) - per_line[index] - per_line[index + 1]
+            for rule_id in sorted(hits):
+                found.append((index + 1, f"matched keyed rule '{rule_id}' across a line wrap"))
+        return found
+
+    def allowed_private(self, relative: str) -> frozenset[str]:
+        # The exception file may hold exactly the values it lists, nothing else.
+        if relative == DEFAULT_EXCEPTIONS_PATH.as_posix():
+            return frozenset().union(*self.exceptions.private_ipv4.values())
+        return self.exceptions.private_ipv4.get(relative, frozenset())
+
+    def scan_private_ipv4(self, relative: str, text: str) -> list[tuple[int, str]]:
+        allowed = self.allowed_private(relative)
+        found: list[tuple[int, str]] = []
+        lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        for number, line in enumerate(lines, start=1):
+            for label, value in private_ipv4_hits(line):
+                if value not in allowed:
+                    found.append((number, f"private IPv4 address or prefix in {label}"))
+        return found
+
+    def scan_source(self, source: SourceFile) -> list[str]:
+        shown = self.display_path(source.path)
+        failures: list[str] = []
+        path_rules = sorted(self.keyed_hits(extract_candidates(source.path)))
+        for rule_id in path_rules:
+            failures.append(f"{shown}:0: matched keyed rule '{rule_id}'")
+        allowed = self.allowed_private(source.path)
+        for label, value in private_ipv4_hits(source.path):
+            if value not in allowed:
+                failures.append(f"{shown}:0: private IPv4 address or prefix in {label}")
+
+        if source.problem is not None:
+            failures.append(f"{source.problem}: {shown}")
+            return failures
+        assert source.content is not None
+
+        expected_binary = self.exceptions.binary.get(source.path)
+        if expected_binary is not None:
+            if hashlib.sha256(source.content).hexdigest() != expected_binary:
+                failures.append(f"binary exception content changed; review and update its sha256: {shown}")
+            return failures
+
+        try:
+            text = decode_content(source.content)
+        except ScanConfigError as exc:
+            failures.append(f"{exc}: {shown}")
+            return failures
+
+        findings = self.scan_lines(text) + self.scan_private_ipv4(source.path, text)
+        for number, label in sorted(findings):
+            failures.append(f"{shown}:{number}: {label}")
+        return failures
+
+
+def scan_sources(
+    sources: Iterable[SourceFile],
     *,
-    active_rules: Sequence[KeyedRule],
+    rules: RuleSet,
     key: bytes,
-    cache: dict[str, tuple[str, ...]],
-) -> set[str]:
-    matched_rules: set[str] = set()
-    for candidate in candidates:
-        cached = cache.get(candidate)
-        if cached is None:
-            hits = tuple(
-                rule.rule_id
-                for rule in active_rules
-                if hmac.new(
-                    key,
-                    f"{HMAC_DOMAIN_PREFIX}:{rule.rule_id}:{candidate}".encode("utf-8"),
-                    hashlib.sha256,
-                ).hexdigest()
-                in rule.digests
-            )
-            cache[candidate] = hits
-            cached = hits
-        if cached:
-            matched_rules.update(cached)
-    return matched_rules
+    exceptions: Exceptions = EMPTY_EXCEPTIONS,
+) -> list[str]:
+    """Scan sources; an empty source list is a failure."""
+    scanner = Scanner(rules=rules, key=key, exceptions=exceptions)
+    failures: list[str] = []
+    count = 0
+    for source in sources:
+        count += 1
+        failures.extend(scanner.scan_source(source))
+    if count == 0:
+        return ["tracked file listing is missing or empty"]
+    return failures
 
 
 def scan_text(
@@ -541,37 +1095,18 @@ def scan_text(
     key: bytes,
     cache: dict[str, tuple[str, ...]] | None = None,
 ) -> list[ScanFinding]:
-    """Scan a relative path and text lines against keyed HMAC rules."""
-    active_rules = tuple(rule for rule in rules.rules if rule.digests)
-    if not active_rules:
-        return []
-    shared_cache: dict[str, tuple[str, ...]] = {} if cache is None else cache
-    findings: list[ScanFinding] = []
-
-    path_hits = _match_candidates(
-        extract_candidates(relative_path),
-        active_rules=active_rules,
-        key=key,
-        cache=shared_cache,
-    )
-    for rule_id in sorted(path_hits):
-        findings.append(ScanFinding(path=relative_path, line=0, rule_id=rule_id))
-
-    normalized_text = text.replace("\r\n", "\n").replace("\r", "\n")
-    for line_no, line in enumerate(normalized_text.split("\n"), start=1):
-        if not line:
-            continue
-        line_hits = _match_candidates(
-            extract_candidates(line),
-            active_rules=active_rules,
-            key=key,
-            cache=shared_cache,
-        )
-        for rule_id in sorted(line_hits):
-            findings.append(
-                ScanFinding(path=relative_path, line=line_no, rule_id=rule_id)
-            )
-
+    """Scan one path and its text against the keyed rules only."""
+    scanner = Scanner(rules=rules, key=key)
+    if cache is not None:
+        scanner.cache = cache
+    findings = [
+        ScanFinding(path=scanner.display_path(relative_path), line=0, rule_id=rule_id)
+        for rule_id in sorted(scanner.keyed_hits(extract_candidates(relative_path)))
+    ]
+    shown = scanner.display_path(relative_path)
+    for number, label in scanner.scan_lines(text):
+        rule_id = label.split("'")[1]
+        findings.append(ScanFinding(path=shown, line=number, rule_id=rule_id))
     return findings
 
 
@@ -581,56 +1116,16 @@ def scan_tracked_files(
     *,
     rules: RuleSet,
     key: bytes,
+    exceptions: Exceptions = EMPTY_EXCEPTIONS,
 ) -> list[str]:
-    """Scan every tracked file in root using keyed HMAC rules; fail closed on gaps."""
+    """Scan every tracked worktree file; fail closed on gaps."""
     if not tracked:
         return ["tracked file listing is missing or empty"]
-
-    failures: list[str] = []
-    root_resolved = root.resolve()
-    cache: dict[str, tuple[str, ...]] = {}
-
-    for relative in tracked:
-        rel_path = Path(relative)
-        if rel_path.is_absolute() or ".." in rel_path.parts:
-            failures.append(f"invalid tracked path: {relative}")
-            continue
-        full_path = root / rel_path
-        if full_path.is_symlink():
-            try:
-                link_target = os.readlink(full_path)
-            except OSError:
-                failures.append(f"tracked symlink is unreadable: {relative}")
-                continue
-            findings = scan_text(
-                relative, link_target, rules=rules, key=key, cache=cache
-            )
-            failures.extend(item.format() for item in findings)
-            continue
-
-        if not full_path.exists():
-            failures.append(f"tracked file is missing from worktree: {relative}")
-            continue
-        if not full_path.is_file():
-            failures.append(f"tracked path is not a readable file: {relative}")
-            continue
-        if not full_path.resolve().is_relative_to(root_resolved):
-            failures.append(f"tracked file resolves outside repository root: {relative}")
-            continue
-        try:
-            raw_bytes = full_path.read_bytes()
-        except OSError:
-            failures.append(f"tracked file is unreadable: {relative}")
-            continue
-        text = raw_bytes.decode("utf-8", errors="replace")
-        findings = scan_text(relative, text, rules=rules, key=key, cache=cache)
-        failures.extend(item.format() for item in findings)
-
-    return failures
+    return scan_sources(worktree_sources(root, tracked), rules=rules, key=key, exceptions=exceptions)
 
 
 def verify_synthetic_fixtures(root: Path, *, rules: RuleSet, key: bytes) -> list[str]:
-    """Verify synthetic clean and positive fixtures against the public synthetic key."""
+    """Verify the synthetic clean and positive fixtures against the synthetic key."""
     failures: list[str] = []
     clean_path = root / SYNTHETIC_CLEAN_FIXTURE_PATH
     if clean_path.is_symlink() or not clean_path.is_file():
@@ -640,10 +1135,7 @@ def verify_synthetic_fixtures(root: Path, *, rules: RuleSet, key: bytes) -> list
     except (OSError, UnicodeDecodeError):
         return [f"synthetic clean fixture is unreadable: {SYNTHETIC_CLEAN_FIXTURE_PATH}"]
 
-    clean_findings = scan_text(
-        str(SYNTHETIC_CLEAN_FIXTURE_PATH), clean_text, rules=rules, key=key
-    )
-    if clean_findings:
+    if scan_text(str(SYNTHETIC_CLEAN_FIXTURE_PATH), clean_text, rules=rules, key=key):
         failures.append("synthetic clean fixture unexpectedly matched a keyed rule")
 
     # Assemble synthetic canaries from parts so they never appear verbatim in tracked files.
@@ -663,7 +1155,7 @@ def verify_synthetic_fixtures(root: Path, *, rules: RuleSet, key: bytes) -> list
         ScanFinding(path="synthetic-positive-fixture", line=2, rule_id="personal-name"),
         ScanFinding(path="synthetic-positive-fixture", line=3, rule_id="private-network-name"),
     }
-    if set(positive_findings) != expected:
+    if not expected.issubset(set(positive_findings)) or any(f.line > 3 for f in positive_findings):
         failures.append("synthetic positive fixture did not produce expected keyed rule findings")
     else:
         formatted = "\n".join(item.format() for item in positive_findings).lower()
@@ -778,7 +1270,7 @@ def _run_hash_mode(
     synthetic: bool,
 ) -> int:
     if rule_id not in ALLOWED_RULE_IDS:
-        print(f"Unsupported rule id: {rule_id}")
+        print("Unsupported rule id; use personal-name or private-network-name")
         return 1
     tracked, _ = tracked_files(root)
     try:
@@ -806,6 +1298,150 @@ def _run_hash_mode(
     return 0
 
 
+def _select_rules(
+    root: Path,
+    key_material: KeyMaterial,
+    rules_file: Path | None,
+    failures: list[str],
+) -> RuleSet | None:
+    """Pick the rules for this run, appending any configuration failure."""
+    prod_rules_path = rules_file if rules_file is not None else root / DEFAULT_RULES_PATH
+    if not key_material.synthetic:
+        # Keyed mode: every production rule must carry digests, or the scan
+        # would pass while checking nothing.
+        try:
+            return load_rules(prod_rules_path, require_nonempty_digests=True)
+        except ScanConfigError as exc:
+            failures.append(str(exc))
+            return None
+
+    # Synthetic mode still validates the production rule file's format.
+    try:
+        load_rules(prod_rules_path)
+    except ScanConfigError as exc:
+        failures.append(str(exc))
+    synthetic_rules_path = (
+        root / SYNTHETIC_RULES_PATH
+        if key_material.local_fallback or rules_file is None
+        else rules_file
+    )
+    try:
+        rules = load_rules(synthetic_rules_path, require_nonempty_digests=True)
+    except ScanConfigError as exc:
+        failures.append(str(exc))
+        return None
+    if key_material.local_fallback or rules_file is None:
+        failures.extend(verify_synthetic_fixtures(root, rules=rules, key=key_material.key))
+    return rules
+
+
+def _report(failures: list[str], key_material: KeyMaterial | None, passed: str) -> int:
+    local = key_material is not None and key_material.local_fallback
+    if local:
+        print("WARNING: keyed private-name rules not checked locally; CI runs them.")
+    if failures:
+        print("Public release checks failed:")
+        for failure in failures:
+            print(f"- {failure}")
+        return 1
+    print(passed)
+    return 0
+
+
+def _run(args: argparse.Namespace) -> int:
+    root = args.root.resolve()
+
+    if args.hash_rule is not None:
+        return _run_hash_mode(
+            root=root,
+            rule_id=args.hash_rule,
+            key_file=args.key_file,
+            synthetic=args.synthetic,
+        )
+
+    failures: list[str] = []
+    try:
+        exceptions = load_exceptions(root / DEFAULT_EXCEPTIONS_PATH)
+    except ScanConfigError as exc:
+        failures.append(str(exc))
+        exceptions = EMPTY_EXCEPTIONS
+
+    if args.tree is not None:
+        # Scan a commit's tree as git objects with this checkout's scanner,
+        # rules and exceptions; repository metadata checks do not apply.
+        tree_paths: list[str] | None = None
+        sources: list[SourceFile] = []
+        try:
+            tree_paths, sources = tree_sources(root, args.tree)
+        except ScanConfigError as exc:
+            failures.append(f"tree listing failed: {exc}")
+        key_material: KeyMaterial | None = None
+        try:
+            key_material = resolve_key_material(
+                root,
+                tracked=tree_paths,
+                key_file=args.key_file,
+                synthetic_flag=args.synthetic,
+            )
+        except ScanConfigError as exc:
+            failures.append(str(exc))
+        if key_material is not None:
+            rules = _select_rules(root, key_material, args.rules_file, failures)
+            if rules is not None and tree_paths:
+                failures.extend(scan_sources(sources, rules=rules, key=key_material.key, exceptions=exceptions))
+        mode = "public synthetic scan" if key_material is not None and key_material.synthetic else "keyed scan"
+        return _report(failures, key_material, f"Public-safety scan of the tree passed ({mode}).")
+
+    tracked, git_error = tracked_files(root)
+    failures.extend(
+        deterministic_failures(
+            root,
+            require_license=not args.allow_missing_license,
+            tracked=tracked,
+        )
+    )
+    if git_error:
+        failures = [item for item in failures if item != "tracked file listing is missing or empty"]
+        failures.append(f"tracked file listing failed: {git_error}")
+
+    key_material = None
+    try:
+        key_material = resolve_key_material(
+            root,
+            tracked=tracked,
+            key_file=args.key_file,
+            synthetic_flag=args.synthetic,
+            allow_local_fallback=True,
+        )
+    except ScanConfigError as exc:
+        failures.append(str(exc))
+
+    if key_material is not None:
+        rules = _select_rules(root, key_material, args.rules_file, failures)
+        if tracked and rules is not None:
+            failures.extend(
+                scan_tracked_files(root, tracked, rules=rules, key=key_material.key, exceptions=exceptions)
+            )
+
+    qualifier = "draft " if args.allow_missing_license else ""
+    if key_material is not None and key_material.local_fallback:
+        passed = (
+            f"Deterministic public-release {qualifier}checks passed (local synthetic scan); "
+            "complete docs/13-public-release-checklist.md before publication."
+        )
+    elif key_material is not None and key_material.synthetic:
+        passed = (
+            f"Deterministic public-release {qualifier}checks passed (public synthetic scan); "
+            "the public-scan workflow runs the keyed scan."
+        )
+    else:
+        passed = (
+            f"Deterministic public-release {qualifier}checks passed; "
+            "complete docs/13-public-release-checklist.md before publication."
+        )
+    return _report(failures, key_material, passed)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -816,7 +1452,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--synthetic",
         action="store_true",
-        help="run with the public synthetic key and fixtures (for fork pull requests)",
+        help="run with the public synthetic key and fixtures (contributor checks)",
     )
     parser.add_argument(
         "--key-file",
@@ -837,129 +1473,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="repository root to inspect (defaults to this checkout)",
     )
     parser.add_argument(
+        "--tree",
+        default=None,
+        metavar="COMMIT_SHA",
+        help="scan this commit's tree as git objects (no checkout); skips metadata checks",
+    )
+    parser.add_argument(
         "--hash-rule",
         default=None,
         help="compute keyed HMAC digests for one value per line from stdin for RULE_ID",
     )
     args = parser.parse_args(argv)
-    root = args.root.resolve()
-
-    if args.hash_rule is not None:
-        return _run_hash_mode(
-            root=root,
-            rule_id=args.hash_rule,
-            key_file=args.key_file,
-            synthetic=args.synthetic,
-        )
-
-    tracked, git_error = tracked_files(root)
-    failures = deterministic_failures(
-        root,
-        require_license=not args.allow_missing_license,
-        tracked=tracked,
-    )
-    if git_error:
-        failures = [
-            item
-            for item in failures
-            if item != "tracked file listing is missing or empty"
-        ]
-        failures.append(f"tracked file listing failed: {git_error}")
-
-    key_material: KeyMaterial | None = None
     try:
-        key_material = resolve_key_material(
-            root,
-            tracked=tracked,
-            key_file=args.key_file,
-            synthetic_flag=args.synthetic,
-            allow_local_fallback=True,
-        )
-    except ScanConfigError as exc:
-        failures.append(str(exc))
-
-    prod_rules_path = args.rules_file if args.rules_file is not None else (root / DEFAULT_RULES_PATH)
-    prod_rules: RuleSet | None = None
-    try:
-        prod_rules = load_rules(prod_rules_path, require_nonempty_digests=False)
-    except ScanConfigError as exc:
-        failures.append(str(exc))
-
-    active_rules: RuleSet | None = prod_rules
-    if key_material is not None and key_material.synthetic:
-        synthetic_rules_path = (
-            (root / SYNTHETIC_RULES_PATH)
-            if key_material.local_fallback or args.rules_file is None
-            else args.rules_file
-        )
-        try:
-            active_rules = load_rules(
-                synthetic_rules_path, require_nonempty_digests=True
-            )
-        except ScanConfigError as exc:
-            active_rules = None
-            failures.append(str(exc))
-        else:
-            if key_material.local_fallback or args.rules_file is None:
-                failures.extend(
-                    verify_synthetic_fixtures(
-                        root, rules=active_rules, key=key_material.key
-                    )
-                )
-
-    if tracked and key_material is not None and active_rules is not None:
-        failures.extend(
-            scan_tracked_files(
-                root,
-                tracked,
-                rules=active_rules,
-                key=key_material.key,
-            )
-        )
-
-    if failures:
-        if key_material is not None and key_material.local_fallback:
-            print("WARNING: keyed private-name rules not checked locally; CI runs them.")
+        return _run(args)
+    except Exception as exc:  # noqa: BLE001 - never print exception text, which may hold input
         print("Public release checks failed:")
-        for failure in failures:
-            print(f"- {failure}")
+        print(f"- internal error ({type(exc).__name__}); rerun locally to diagnose")
         return 1
-
-    qualifier = "draft " if args.allow_missing_license else ""
-    if key_material is not None and key_material.local_fallback:
-        print("WARNING: keyed private-name rules not checked locally; CI runs them.")
-        print(
-            f"Deterministic public-release {qualifier}checks passed (local synthetic scan); "
-            "complete docs/13-public-release-checklist.md before publication."
-        )
-    elif key_material is not None and key_material.synthetic:
-        print(
-            f"Deterministic public-release {qualifier}checks passed (public synthetic scan); "
-            "a maintainer must run the keyed scan on this revision before merge."
-        )
-    elif active_rules is not None and active_rules.digest_count == 0:
-        print(
-            "WARNING: no keyed rules populated; keyed scan checked 0 digests "
-            "(see docs/13-public-release-checklist.md)."
-        )
-        print(
-            f"Deterministic public-release {qualifier}checks passed (no keyed rules populated); "
-            "complete docs/13-public-release-checklist.md before publication."
-        )
-    else:
-        if active_rules is not None:
-            empty_rules = [rule.rule_id for rule in active_rules.rules if not rule.digests]
-            if empty_rules:
-                print(
-                    "WARNING: keyed rule(s) have no digests populated: "
-                    + ", ".join(empty_rules)
-                    + "."
-                )
-        print(
-            f"Deterministic public-release {qualifier}checks passed; "
-            "complete docs/13-public-release-checklist.md before publication."
-        )
-    return 0
 
 
 if __name__ == "__main__":

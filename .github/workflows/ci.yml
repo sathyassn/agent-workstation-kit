@@ -32,24 +32,15 @@ jobs:
         env:
           # The pull request's base, so the changelog check sees the whole change.
           CHANGELOG_BASE: ${{ github.event.pull_request.base.sha }}
-          # Keep the private scan key out of general repository and shell tests;
-          # the dedicated public-release gate below runs the keyed scan.
+          # This job runs the pull request's own code, so it never receives the
+          # scan key; public-scan.yml runs the keyed scan from the base commit.
           PUBLIC_SCAN_SYNTHETIC: "1"
         run: make ci-check
 
-      - name: Run public-release gate
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-        env:
-          PUBLIC_SCAN_HMAC_KEY: ${{ secrets.PUBLIC_SCAN_HMAC_KEY }}
-        run: make public-check
-
-      - name: Run public-release gate (fork synthetic scan)
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+      - name: Run public-release gate (synthetic scan)
         env:
           PUBLIC_SCAN_SYNTHETIC: "1"
-        run: |
-          make public-check
-          echo "Fork PR: ran public synthetic scan; a maintainer must run the keyed scan on this revision before merge."
+        run: make public-check
 
       - name: Validate Git discipline policy
         run: python3 scripts/check_git_discipline.py policy
