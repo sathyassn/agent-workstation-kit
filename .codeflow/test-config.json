@@ -22,6 +22,19 @@
           "command": "make ci-check && make public-check"
         }
       }
+    },
+    {
+      "name": "go-test",
+      "enabled": true,
+      "runner": "custom",
+      "modes": {
+        "quick": {
+          "command": "go test ./..."
+        },
+        "full": {
+          "command": "go test ./..."
+        }
+      }
     }
   ]
 }

@@ -1,43 +1,62 @@
-"""The unit catalog check finds duplicates, cycles and dangling per-OS edges."""
+"""The catalog_tables.py wrapper delegates to the Go generator when go is on PATH."""
 from __future__ import annotations
 
+import os
+import stat
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
-import catalog_tables as cat  # noqa: E402
-
-
-def unit(uid, linux=(), macos=(), on_mac=True):
-    return {"id": uid, "domain": "system", "epic": "EPC-001", "milestone": "alpha",
-            "stage": {"linux": "s", "macos": "s" if on_mac else "-"},
-            "privilege": {"linux": "root", "macos": "root" if on_mac else "-"},
-            "depends": {"linux": list(linux), "macos": list(macos)}}
+ROOT = Path(__file__).resolve().parents[1]
+WRAPPER = ROOT / "tests" / "catalog_tables.py"
 
 
-@unittest.skipIf(cat.tomllib is None, "needs tomllib")
-class CatalogTests(unittest.TestCase):
-    def test_real_catalog_is_clean(self) -> None:
-        self.assertEqual(cat.problems(cat.load()), [])
+def _make_stub_go(directory: Path, exit_code: int) -> None:
+    stub = directory / "go"
+    stub.write_text(
+        f"#!/bin/sh\necho \"stub-go $*\"\nexit {exit_code}\n",
+        encoding="utf-8",
+    )
+    stub.chmod(stub.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
-    def test_cycle_is_found(self) -> None:
-        found = cat.problems([unit("a", ["b"], ["b"]), unit("b", ["a"], ["a"])])
-        self.assertTrue(any("cycle" in f for f in found))
 
-    def test_dangling_macos_edge_is_found(self) -> None:
-        found = cat.problems([unit("linux-only", on_mac=False), unit("b", [], ["linux-only"])])
-        self.assertTrue(any("macos: b depends on linux-only" in f for f in found))
+class CatalogTablesWrapperTests(unittest.TestCase):
+    def _run_wrapper(self, path_env: str, *args: str) -> subprocess.CompletedProcess[str]:
+        env = {k: v for k, v in os.environ.items() if k != "PATH"}
+        env["PATH"] = path_env
+        return subprocess.run(
+            [sys.executable, str(WRAPPER), *args],
+            cwd=str(ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
 
-    def test_duplicate_id_is_found(self) -> None:
-        self.assertIn("duplicate unit id: a", cat.problems([unit("a"), unit("a")]))
+    def test_stub_go_exits_one_propagates_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            _make_stub_go(Path(tmp), 1)
+            proc = self._run_wrapper(tmp)
+            self.assertEqual(proc.returncode, 1)
+            self.assertIn("-check", proc.stdout)
 
-    def test_table_lists_every_unit(self) -> None:
-        units = cat.load()
-        body = cat.table(units)
-        for u in units:
-            self.assertIn("`" + u["id"] + "`", body)
+    def test_stub_go_exits_zero_propagates_success(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            _make_stub_go(Path(tmp), 0)
+            proc = self._run_wrapper(tmp)
+            self.assertEqual(proc.returncode, 0)
+            self.assertIn("-check", proc.stdout)
+
+    def test_missing_go_prints_skip_and_exits_zero(self) -> None:
+        with tempfile.TemporaryDirectory() as empty_bin:
+            proc = self._run_wrapper(empty_bin)
+            self.assertEqual(proc.returncode, 0)
+            self.assertIn(
+                "SKIP catalog tables: Go not available here; the Go CI jobs enforce them",
+                proc.stdout,
+            )
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@
 package gen
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -61,13 +62,73 @@ type UnitSpec struct {
 }
 
 type presetsDoc struct {
-	SchemaVersion int                    `toml:"schema_version"`
-	Tier          map[string]presetEntry `toml:"tier"`
-	Purpose       map[string]presetEntry `toml:"purpose"`
+	SchemaVersion int                      `toml:"schema_version"`
+	Tier          map[string]tierPreset    `toml:"tier"`
+	Purpose       map[string]purposePreset `toml:"purpose"`
+	Defaults      presetDefaults           `toml:"defaults"`
 }
 
-type presetEntry struct {
-	Units []string `toml:"units"`
+type tierPreset struct {
+	Extends     string   `toml:"extends"`
+	AllFeasible bool     `toml:"all_feasible"`
+	Units       []string `toml:"units"`
+}
+
+type purposePreset struct {
+	Topology     string   `toml:"topology"`
+	RemoteAccess bool     `toml:"remote_access"`
+	Units        []string `toml:"units"`
+}
+
+type presetDefaults struct {
+	Resources  resourceDefaults              `toml:"resources"`
+	FormFactor map[string]formFactorDefaults `toml:"form_factor"`
+	Indexing   indexingDefaults              `toml:"indexing"`
+}
+
+type resourceDefaults struct {
+	MemoryHighPercent    int    `toml:"memory_high_percent"`
+	MemoryMaxPercent     int    `toml:"memory_max_percent"`
+	SwapMaxPercent       int    `toml:"swap_max_percent"`
+	MemoryReservePercent int    `toml:"memory_reserve_percent"`
+	OOMDPressurePercent  int    `toml:"oomd_pressure_percent"`
+	Swappiness           any    `toml:"swappiness"`
+	ZramPercent          int    `toml:"zram_percent"`
+	Tmp                  string `toml:"tmp"`
+	DiskFreeFloorPercent int    `toml:"disk_free_floor_percent"`
+}
+
+type formFactorDefaults struct {
+	RemoteAccess     *bool  `toml:"remote_access"`
+	ZramPercent      *int   `toml:"zram_percent"`
+	DiskEncryption   string `toml:"disk_encryption"`
+	AlwaysOnServices *bool  `toml:"always_on_services"`
+	RoamingFirewall  *bool  `toml:"roaming_firewall"`
+}
+
+type indexingDefaults struct {
+	MacOSDevelopmentVolumes string `toml:"macos_development_volumes"`
+	KeepSpotlight           bool   `toml:"keep_spotlight"`
+}
+
+// isValidToken reports whether s matches ^[a-z][a-z0-9]*(-[a-z0-9]+)*$.
+func isValidToken(s string) bool {
+	if s == "" || s[0] < 'a' || s[0] > 'z' {
+		return false
+	}
+	for i := 1; i < len(s); i++ {
+		c := s[i]
+		if c == '-' {
+			if i == len(s)-1 || s[i-1] == '-' {
+				return false
+			}
+			continue
+		}
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') {
+			return false
+		}
+	}
+	return true
 }
 
 // ParseCatalog decodes registry/units.toml and rejects unknown keys or
@@ -147,9 +208,14 @@ func Validate(cat Catalog) []error {
 			add("unit entry has empty id")
 			continue
 		}
+		if !isValidToken(u.ID) {
+			add("unit id %q is not a valid identifier", u.ID)
+		}
 		seen[u.ID]++
 		if u.Domain == "" {
 			add("unit %q has empty domain", u.ID)
+		} else if !isValidToken(u.Domain) {
+			add("unit %q has invalid domain %q", u.ID, u.Domain)
 		}
 		if u.Epic == "" {
 			add("unit %q has empty epic", u.ID)
@@ -195,21 +261,58 @@ func Validate(cat Catalog) []error {
 						add("%s: unit %s does not run on %s but declares depends_if[%s]", osName, u.ID, osName, cond)
 					}
 				}
-			} else if st != "" && !validPrivilege(pr) {
-				add("%s: unit %s has unsupported privilege %q", osName, u.ID, pr)
+			} else if st != "" {
+				if !isValidToken(st) {
+					add("%s: unit %s has invalid stage %q", osName, u.ID, st)
+				}
+				if pr != "" && pr != unsetMarker && !isValidToken(pr) {
+					add("%s: unit %s has invalid privilege %q", osName, u.ID, pr)
+				}
+				if !validPrivilege(pr) {
+					add("%s: unit %s has unsupported privilege %q", osName, u.ID, pr)
+				} else if sc := scopeForPrivilege(pr); !isValidToken(sc) {
+					add("%s: unit %s has invalid scope %q", osName, u.ID, sc)
+				}
 			}
 		}
 		for _, cond := range sortedMapKeys(u.DependsIf) {
 			if cond == "" {
 				add("unit %s has empty depends_if condition", u.ID)
+			} else if !isValidToken(cond) {
+				add("unit %s has invalid depends_if condition %q", u.ID, cond)
 			}
 		}
 		for _, b := range u.WaitsFor {
+			if !isValidToken(b) {
+				add("unit %s has invalid waits_for barrier %q", u.ID, b)
+			}
 			if _, ok := barriers[b]; !ok {
 				add("unit %s waits_for unknown barrier %q", u.ID, b)
 			}
 		}
 	}
+
+	checkCollisions := func(kind, prefix string, values []string) {
+		byIdent := make(map[string]string, len(values))
+		for _, v := range values {
+			if v == "" || v == unsetMarker {
+				continue
+			}
+			ident := goIdent(prefix, v)
+			if prev, exists := byIdent[ident]; exists && prev != v {
+				add("%s %q and %q collide on Go identifier %s", kind, prev, v, ident)
+			} else if !exists {
+				byIdent[ident] = v
+			}
+		}
+	}
+	checkCollisions("unit id", "Unit", collectUnitIDs(cat))
+	checkCollisions("stage", typeStage, collectStages(cat))
+	checkCollisions("scope", typeScope, collectScopes(cat))
+	checkCollisions("domain", typeDomain, collectDomains(cat))
+	checkCollisions("privilege", typePrivilege, collectPrivileges(cat))
+	checkCollisions("condition", "Condition", collectConditions(cat))
+	checkCollisions("barrier", "Barrier", collectBarriers(cat))
 
 	for _, osName := range oses {
 		present := make(map[string]bool)
@@ -303,14 +406,18 @@ func findCycles(osName string, edges map[string][]string) []error {
 	return errs
 }
 
-// ValidatePresets checks that every unit ID named in registry/presets.toml
-// exists in the unit catalog.
+// ValidatePresets checks that registry/presets.toml has no unknown keys, uses
+// schema_version 1, and names only unit IDs present in the unit catalog.
 func ValidatePresets(cat Catalog, data []byte) []error {
 	var doc presetsDoc
-	if _, err := toml.Decode(string(data), &doc); err != nil {
+	md, err := toml.Decode(string(data), &doc)
+	if err != nil {
 		return []error{fmt.Errorf("decode presets: %w", err)}
 	}
 	var errs []error
+	if undecoded := md.Undecoded(); len(undecoded) > 0 {
+		errs = append(errs, fmt.Errorf("presets has unknown keys: %v", undecoded))
+	}
 	if doc.SchemaVersion != 1 {
 		errs = append(errs, fmt.Errorf("presets schema_version = %d, want 1", doc.SchemaVersion))
 	}
@@ -318,27 +425,33 @@ func ValidatePresets(cat Catalog, data []byte) []error {
 	for _, u := range cat.Units {
 		known[u.ID] = true
 	}
-	checkGroup := func(group string, entries map[string]presetEntry) {
-		for _, name := range sortedMapKeys(entries) {
-			for _, id := range entries[name].Units {
-				if !known[id] {
-					errs = append(errs, fmt.Errorf("presets: %s.%s names unknown unit %s", group, name, id))
-				}
+	for _, name := range sortedMapKeys(doc.Tier) {
+		for _, id := range doc.Tier[name].Units {
+			if !known[id] {
+				errs = append(errs, fmt.Errorf("presets: tier.%s names unknown unit %s", name, id))
 			}
 		}
 	}
-	checkGroup("tier", doc.Tier)
-	checkGroup("purpose", doc.Purpose)
+	for _, name := range sortedMapKeys(doc.Purpose) {
+		for _, id := range doc.Purpose[name].Units {
+			if !known[id] {
+				errs = append(errs, fmt.Errorf("presets: purpose.%s names unknown unit %s", name, id))
+			}
+		}
+	}
 	return errs
 }
 
-// GeneratedFiles holds the formatted Go sources produced by the generator.
+// GeneratedFiles holds the formatted Go sources and Markdown table produced by
+// the generator.
 type GeneratedFiles struct {
 	ContractEnums []byte
 	CatalogTable  []byte
+	DocsTable     string
 }
 
-// Generate validates cat and renders all generated Go source files.
+// Generate validates cat and renders all generated Go source files and the
+// Markdown unit table.
 func Generate(cat Catalog) (GeneratedFiles, error) {
 	if errs := Validate(cat); len(errs) > 0 {
 		return GeneratedFiles{}, fmt.Errorf("validate units catalog: %w", errors.Join(errs...))
@@ -354,42 +467,152 @@ func Generate(cat Catalog) (GeneratedFiles, error) {
 	return GeneratedFiles{
 		ContractEnums: enums,
 		CatalogTable:  table,
+		DocsTable:     RenderDocsTable(cat),
 	}, nil
 }
 
-// WriteRepo reads registry/units.toml (and registry/presets.toml if present)
-// under repoRoot, validates them and writes the generated Go files.
-func WriteRepo(repoRoot string) error {
+func loadAndGenerateRepo(repoRoot string) (GeneratedFiles, error) {
 	unitsPath := filepath.Join(repoRoot, "registry", "units.toml")
 	unitsData, err := os.ReadFile(unitsPath) //nolint:gosec // path is caller-supplied repository root
 	if err != nil {
-		return fmt.Errorf("read %s: %w", unitsPath, err)
+		return GeneratedFiles{}, fmt.Errorf("read %s: %w", unitsPath, err)
 	}
 	cat, err := ParseCatalog(unitsData)
 	if err != nil {
-		return err
+		return GeneratedFiles{}, err
 	}
 	presetsPath := filepath.Join(repoRoot, "registry", "presets.toml")
 	if presetsData, err := os.ReadFile(presetsPath); err == nil { //nolint:gosec // path is caller-supplied repository root
 		if errs := ValidatePresets(cat, presetsData); len(errs) > 0 {
-			return fmt.Errorf("validate presets: %w", errors.Join(errs...))
+			return GeneratedFiles{}, fmt.Errorf("validate presets: %w", errors.Join(errs...))
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("read %s: %w", presetsPath, err)
+		return GeneratedFiles{}, fmt.Errorf("read %s: %w", presetsPath, err)
 	}
+	return Generate(cat)
+}
 
-	out, err := Generate(cat)
+type docUpdate struct {
+	relPath string
+	absPath string
+	updated []byte
+	stale   bool
+}
+
+func planDocUpdates(repoRoot, docsTable string) ([]docUpdate, error) {
+	var updates []docUpdate
+	for _, rel := range DocTargets() {
+		abs := filepath.Join(repoRoot, filepath.FromSlash(rel))
+		data, err := os.ReadFile(abs) //nolint:gosec // path is inside caller-supplied repository root
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, fmt.Errorf("read %s: %w", rel, err)
+		}
+		if !bytes.Contains(data, []byte(docsBeginMarker)) || !bytes.Contains(data, []byte(docsEndMarker)) {
+			continue
+		}
+		updated, err := ReplaceDocsTable(data, docsTable)
+		if err != nil {
+			return nil, fmt.Errorf("render %s: %w", rel, err)
+		}
+		updates = append(updates, docUpdate{
+			relPath: rel,
+			absPath: abs,
+			updated: updated,
+			stale:   !bytes.Equal(data, updated),
+		})
+	}
+	return updates, nil
+}
+
+// WriteRepo reads registry/units.toml (and registry/presets.toml if present)
+// under repoRoot, validates them, type-checks the generated Go sources against
+// the repository's contract and catalog packages, and writes the generated Go
+// files and Markdown unit tables only after all checks succeed.
+func WriteRepo(repoRoot string) error {
+	out, err := loadAndGenerateRepo(repoRoot)
 	if err != nil {
 		return err
 	}
 
-	enumsPath := filepath.Join(repoRoot, "internal", "contract", "enums_gen.go")
+	contractDir := filepath.Join(repoRoot, "internal", "contract")
+	catalogDir := filepath.Join(repoRoot, "internal", "units", "catalog")
+	extraContract, err := readHandwrittenGoFiles(contractDir)
+	if err != nil {
+		return err
+	}
+	extraCatalog, err := readHandwrittenGoFiles(catalogDir)
+	if err != nil {
+		return err
+	}
+	if err := TypeCheckSources(out.ContractEnums, out.CatalogTable, extraContract, extraCatalog); err != nil {
+		return err
+	}
+
+	docUpdates, err := planDocUpdates(repoRoot, out.DocsTable)
+	if err != nil {
+		return err
+	}
+
+	enumsPath := filepath.Join(contractDir, "enums_gen.go")
 	if err := os.WriteFile(enumsPath, out.ContractEnums, 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", enumsPath, err)
 	}
-	catalogPath := filepath.Join(repoRoot, "internal", "units", "catalog", "catalog_gen.go")
+	catalogPath := filepath.Join(catalogDir, "catalog_gen.go")
 	if err := os.WriteFile(catalogPath, out.CatalogTable, 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", catalogPath, err)
+	}
+	for _, upd := range docUpdates {
+		if !upd.stale {
+			continue
+		}
+		if err := os.WriteFile(upd.absPath, upd.updated, 0o600); err != nil {
+			return fmt.Errorf("write %s: %w", upd.relPath, err)
+		}
+	}
+	return nil
+}
+
+// CheckRepo verifies that registry/units.toml, registry/presets.toml, the
+// generated Go files and every present Markdown catalog table under repoRoot
+// are valid and up to date.
+func CheckRepo(repoRoot string) error {
+	out, err := loadAndGenerateRepo(repoRoot)
+	if err != nil {
+		return err
+	}
+
+	var errs []error
+	checkFile := func(rel string, want []byte) {
+		abs := filepath.Join(repoRoot, filepath.FromSlash(rel))
+		got, readErr := os.ReadFile(abs) //nolint:gosec // path is inside caller-supplied repository root
+		if readErr != nil {
+			errs = append(errs, fmt.Errorf("read %s: %w", rel, readErr))
+			return
+		}
+		if !bytes.Equal(got, want) {
+			errs = append(errs, fmt.Errorf("%s is stale; run `go generate ./...`", rel))
+		}
+	}
+
+	checkFile("internal/contract/enums_gen.go", out.ContractEnums)
+	checkFile("internal/units/catalog/catalog_gen.go", out.CatalogTable)
+
+	docUpdates, err := planDocUpdates(repoRoot, out.DocsTable)
+	if err != nil {
+		errs = append(errs, err)
+	} else {
+		for _, upd := range docUpdates {
+			if upd.stale {
+				errs = append(errs, fmt.Errorf("%s is stale; run `go generate ./...`", upd.relPath))
+			}
+		}
+	}
+
+	if len(errs) > 0 {
+		return errors.Join(errs...)
 	}
 	return nil
 }

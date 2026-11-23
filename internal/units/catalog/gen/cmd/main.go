@@ -1,5 +1,6 @@
-// Command gen regenerates internal/contract/enums_gen.go and
-// internal/units/catalog/catalog_gen.go from registry/units.toml.
+// Command gen regenerates or checks internal/contract/enums_gen.go,
+// internal/units/catalog/catalog_gen.go and the catalog Markdown tables
+// from registry/units.toml.
 package main
 
 import (
@@ -11,9 +12,16 @@ import (
 
 func main() {
 	root := flag.String("root", ".", "repository root directory")
+	check := flag.Bool("check", false, "verify generated files and docs tables are current without writing")
 	flag.Parse()
 
-	if err := gen.WriteRepo(*root); err != nil {
+	var err error
+	if *check {
+		err = gen.CheckRepo(*root)
+	} else {
+		err = gen.WriteRepo(*root)
+	}
+	if err != nil {
 		_, _ = os.Stderr.WriteString("catalog gen: " + err.Error() + "\n")
 		os.Exit(1) //nolint:forbidigo // code generator CLI entrypoint
 	}

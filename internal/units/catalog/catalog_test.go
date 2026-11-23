@@ -74,6 +74,24 @@ func TestGeneratedFilesCurrent(t *testing.T) {
 			}
 		})
 	}
+
+	repoFS := os.DirFS(filepath.Join("..", "..", ".."))
+	for _, rel := range gen.DocTargets() {
+		t.Run("docs table "+rel, func(t *testing.T) {
+			t.Parallel()
+			got, err := fs.ReadFile(repoFS, rel)
+			if err != nil {
+				t.Fatalf("read %s: %v", rel, err)
+			}
+			expected, err := gen.ReplaceDocsTable(got, want.DocsTable)
+			if err != nil {
+				t.Fatalf("ReplaceDocsTable(%s): %v", rel, err)
+			}
+			if !bytes.Equal(got, expected) {
+				t.Fatalf("%s catalog table is stale; run `go generate ./...`", rel)
+			}
+		})
+	}
 }
 
 func TestStaleOutputDetectedWhenCatalogChanges(t *testing.T) {

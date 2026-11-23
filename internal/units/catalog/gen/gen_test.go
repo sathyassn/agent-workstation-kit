@@ -422,27 +422,194 @@ units = ["baseline", "nonexistent"]
 	if len(errs) == 0 || !strings.Contains(errs[0].Error(), "tier.minimal names unknown unit nonexistent") {
 		t.Fatalf("want unknown unit error, got %v", errs)
 	}
+
+	unknownTopKey := `
+schema_version = 1
+extra_top_key = true
+
+[tier.minimal]
+units = ["baseline"]
+`
+	if errs := gen.ValidatePresets(cat, []byte(unknownTopKey)); len(errs) == 0 || !strings.Contains(errs[0].Error(), "unknown keys") {
+		t.Fatalf("want unknown keys error for top-level key, got %v", errs)
+	}
+
+	unknownNestedKey := `
+schema_version = 1
+
+[tier.minimal]
+units = ["baseline"]
+bogus = 42
+`
+	if errs := gen.ValidatePresets(cat, []byte(unknownNestedKey)); len(errs) == 0 || !strings.Contains(errs[0].Error(), "unknown keys") {
+		t.Fatalf("want unknown keys error for nested key, got %v", errs)
+	}
 }
 
-func TestWriteRepoGeneratesCleanCode(t *testing.T) {
+func TestValidateRejectsInvalidIdentifiersAndCollisions(t *testing.T) {
 	t.Parallel()
 
+	cases := []struct {
+		name   string
+		mutate func(t *testing.T, src string) string
+		want   string
+	}{
+		{
+			name: "invalid unit id (uppercase and underscore)",
+			mutate: func(t *testing.T, src string) string {
+				return replaceOnce(t, src, `id = "baseline"`, `id = "Bad_ID"`)
+			},
+			want: `unit id "Bad_ID" is not a valid identifier`,
+		},
+		{
+			name: "invalid stage token",
+			mutate: func(t *testing.T, src string) string {
+				return replaceOnce(t, src,
+					`stage = { linux = "baseline", macos = "baseline" }`,
+					`stage = { linux = "base_line", macos = "baseline" }`)
+			},
+			want: `invalid stage "base_line"`,
+		},
+		{
+			name: "invalid domain token",
+			mutate: func(t *testing.T, src string) string {
+				return replaceOnce(t, src, `domain = "system"`, `domain = "System!"`)
+			},
+			want: `invalid domain "System!"`,
+		},
+		{
+			name: "invalid privilege token",
+			mutate: func(t *testing.T, src string) string {
+				return replaceOnce(t, src,
+					`privilege = { linux = "root", macos = "root" }`,
+					`privilege = { linux = "Root_User", macos = "root" }`)
+			},
+			want: `invalid privilege "Root_User"`,
+		},
+		{
+			name: "invalid condition token",
+			mutate: func(t *testing.T, src string) string {
+				return replaceOnce(t, src,
+					`depends_if = { remote-access = { linux = ["mesh-vpn"], macos = ["mesh-vpn"] } }`,
+					`depends_if = { remote_access = { linux = ["mesh-vpn"], macos = ["mesh-vpn"] } }`)
+			},
+			want: `invalid depends_if condition "remote_access"`,
+		},
+		{
+			name: "invalid barrier token",
+			mutate: func(t *testing.T, src string) string {
+				return replaceOnce(t, src,
+					`waits_for = ["s5-disarm"]`,
+					`waits_for = ["S5_Disarm"]`)
+			},
+			want: `invalid waits_for barrier "S5_Disarm"`,
+		},
+		{
+			name: "Go identifier collision ssh vs s-s-h",
+			mutate: func(_ *testing.T, src string) string {
+				return src + `
+[[unit]]
+id = "s-s-h"
+domain = "remote"
+stage = { linux = "remote", macos = "remote" }
+privilege = { linux = "root", macos = "root" }
+depends = { linux = [], macos = [] }
+epic = "EPC-015"
+milestone = "alpha"
+`
+			},
+			want: `collide on Go identifier UnitSSH`,
+		},
+		{
+			name: "Go identifier collision foo-bar vs foo_bar",
+			mutate: func(_ *testing.T, src string) string {
+				return src + `
+[[unit]]
+id = "foo-bar"
+domain = "ops"
+stage = { linux = "audit", macos = "audit" }
+privilege = { linux = "root", macos = "root" }
+depends = { linux = [], macos = [] }
+epic = "EPC-999"
+milestone = "alpha"
+
+[[unit]]
+id = "foo_bar"
+domain = "ops"
+stage = { linux = "audit", macos = "audit" }
+privilege = { linux = "root", macos = "root" }
+depends = { linux = [], macos = [] }
+epic = "EPC-999"
+milestone = "alpha"
+`
+			},
+			want: `collide on Go identifier UnitFooBar`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			src := tc.mutate(t, minimalValidCatalog)
+			cat, err := gen.ParseCatalog([]byte(src))
+			if err != nil {
+				t.Fatalf("ParseCatalog: %v", err)
+			}
+			errs := gen.Validate(cat)
+			for _, e := range errs {
+				if strings.Contains(e.Error(), tc.want) {
+					return
+				}
+			}
+			t.Fatalf("want an error containing %q, got %v", tc.want, errs)
+		})
+	}
+}
+
+func setupTempRepo(t *testing.T, unitsTOML string) string {
+	t.Helper()
 	root := t.TempDir()
 	for _, dir := range []string{
 		"registry",
 		filepath.Join("internal", "contract"),
 		filepath.Join("internal", "units", "catalog"),
+		filepath.Join("docs", "plan"),
+		filepath.Join("docs", "design"),
+		filepath.Join("project-management", "specs"),
 	} {
 		if err := os.MkdirAll(filepath.Join(root, dir), 0o750); err != nil {
 			t.Fatalf("mkdir %s: %v", dir, err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(root, "registry", "units.toml"), []byte(minimalValidCatalog), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "registry", "units.toml"), []byte(unitsTOML), 0o600); err != nil {
 		t.Fatalf("write units.toml: %v", err)
 	}
+	catalogSrc, err := fs.ReadFile(os.DirFS(".."), "catalog.go")
+	if err != nil {
+		t.Fatalf("read catalog.go: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "internal", "units", "catalog", "catalog.go"), catalogSrc, 0o600); err != nil { //nolint:gosec // test temp dir
+		t.Fatalf("write catalog.go: %v", err)
+	}
+	const docTemplate = "# Doc\n\n<!-- catalog:units:begin -->\nold\n<!-- catalog:units:end -->\n"
+	for _, rel := range gen.DocTargets() {
+		abs := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.WriteFile(abs, []byte(docTemplate), 0o600); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+	return root
+}
 
+func TestWriteRepoGeneratesCleanCode(t *testing.T) {
+	t.Parallel()
+
+	root := setupTempRepo(t, minimalValidCatalog)
 	if err := gen.WriteRepo(root); err != nil {
 		t.Fatalf("WriteRepo: %v", err)
+	}
+	if err := gen.CheckRepo(root); err != nil {
+		t.Fatalf("CheckRepo after WriteRepo: %v", err)
 	}
 
 	rootFS := os.DirFS(root)
@@ -477,4 +644,114 @@ func TestWriteRepoGeneratesCleanCode(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestSingleEditStalesGoAndDocsAndRegeneratesBoth(t *testing.T) {
+	t.Parallel()
+
+	root := setupTempRepo(t, minimalValidCatalog)
+	if err := gen.WriteRepo(root); err != nil {
+		t.Fatalf("initial WriteRepo: %v", err)
+	}
+	if err := gen.CheckRepo(root); err != nil {
+		t.Fatalf("initial CheckRepo: %v", err)
+	}
+
+	edited := replaceOnce(t, minimalValidCatalog, `epic = "EPC-005"`, `epic = "EPC-777"`)
+	if err := os.WriteFile(filepath.Join(root, "registry", "units.toml"), []byte(edited), 0o600); err != nil {
+		t.Fatalf("write edited units.toml: %v", err)
+	}
+
+	err := gen.CheckRepo(root)
+	if err == nil {
+		t.Fatal("CheckRepo unexpectedly passed after editing units.toml")
+	}
+	msg := err.Error()
+	for _, wantStale := range []string{
+		"internal/units/catalog/catalog_gen.go",
+		"docs/plan/roadmap.md",
+		"docs/design/setup-architecture.md",
+		"project-management/specs/SPC-001.md",
+	} {
+		if !strings.Contains(msg, wantStale) {
+			t.Errorf("CheckRepo error missing stale file %q:\n%s", wantStale, msg)
+		}
+	}
+
+	if err := gen.WriteRepo(root); err != nil {
+		t.Fatalf("regeneration WriteRepo: %v", err)
+	}
+	if err := gen.CheckRepo(root); err != nil {
+		t.Fatalf("CheckRepo after regeneration: %v", err)
+	}
+	rootFS := os.DirFS(root)
+	for _, rel := range gen.DocTargets() {
+		data, err := fs.ReadFile(rootFS, rel)
+		if err != nil {
+			t.Fatalf("read %s: %v", rel, err)
+		}
+		if !strings.Contains(string(data), "EPC-777") {
+			t.Errorf("%s was not refreshed with EPC-777", rel)
+		}
+	}
+}
+
+func TestWriteRepoWritesNothingOnCollisionOrTypeCheckFailure(t *testing.T) {
+	t.Parallel()
+
+	t.Run("collision writes nothing", func(t *testing.T) {
+		t.Parallel()
+		colliding := minimalValidCatalog + `
+[[unit]]
+id = "s-s-h"
+domain = "remote"
+stage = { linux = "remote", macos = "remote" }
+privilege = { linux = "root", macos = "root" }
+depends = { linux = [], macos = [] }
+epic = "EPC-015"
+milestone = "alpha"
+`
+		root := setupTempRepo(t, colliding)
+		err := gen.WriteRepo(root)
+		if err == nil || !strings.Contains(err.Error(), "collide on Go identifier UnitSSH") {
+			t.Fatalf("WriteRepo() error = %v, want collision error", err)
+		}
+		for _, p := range []string{
+			filepath.Join(root, "internal", "contract", "enums_gen.go"),
+			filepath.Join(root, "internal", "units", "catalog", "catalog_gen.go"),
+		} {
+			if _, statErr := os.Stat(p); !os.IsNotExist(statErr) {
+				t.Errorf("expected %s not to be written on collision", p)
+			}
+		}
+	})
+
+	t.Run("type-check failure writes nothing", func(t *testing.T) {
+		t.Parallel()
+		root := setupTempRepo(t, minimalValidCatalog)
+		// Break catalog.go so the generated catalog_gen.go cannot type-check.
+		if err := os.WriteFile(filepath.Join(root, "internal", "units", "catalog", "catalog.go"), []byte("package catalog\n"), 0o600); err != nil {
+			t.Fatalf("overwrite catalog.go: %v", err)
+		}
+		err := gen.WriteRepo(root)
+		if err == nil || !strings.Contains(err.Error(), "type-check catalog package") {
+			t.Fatalf("WriteRepo() error = %v, want type-check error", err)
+		}
+		for _, p := range []string{
+			filepath.Join(root, "internal", "contract", "enums_gen.go"),
+			filepath.Join(root, "internal", "units", "catalog", "catalog_gen.go"),
+		} {
+			if _, statErr := os.Stat(p); !os.IsNotExist(statErr) {
+				t.Errorf("expected %s not to be written when type-checking fails", p)
+			}
+		}
+	})
+
+	t.Run("TypeCheckSources rejects broken contract source", func(t *testing.T) {
+		t.Parallel()
+		err := gen.TypeCheckSources([]byte("package contract\nvar _ int = \"not-an-int\"\n"), []byte("package catalog\n"), nil, nil)
+		if err == nil || !strings.Contains(err.Error(), "type-check contract package") {
+			t.Fatalf("TypeCheckSources() error = %v, want contract type-check error", err)
+		}
+	})
 }
