@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"io/fs"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -821,6 +819,8 @@ type brokenSetStateTx struct {
 	noRestore           bool
 	receiptOnFailure    bool
 	callBeforeRefuse    bool
+	bogusBackupRef      bool
+	backupAfterWrite    bool
 }
 
 func (b *brokenSetStateTx) SetState(ctx context.Context, p contract.StateProvider, key contract.StateKey, want contract.State) error {
@@ -858,10 +858,18 @@ func (b *brokenSetStateTx) SetState(ctx context.Context, p contract.StateProvide
 		return writeErr
 	}
 
+	if b.backupAfterWrite {
+		if snap, err = p.Snapshot(ctx); err != nil {
+			return err
+		}
+	}
 	b.mu.Lock()
 	backup := b.recordBackupLocked(snap.Data)
 	if b.emptyBackup {
 		backup = ""
+	}
+	if b.bogusBackupRef {
+		backup = "backup-9999"
 	}
 	b.changes = append(b.changes, contract.AppliedChange{
 		Change: contract.Change{
@@ -889,6 +897,10 @@ func TestContractChecksCatchBrokenSetStateSequence(t *testing.T) {
 		{name: "does not restore after a failed write", broken: brokenSetStateTx{noRestore: true}, wantErr: "restored pre-Write value"},
 		{name: "records a receipt for a failed write", broken: brokenSetStateTx{receiptOnFailure: true}, wantErr: "receipt row for a failed Write"},
 		{name: "calls the provider before refusing", broken: brokenSetStateTx{callBeforeRefuse: true}, wantErr: "want no provider call"},
+		{name: "restores with the cancelled caller context", broken: brokenSetStateTx{}, wantErr: "must not use the cancelled context"},
+		{name: "names a backup the transaction does not hold", broken: brokenSetStateTx{bogusBackupRef: true}, wantErr: "does not hold"},
+		{name: "backs up the value after the write", broken: brokenSetStateTx{backupAfterWrite: true}, wantErr: "want the pre-Write value"},
+		{name: "holds no lock across snapshot, write and receipt", broken: brokenSetStateTx{}, wantErr: "must hold one lock"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -939,59 +951,5 @@ func TestFakeTxSetStateReportsRestoreFailure(t *testing.T) {
 	}
 	if n := len(tx.Changes()); n != 0 {
 		t.Errorf("SetState recorded %d receipt rows for a failed Write, want 0", n)
-	}
-}
-
-// overlapProvider fails the test when two provider calls run at once.
-type overlapProvider struct {
-	*FakeStateProvider
-	inFlight atomic.Int32
-	overlap  atomic.Bool
-}
-
-func (p *overlapProvider) enter() func() {
-	if p.inFlight.Add(1) > 1 {
-		p.overlap.Store(true)
-	}
-	time.Sleep(time.Millisecond)
-	return func() { p.inFlight.Add(-1) }
-}
-
-func (p *overlapProvider) Write(ctx context.Context, key contract.StateKey, want contract.State) error {
-	defer p.enter()()
-	return p.FakeStateProvider.Write(ctx, key, want)
-}
-
-func (p *overlapProvider) Snapshot(ctx context.Context) (contract.Snapshot, error) {
-	defer p.enter()()
-	return p.FakeStateProvider.Snapshot(ctx)
-}
-
-func TestFakeTxSetStateSerializesCalls(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-	tx := NewFakeTx(standardTestDescription(), nil)
-	p := &overlapProvider{FakeStateProvider: NewFakeStateProvider(contract.ProviderHostname, map[contract.StateKey]contract.State{
-		declaredState: {Value: "lab-ws-01"},
-	})}
-
-	const callers = 8
-	var wg sync.WaitGroup
-	for i := range callers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if err := tx.SetState(ctx, p, declaredState, contract.State{Value: fmt.Sprintf("acme-ws-%03d", i)}); err != nil {
-				t.Errorf("SetState: %v", err)
-			}
-		}()
-	}
-	wg.Wait()
-	if p.overlap.Load() {
-		t.Fatal("concurrent SetState calls overlapped inside the provider; want one call sequence at a time")
-	}
-	if n := len(tx.Changes()); n != callers {
-		t.Fatalf("SetState recorded %d receipt rows, want %d", n, callers)
 	}
 }

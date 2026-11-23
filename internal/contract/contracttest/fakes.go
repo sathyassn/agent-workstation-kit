@@ -45,9 +45,13 @@ var (
 )
 
 const (
-	defaultSinkCapacity   = 256
-	defaultFilePerm       = fs.FileMode(0o600)
-	checkDetailOK         = "ok"
+	defaultSinkCapacity = 256
+	defaultFilePerm     = fs.FileMode(0o600)
+	checkDetailOK       = "ok"
+	// stateRestoreTimeout bounds the restore SetState runs after a failed
+	// Write. The restore uses its own context, so a cancelled caller cannot
+	// skip it.
+	stateRestoreTimeout   = 30 * time.Second
 	targetPrefixPackage   = "package:"
 	targetPrefixService   = "service:"
 	targetPrefixUserGroup = "user-group:"
@@ -60,6 +64,9 @@ type TxInspector interface {
 	Changes() []contract.AppliedChange
 	Events() []contract.Event
 	BackingState() []byte
+	// Backup returns the bytes recorded under ref, so a check can restore
+	// from the backup a receipt row names.
+	Backup(ref contract.BackupRef) ([]byte, bool)
 }
 
 type blockKey struct {
@@ -846,8 +853,10 @@ func (tx *FakeTx) SetRunner(fn func(ctx context.Context, c contract.Command) (co
 // provider as the backup, writes the key through the contract's Write, and
 // only then logs the change for the receipt. A failed Write is undone by
 // restoring the snapshot; a failed restore is reported as
-// ErrStateRestoreFailed alongside the Write error. No receipt row is
-// recorded for a failed Write. One mutex covers the whole sequence.
+// ErrStateRestoreFailed alongside the Write error. The restore runs under
+// its own bounded context, so it still runs when the caller's context was
+// cancelled during the Write. No receipt row is recorded for a failed Write.
+// One mutex covers the whole sequence.
 func (tx *FakeTx) SetState(ctx context.Context, p contract.StateProvider, key contract.StateKey, want contract.State) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("set state %q: %w", key, err)
@@ -878,7 +887,9 @@ func (tx *FakeTx) SetState(ctx context.Context, p contract.StateProvider, key co
 
 	if err := p.Write(ctx, key, want); err != nil {
 		writeErr := fmt.Errorf("write state %q: %w", key, err)
-		if restoreErr := p.Restore(ctx, snap); restoreErr != nil {
+		restoreCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), stateRestoreTimeout)
+		defer cancel()
+		if restoreErr := p.Restore(restoreCtx, snap); restoreErr != nil {
 			return errors.Join(writeErr, fmt.Errorf("%w for %q: %w", ErrStateRestoreFailed, key, restoreErr))
 		}
 		return writeErr
