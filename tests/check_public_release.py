@@ -277,10 +277,10 @@ def _normalize_text(text: str, separate: bool) -> str:
     fullwidth dot becomes "."), format and zero-width characters and combining
     marks are removed (so accents fold: "José" matches "Jose"), Latin
     lookalikes are folded and apostrophes are dropped, so "O'Brien" and
-    "OBrien" give the same token. With separate true, the text is composed
-    first and each remaining format character or combining mark becomes a
-    space instead, so one placed between a name and a suffix still separates
-    them; the scanner tokenises both forms.
+    "OBrien" give the same token. With separate true, each format character
+    or combining mark becomes a space instead (after decomposing), so one
+    placed between a name and a suffix still separates them; the scanner
+    tokenises both forms.
     """
     if text.isascii() and "\\u" not in text:
         # NFKC, format characters and lookalikes cannot change ASCII text.
@@ -288,11 +288,13 @@ def _normalize_text(text: str, separate: bool) -> str:
     decoded = _decode_json_escapes(text)
     if not decoded.isascii():
         if separate:
-            # Compose, so ordinary accented letters stay whole, then turn each
-            # remaining format character or mark into a word break.
-            decoded = unicodedata.normalize("NFKC", decoded)
+            # Decompose, turn every format character and mark into a word
+            # break, then recompose. An accented letter splits into its base
+            # and a break here, which only adds candidates; the first pass
+            # still folds accents.
+            decoded = unicodedata.normalize("NFKD", decoded)
             decoded = "".join(" " if unicodedata.category(ch) in ("Cf", "Mn") else ch for ch in decoded)
-            decoded = decoded.translate(CONFUSABLES)
+            decoded = unicodedata.normalize("NFKC", decoded).translate(CONFUSABLES)
         else:
             # Decompose, drop format characters and combining marks (so an
             # accent or a mark between octets cannot split a token), then

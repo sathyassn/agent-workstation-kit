@@ -16,6 +16,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import unicodedata
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -535,6 +536,20 @@ class FifthReviewTests(unittest.TestCase):
             for form in (raw, "\\u" + code):
                 with self.subTest(char=code, escaped=form != raw):
                     self.assertTrue(scan_line("owner alpha" + form + "person73"))
+
+
+
+class SixthReviewTests(unittest.TestCase):
+    """Regression test for the quick check of 850855b."""
+
+    def test_a_composable_accent_after_a_name_is_a_break(self) -> None:
+        # The name ends in a letter that composes with U+0301.
+        self.assertEqual("l\u0301", unicodedata.normalize("NFD", unicodedata.normalize("NFC", "l\u0301")))
+        for form in ("\u0301", "\\u0301"):
+            with self.subTest(escaped=form != "\u0301"):
+                self.assertTrue(scan_line("host " + NET + form + "xyz"))
+        # Accents still fold in the first pass.
+        self.assertTrue(scan_line("owner \u00e1lphaperson73"))
 
 
 if __name__ == "__main__":
