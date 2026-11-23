@@ -804,7 +804,7 @@ func (tx *FakeDeclarativeTx) BackingState() []byte {
 // FakeDeclarativeTx with SetState and Run.
 type FakeTx struct {
 	*FakeDeclarativeTx
-	// stateMu serializes SetState across snapshot, write and receipt, so
+	// stateMu serialises SetState across snapshot, write and receipt, so
 	// two calls never interleave their backups and writes.
 	stateMu  sync.Mutex
 	runMu    sync.Mutex

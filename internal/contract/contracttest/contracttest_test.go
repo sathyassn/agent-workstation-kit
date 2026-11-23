@@ -1031,7 +1031,7 @@ func TestSerializedCheckRejectsPerCallLock(t *testing.T) {
 		tx := NewFakeTx(standardTestDescription(), nil)
 		checkSetStateSerialized(context.Background(), rep, tx, tx)
 		if len(rep.errors) != 0 {
-			t.Fatalf("FakeTx failed the serialized check: %v", rep.errors)
+			t.Fatalf("FakeTx failed the serialised check: %v", rep.errors)
 		}
 	})
 
@@ -1048,7 +1048,7 @@ func TestSerializedCheckRejectsPerCallLock(t *testing.T) {
 			tx := &perCallLockTx{FakeTx: NewFakeTx(standardTestDescription(), nil), snapshotOnly: tc.snapshotOnly}
 			checkSetStateSerialized(context.Background(), rep, tx, tx)
 			if !rep.hasErrorContaining("must hold one lock") {
-				t.Fatalf("per-call lock passed the serialized check: %v", rep.errors)
+				t.Fatalf("per-call lock passed the serialised check: %v", rep.errors)
 			}
 			if !rep.hasErrorContaining("want the value just before its own write") {
 				t.Fatalf("per-call lock backups passed the pre-image check: %v", rep.errors)
@@ -1063,7 +1063,7 @@ func TestSerializedCheckRejectsPerCallLock(t *testing.T) {
 			return &perCallLockTx{FakeTx: NewFakeTx(d, nil), snapshotOnly: true}
 		})
 		if !rep.hasErrorContaining("must hold one lock") {
-			t.Fatalf("expected the serialization failure, got %v", rep.errors)
+			t.Fatalf("expected the serialisation failure, got %v", rep.errors)
 		}
 	})
 }
