@@ -180,3 +180,43 @@ func CommandMatrix() []CommandSpec {
 		},
 	}
 }
+
+// UnmarshalText decodes a CommandScope and rejects unknown values.
+func (s *CommandScope) UnmarshalText(b []byte) error {
+	return decodeEnum(b, s, CommandScope.Valid, "command scope")
+}
+
+// UnmarshalJSON decodes a CommandScope and rejects null and unknown values.
+func (s *CommandScope) UnmarshalJSON(b []byte) error {
+	return decodeEnumJSON(b, s, CommandScope.Valid, "command scope")
+}
+
+// UnmarshalText decodes a RunsAs and rejects unknown values.
+func (r *RunsAs) UnmarshalText(b []byte) error {
+	return decodeEnum(b, r, RunsAs.Valid, "runs as")
+}
+
+// UnmarshalJSON decodes a RunsAs and rejects null and unknown values.
+func (r *RunsAs) UnmarshalJSON(b []byte) error {
+	return decodeEnumJSON(b, r, RunsAs.Valid, "runs as")
+}
+
+// UnmarshalText decodes a CommandMode and rejects unknown values.
+func (m *CommandMode) UnmarshalText(b []byte) error {
+	return decodeEnum(b, m, CommandMode.Valid, "command mode")
+}
+
+// UnmarshalJSON decodes a CommandMode and rejects null and unknown values.
+func (m *CommandMode) UnmarshalJSON(b []byte) error {
+	return decodeEnumJSON(b, m, CommandMode.Valid, "command mode")
+}
+
+// UnmarshalText decodes a NonUnitCommand and rejects unknown values.
+func (c *NonUnitCommand) UnmarshalText(b []byte) error {
+	return decodeEnum(b, c, NonUnitCommand.Valid, "non-unit command")
+}
+
+// UnmarshalJSON decodes a NonUnitCommand and rejects null and unknown values.
+func (c *NonUnitCommand) UnmarshalJSON(b []byte) error {
+	return decodeEnumJSON(b, c, NonUnitCommand.Valid, "non-unit command")
+}

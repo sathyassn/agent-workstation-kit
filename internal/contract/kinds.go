@@ -3,7 +3,6 @@ package contract
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strconv"
 )
@@ -266,12 +265,10 @@ func (c *ExitCode) UnmarshalJSON(b []byte) error {
 	if isJSONNull(b) {
 		return fmt.Errorf("%w: exit code is null", ErrUnknownValue)
 	}
-	// encoding/json hands a map key over as a quoted string; validate it the
-	// same way. The schemas still require an integer for exit code values.
-	var quoted string
-	if json.Unmarshal(b, &quoted) == nil {
-		return c.UnmarshalText([]byte(quoted))
-	}
+	// Only a bare JSON integer is an exit code. Go 1.26's encoding/json
+	// decodes a map key through UnmarshalJSON as a quoted string, the same
+	// bytes as a quoted field value, so ExitCode cannot be a JSON map key:
+	// no contract type uses it as one.
 	var n int
 	if err := json.Unmarshal(b, &n); err != nil {
 		return fmt.Errorf("exit code: %w", err)
@@ -296,9 +293,8 @@ func (c *ExitCode) set(n int) error {
 	return nil
 }
 
-// ErrUnknownValue is returned when decoding a value an enum does not define.
-// It is a sentinel for errors.Is and must never be reassigned.
-var ErrUnknownValue = errors.New("unknown enum value")
+// ErrUnknownValue is declared in enums_gen.go, which the generator writes, so
+// generated and hand-written decoders wrap the same sentinel.
 
 func decodeEnum[T ~string](b []byte, dst *T, valid func(T) bool, name string) error {
 	v := T(b)
