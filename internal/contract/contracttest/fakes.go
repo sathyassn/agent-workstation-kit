@@ -38,12 +38,20 @@ var (
 	ErrNilStateProvider = errors.New("state provider is nil")
 	// ErrTemplateNotFound reports RenderTemplate called with an unknown TemplateID.
 	ErrTemplateNotFound = errors.New("template not found")
+	// ErrStateRestoreFailed reports that SetState could not restore the
+	// provider's snapshot after a failed Write, so the provider may hold a
+	// partial write.
+	ErrStateRestoreFailed = errors.New("restore after failed state write")
 )
 
 const (
-	defaultSinkCapacity   = 256
-	defaultFilePerm       = fs.FileMode(0o600)
-	checkDetailOK         = "ok"
+	defaultSinkCapacity = 256
+	defaultFilePerm     = fs.FileMode(0o600)
+	checkDetailOK       = "ok"
+	// stateRestoreTimeout bounds the restore SetState runs after a failed
+	// Write. The restore uses its own context, so a cancelled caller cannot
+	// skip it.
+	stateRestoreTimeout   = 30 * time.Second
 	targetPrefixPackage   = "package:"
 	targetPrefixService   = "service:"
 	targetPrefixUserGroup = "user-group:"
@@ -56,6 +64,9 @@ type TxInspector interface {
 	Changes() []contract.AppliedChange
 	Events() []contract.Event
 	BackingState() []byte
+	// Backup returns the bytes recorded under ref, so a check can restore
+	// from the backup a receipt row names.
+	Backup(ref contract.BackupRef) ([]byte, bool)
 }
 
 type blockKey struct {
@@ -793,6 +804,9 @@ func (tx *FakeDeclarativeTx) BackingState() []byte {
 // FakeDeclarativeTx with SetState and Run.
 type FakeTx struct {
 	*FakeDeclarativeTx
+	// stateMu serialises SetState across snapshot, write and receipt, so
+	// two calls never interleave their backups and writes.
+	stateMu  sync.Mutex
 	runMu    sync.Mutex
 	commands []contract.Command
 	runFn    func(ctx context.Context, c contract.Command) (contract.CommandResult, error)
@@ -835,9 +849,14 @@ func (tx *FakeTx) SetRunner(fn func(ctx context.Context, c contract.Command) (co
 	tx.runFn = fn
 }
 
-// SetState mutates a declared state key through p's contract Snapshot and
-// Restore methods, records the pre-change snapshot as a backup and logs the
-// change for the receipt.
+// SetState refuses an undeclared key before any provider call, snapshots the
+// provider as the backup, writes the key through the contract's Write, and
+// only then logs the change for the receipt. A failed Write is undone by
+// restoring the snapshot; a failed restore is reported as
+// ErrStateRestoreFailed alongside the Write error. The restore runs under
+// its own bounded context, so it still runs when the caller's context was
+// cancelled during the Write. No receipt row is recorded for a failed Write.
+// One mutex covers the whole sequence.
 func (tx *FakeTx) SetState(ctx context.Context, p contract.StateProvider, key contract.StateKey, want contract.State) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("set state %q: %w", key, err)
@@ -845,6 +864,9 @@ func (tx *FakeTx) SetState(ctx context.Context, p contract.StateProvider, key co
 	if p == nil {
 		return ErrNilStateProvider
 	}
+
+	tx.stateMu.Lock()
+	defer tx.stateMu.Unlock()
 
 	tx.mu.Lock()
 	allowed := tx.ownedStates[key]
@@ -863,22 +885,14 @@ func (tx *FakeTx) SetState(ctx context.Context, p contract.StateProvider, key co
 		before = digestBytes([]byte(prev.Value))
 	}
 
-	values := make(map[contract.StateKey]contract.State)
-	if len(snap.Data) > 0 {
-		if err := json.Unmarshal(snap.Data, &values); err != nil {
-			return fmt.Errorf("decode snapshot for %q: %w", key, err)
+	if err := p.Write(ctx, key, want); err != nil {
+		writeErr := fmt.Errorf("write state %q: %w", key, err)
+		restoreCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), stateRestoreTimeout)
+		defer cancel()
+		if restoreErr := p.Restore(restoreCtx, snap); restoreErr != nil {
+			return errors.Join(writeErr, fmt.Errorf("%w for %q: %w", ErrStateRestoreFailed, key, restoreErr))
 		}
-		if values == nil {
-			values = make(map[contract.StateKey]contract.State)
-		}
-	}
-	values[key] = want
-	nextData, err := json.Marshal(values)
-	if err != nil {
-		return fmt.Errorf("encode state snapshot for %q: %w", key, err)
-	}
-	if err := p.Restore(ctx, contract.Snapshot{Provider: p.Name(), Data: nextData}); err != nil {
-		return fmt.Errorf("apply state %q via restore: %w", key, err)
+		return writeErr
 	}
 
 	tx.mu.Lock()
