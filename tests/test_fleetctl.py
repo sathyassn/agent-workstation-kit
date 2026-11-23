@@ -786,6 +786,47 @@ class FleetProfileTests(unittest.TestCase):
             phase.command[phase.command.index("--ssh-source-ip") + 1],
         )
 
+    def test_resources_optional_overrides_are_validated_and_passed_only_when_set(self) -> None:
+        profile = self.make_ready(self.load_work())
+        default_phase = fleetctl.phase_for(profile, "resources", apply=False, recovery=False)
+        assert default_phase.command
+        for flag in ("--reserve-fixed-gib", "--reserve-cores", "--cpu-weight", "--memory-reserve-percent"):
+            self.assertNotIn(flag, default_phase.command)
+
+        profile["resources"]["reserve_fixed_gib"] = 8.5
+        profile["resources"]["reserve_cores"] = 0
+        profile["resources"]["cpu_weight"] = 75
+        self.assertEqual([], fleetctl.validate_profile(profile, ready=True))
+        override_phase = fleetctl.phase_for(profile, "resources", apply=False, recovery=False)
+        assert override_phase.command
+        self.assertEqual("8.5", override_phase.command[override_phase.command.index("--reserve-fixed-gib") + 1])
+        self.assertEqual("0", override_phase.command[override_phase.command.index("--reserve-cores") + 1])
+        self.assertEqual("75", override_phase.command[override_phase.command.index("--cpu-weight") + 1])
+        self.assertNotIn("--memory-reserve-percent", override_phase.command)
+
+        percent_profile = self.make_ready(self.load_work())
+        percent_profile["resources"]["os_memory_reserve_percent"] = 15
+        self.assertEqual([], fleetctl.validate_profile(percent_profile, ready=True))
+        percent_phase = fleetctl.phase_for(percent_profile, "resources", apply=False, recovery=False)
+        assert percent_phase.command
+        self.assertEqual("15", percent_phase.command[percent_phase.command.index("--memory-reserve-percent") + 1])
+
+        conflict = self.make_ready(self.load_work())
+        conflict["resources"]["reserve_fixed_gib"] = 8
+        conflict["resources"]["os_memory_reserve_percent"] = 10
+        self.assertIn("resources.reserve_fixed_gib", {i.path for i in fleetctl.validate_profile(conflict, ready=True)})
+
+        for key, bad_values in (
+            ("reserve_fixed_gib", (0, -2, True, "8", float("inf"), float("nan"))),
+            ("reserve_cores", (-1, 1.5, True, "2")),
+            ("cpu_weight", (0, 10001, -5, 50.5, False, "50")),
+        ):
+            for bad in bad_values:
+                invalid = self.make_ready(self.load_work())
+                invalid["resources"][key] = bad
+                with self.subTest(key=key, value=bad):
+                    self.assertIn(f"resources.{key}", {i.path for i in fleetctl.validate_profile(invalid, ready=True)})
+
 
 if __name__ == "__main__":
     unittest.main()

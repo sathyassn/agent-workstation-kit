@@ -264,34 +264,190 @@ def ufw_allows_in(status, rule, interface):
     return False
 
 
-RESOURCE_DEFAULTS = {"--memory-reserve-percent": 10, "--memory-high-percent": 70, "--memory-max-percent": 80, "--swap-max-percent": 10, "--oomd-pressure-percent": 60}
+RESOURCE_DEFAULTS = {
+    "--memory-reserve-percent": None,
+    "--reserve-fixed-gib": None,
+    "--memory-high-percent": None,
+    "--memory-max-percent": None,
+    "--swap-max-percent": None,
+    "--oomd-pressure-percent": 60,
+    "--cpu-weight": 50,
+    "--reserve-cores": None,
+}
 AGENT_SLICE = Path("/etc/systemd/user/agent-work.slice")
 RESOURCE_RECEIPT = Path("/var/lib/agent-workstation-kit/resource-policy/receipt.tsv")
 OOMD_BINARIES = (Path("/usr/lib/systemd/systemd-oomd"), Path("/lib/systemd/systemd-oomd"))
+DISPLAY_MANAGERS = (
+    "display-manager.service",
+    "gdm.service",
+    "gdm3.service",
+    "sddm.service",
+    "lightdm.service",
+)
 
 
 def resource_options(command=(), profile=None):
-    """Return the share flags of a resources phase command, with the script defaults."""
+    """Return the resource flags of a resources phase command, with the script defaults."""
     options = dict(RESOURCE_DEFAULTS)
-    if profile and "os_memory_reserve_percent" in profile.get("resources", {}):
-        options["--memory-reserve-percent"] = profile["resources"]["os_memory_reserve_percent"]
+    options["--measure"] = False
+    resources = (profile or {}).get("resources", {})
+    if "os_memory_reserve_percent" in resources:
+        options["--memory-reserve-percent"] = int(resources["os_memory_reserve_percent"])
+    if "reserve_fixed_gib" in resources:
+        options["--reserve-fixed-gib"] = float(resources["reserve_fixed_gib"])
+    if "reserve_cores" in resources:
+        options["--reserve-cores"] = int(resources["reserve_cores"])
+    if "cpu_weight" in resources:
+        options["--cpu-weight"] = int(resources["cpu_weight"])
     args = list(command or ())
-    for index, arg in enumerate(args[:-1]):
-        if arg in options:
-            options[arg] = int(args[index + 1])
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "--measure":
+            options["--measure"] = True
+            index += 1
+        elif arg in RESOURCE_DEFAULTS and index + 1 < len(args):
+            raw = args[index + 1]
+            options[arg] = float(raw) if arg == "--reserve-fixed-gib" else int(raw)
+            index += 2
+        else:
+            index += 1
     return options
 
 
-def resource_values(profile, total, command=()):
-    """Mirror calculate_memory_shares in common.sh: shares of total RAM in KiB."""
+def host_swap_total_kib(swaps_path=Path("/proc/swaps")):
+    """Sum active swap sizes in KiB from /proc/swaps; return 0 when none or unreadable."""
+    try:
+        lines = Path(swaps_path).read_text().splitlines()
+    except OSError:
+        return 0
+    total = 0
+    for line in lines:
+        fields = line.split()
+        if len(fields) >= 3 and fields[0] != "Filename" and fields[2].isdigit():
+            total += int(fields[2])
+    return total
+
+
+def host_cpu_cores(cpuinfo_path=Path("/proc/cpuinfo")):
+    """Count CPU cores from /proc/cpuinfo, falling back to os.cpu_count()."""
+    try:
+        count = sum(1 for line in Path(cpuinfo_path).read_text().splitlines() if re.match(r"^processor\s*:", line))
+        if count >= 1:
+            return count
+    except OSError:
+        pass
+    return os.cpu_count() or 1
+
+
+def host_desktop_present(run=None):
+    """True when graphical.target or a display manager service is active."""
+    run = run or probe
+    if run(["systemctl", "is-active", "--quiet", "graphical.target"]).returncode == 0:
+        return True
+    return any(run(["systemctl", "is-active", "--quiet", dm]).returncode == 0 for dm in DISPLAY_MANAGERS)
+
+
+def measured_non_agent_kib(cgroup_root=Path("/sys/fs/cgroup")):
+    """Return 1.5x current memory (KiB) of system.slice plus session and app slices."""
+    root = Path(cgroup_root)
+    system_file = root / "system.slice/memory.current"
+    total_bytes = int(system_file.read_text().strip())
+    for pattern in (
+        "user.slice/user-*.slice/session-*.scope/memory.current",
+        "user.slice/user-*.slice/user@*.service/session.slice/memory.current",
+        "user.slice/user-*.slice/user@*.service/app.slice/memory.current",
+    ):
+        for candidate in root.glob(pattern):
+            try:
+                text = candidate.read_text().strip()
+                if text.isdigit():
+                    total_bytes += int(text)
+            except OSError:
+                continue
+    return (total_bytes * 3) // 2048
+
+
+def resource_values(profile, total, command=(), *, swap_total_kib=None, cpu_cores=None, desktop=None, measured_scaled_kib=None):
+    """Mirror reserve-based sizing in common.sh and apply-resource-policy-linux.sh."""
     gib = 1024 * 1024
+    min_slice = 2 * gib
     options = resource_options(command, profile)
-    reserve = options["--memory-reserve-percent"]
-    high_pct, max_pct = options["--memory-high-percent"], options["--memory-max-percent"]
-    high, maximum = total * high_pct // 100, total * max_pct // 100
-    if max_pct <= high_pct or high <= 0 or total - maximum < total * reserve // 100:
-        raise ValueError("the agent memory ceiling leaves less than the reviewed reserve")
-    return {"CPUWeight": "90", "TasksMax": str(max(4096, min(16384, total // gib * 128))), "MemoryHigh": str(high) + "K", "MemoryMax": str(maximum) + "K", "MemorySwapMax": str(total * options["--swap-max-percent"] // 100) + "K", "ManagedOOMMemoryPressureLimit": str(options["--oomd-pressure-percent"]) + "%"}
+    if options["--reserve-fixed-gib"] is not None and options["--memory-reserve-percent"] is not None:
+        raise ValueError("cannot combine --reserve-fixed-gib with --memory-reserve-percent")
+
+    if swap_total_kib is None:
+        swap_total_kib = host_swap_total_kib()
+    if cpu_cores is None:
+        cpu_cores = host_cpu_cores()
+    if desktop is None:
+        desktop = host_desktop_present()
+
+    reserve_pct = options["--memory-reserve-percent"]
+    if reserve_pct is not None:
+        reserve_kib = total * reserve_pct // 100
+    else:
+        role_default_kib = (6 if desktop else 2) * gib
+        if options["--reserve-fixed-gib"] is not None:
+            fixed_kib = int(options["--reserve-fixed-gib"] * gib + 0.5)
+        elif options["--measure"]:
+            if measured_scaled_kib is None:
+                measured_scaled_kib = measured_non_agent_kib()
+            fixed_kib = max(role_default_kib, measured_scaled_kib)
+        else:
+            fixed_kib = role_default_kib
+        reserve_kib = max(fixed_kib, fixed_kib + total * 2 // 100)
+
+    max_pct = options["--memory-max-percent"]
+    high_pct = options["--memory-high-percent"]
+    if max_pct is not None:
+        maximum = total * max_pct // 100
+        if reserve_pct is not None and total - maximum < reserve_kib:
+            raise ValueError("the agent memory ceiling leaves less than the reviewed reserve")
+        if maximum < min_slice:
+            raise ValueError("the agent memory ceiling is below 2 GiB")
+    else:
+        if total - reserve_kib < min_slice:
+            raise ValueError("host RAM minus reserve is below 2 GiB")
+        maximum = total - reserve_kib
+
+    if high_pct is not None:
+        high = total * high_pct // 100
+        if high <= 0 or high >= maximum:
+            raise ValueError("MemoryHigh must be positive and below MemoryMax")
+    else:
+        margin = min(maximum * 10 // 100, 8 * gib)
+        high = maximum - margin
+        if high <= 0 or high >= maximum:
+            raise ValueError("MemoryHigh must be positive and below MemoryMax")
+
+    swap_pct = options["--swap-max-percent"]
+    if swap_pct is not None:
+        swap_max = total * swap_pct // 100
+    elif swap_total_kib == 0:
+        swap_max = 0
+    else:
+        swap_max = min(swap_total_kib * 25 // 100, 8 * gib)
+
+    if options["--reserve-cores"] is not None:
+        reserved_cores = options["--reserve-cores"]
+        if reserved_cores < 0 or reserved_cores >= cpu_cores:
+            raise ValueError("reserved cores must be less than total CPU cores")
+    else:
+        reserved_cores = min(max((cpu_cores + 19) // 20, 2), 4)
+        if cpu_cores <= reserved_cores:
+            reserved_cores = cpu_cores - 1
+    cpu_quota = (cpu_cores - reserved_cores) * 100
+
+    return {
+        "CPUWeight": str(options["--cpu-weight"]),
+        "CPUQuota": str(cpu_quota) + "%",
+        "TasksMax": str(max(4096, min(16384, total // gib * 128))),
+        "MemoryHigh": str(high) + "K",
+        "MemoryMax": str(maximum) + "K",
+        "MemorySwapMax": str(swap_max) + "K",
+        "ManagedOOMMemoryPressureLimit": str(options["--oomd-pressure-percent"]) + "%",
+    }
 
 
 def agent_processes_outside_slice(root, uid, proc_root="/proc"):
@@ -308,7 +464,7 @@ def agent_processes_outside_slice(root, uid, proc_root="/proc"):
 def agent_slice_text(agent, values, oomd):
     """Render agent-work.slice exactly as apply-resource-policy-linux.sh writes it."""
     lines = ["# Managed by agent-workstation-kit apply-resource-policy-linux.sh; undo with --revert.", "[Unit]", "Description=Agent work ceiling for " + agent, "ConditionUser=" + agent, "", "[Slice]"]
-    lines += [key + "=" + values[key] for key in ("CPUWeight", "TasksMax", "MemoryHigh", "MemoryMax", "MemorySwapMax")]
+    lines += [key + "=" + values[key] for key in ("CPUWeight", "CPUQuota", "TasksMax", "MemoryHigh", "MemoryMax", "MemorySwapMax")]
     if oomd:
         lines += ["ManagedOOMMemoryPressure=kill", "ManagedOOMMemoryPressureLimit=" + values["ManagedOOMMemoryPressureLimit"]]
     return "\n".join(lines) + "\n"

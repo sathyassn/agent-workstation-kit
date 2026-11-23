@@ -12,17 +12,29 @@ usage() {
 Usage: apply-resource-policy-linux.sh --agent ACCOUNT [options] [--apply]
        apply-resource-policy-linux.sh --agent ACCOUNT --revert [--apply]
 
-Sets a machine-wide memory ceiling for agent work in agent-work.slice under the
-agent account's user manager, enables systemd-oomd for it, and applies the swap,
-zram and /tmp policy. Preview by default; --apply changes the machine. Apply
-backs up every file it touches and writes a receipt; --revert restores exactly
-what the receipt lists.
+Sets a machine-wide memory and CPU ceiling for agent work in agent-work.slice
+under the agent account's user manager, enables systemd-oomd for it, and
+applies the swap, zram and /tmp policy. Preview by default; --apply changes
+the machine. Apply backs up every file it touches and writes a receipt;
+--revert restores exactly what the receipt lists.
 
-Shares are percentages of total RAM, read at run time:
-  --memory-high-percent N    MemoryHigh, the soft pressure threshold (default 70)
-  --memory-max-percent N     MemoryMax, the hard ceiling (default 80)
-  --swap-max-percent N       MemorySwapMax for agent work (default 10)
-  --memory-reserve-percent N Refuse when the ceiling leaves less RAM than this share (default 10)
+Reserve-based sizing is the default (read at run time):
+  Memory reserve = fixed part (6 GiB desktop, 2 GiB headless) + 2% of RAM
+  MemoryMax      = RAM - reserve (refused below 2 GiB)
+  MemoryHigh     = MemoryMax - min(10% of MemoryMax, 8 GiB)
+  MemorySwapMax  = min(25% of total swap, 8 GiB); 0 when there is no swap
+  CPUWeight      = 50 (system and desktop keep 100)
+  CPUQuota       = (cores - clamp(ceil(cores * 0.05), 2, 4)) * 100%
+
+Options and explicit overrides:
+  --reserve-fixed-gib N      Override the fixed RAM reserve in GiB (positive number)
+  --measure                  Measure system/session/app slices x 1.5; use when larger than role default
+  --cpu-weight N             CPUWeight for agent-work.slice, 1..10000 (default 50)
+  --reserve-cores N          Override reserved CPU cores for CPUQuota (integer >= 0)
+  --memory-high-percent N    Explicit override: MemoryHigh as % of RAM (10..90)
+  --memory-max-percent N     Explicit override: MemoryMax as % of RAM (20..95)
+  --swap-max-percent N       Explicit override: MemorySwapMax as % of RAM (0..50)
+  --memory-reserve-percent N Explicit override: reserve as % of RAM (5..50)
   --oomd-pressure-percent N  ManagedOOMMemoryPressureLimit for the slice (default 60)
   --swappiness auto|keep|N   auto: 100 with zram, 10 with disk swap only (default auto)
   --zram-percent N           zram size as a share of RAM; 0 leaves zram alone (default 0)
@@ -32,10 +44,14 @@ EOF
 }
 
 agent_account=''
-memory_reserve_percent=10
-memory_high_percent=70
-memory_max_percent=80
-swap_max_percent=10
+reserve_fixed_gib=''
+measure=false
+cpu_weight=''
+reserve_cores=''
+memory_reserve_percent=''
+memory_high_percent=''
+memory_max_percent=''
+swap_max_percent=''
 oomd_pressure_percent=60
 swappiness_mode=auto
 zram_percent=0
@@ -45,8 +61,12 @@ while (($#)); do
   case "$1" in
     --apply) APPLY_CHANGES=true; shift ;;
     --agent) agent_account=${2:?Missing agent account}; shift 2 ;;
+    --reserve-fixed-gib) reserve_fixed_gib=${2:?Missing fixed memory reserve}; shift 2 ;;
+    --measure) measure=true; shift ;;
+    --cpu-weight) cpu_weight=${2:?Missing CPU weight}; shift 2 ;;
+    --reserve-cores) reserve_cores=${2:?Missing reserved cores}; shift 2 ;;
     --memory-reserve-percent) memory_reserve_percent=${2:?Missing memory reserve}; shift 2 ;;
-    --memory-reserve-gib) die '--memory-reserve-gib is replaced by --memory-reserve-percent, a share of RAM.' ;;
+    --memory-reserve-gib) die '--memory-reserve-gib is replaced by --reserve-fixed-gib (fixed reserve GiB) or --memory-reserve-percent (explicit RAM share).' ;;
     --memory-high-percent) memory_high_percent=${2:?Missing share}; shift 2 ;;
     --memory-max-percent) memory_max_percent=${2:?Missing share}; shift 2 ;;
     --swap-max-percent) swap_max_percent=${2:?Missing share}; shift 2 ;;
@@ -69,11 +89,33 @@ require_int() {
 [[ $(uname -s) == Linux ]] || die 'Linux only.'
 [[ -n "$agent_account" ]] || die '--agent is required.'
 validate_unix_name "$agent_account"
-require_int --memory-reserve-percent "$memory_reserve_percent" 5 50
-require_int --memory-high-percent "$memory_high_percent" 10 90
-require_int --memory-max-percent "$memory_max_percent" 20 95
-((memory_max_percent > memory_high_percent)) || die '--memory-max-percent must be greater than --memory-high-percent.'
-require_int --swap-max-percent "$swap_max_percent" 0 50
+if [[ -n "$reserve_fixed_gib" && -n "$memory_reserve_percent" ]]; then
+  die 'Cannot combine --reserve-fixed-gib with --memory-reserve-percent; choose one reserve override.'
+fi
+if [[ -n "$reserve_fixed_gib" ]]; then
+  gib_to_kib "$reserve_fixed_gib" >/dev/null || die '--reserve-fixed-gib must be a positive number.'
+fi
+if [[ -n "$memory_reserve_percent" ]]; then
+  require_int --memory-reserve-percent "$memory_reserve_percent" 5 50
+fi
+if [[ -n "$memory_high_percent" ]]; then
+  require_int --memory-high-percent "$memory_high_percent" 10 90
+fi
+if [[ -n "$memory_max_percent" ]]; then
+  require_int --memory-max-percent "$memory_max_percent" 20 95
+fi
+if [[ -n "$memory_high_percent" && -n "$memory_max_percent" ]]; then
+  ((memory_max_percent > memory_high_percent)) || die '--memory-max-percent must be greater than --memory-high-percent.'
+fi
+if [[ -n "$swap_max_percent" ]]; then
+  require_int --swap-max-percent "$swap_max_percent" 0 50
+fi
+if [[ -n "$cpu_weight" ]]; then
+  require_int --cpu-weight "$cpu_weight" 1 10000
+fi
+if [[ -n "$reserve_cores" ]]; then
+  require_int --reserve-cores "$reserve_cores" 0 1024
+fi
 require_int --oomd-pressure-percent "$oomd_pressure_percent" 10 99
 require_int --zram-percent "$zram_percent" 0 100
 case "$swappiness_mode" in
@@ -236,12 +278,42 @@ delegated=$(systemctl show --property=DelegateControllers --value "user@$uid.ser
 grep -qw memory <<<"$delegated" ||
   die "user@$uid.service does not delegate the memory controller, so a user-level slice cannot hold a memory ceiling."
 
+gib() {
+  awk -v kib="$1" 'BEGIN {printf "%.1f GiB", kib / 1048576}'
+}
+
 total_kib=$(awk '$1 == "MemTotal:" {print $2}' "$(host_path /proc/meminfo)" 2>/dev/null) || true
 [[ "$total_kib" =~ ^[0-9]+$ ]] || die 'Cannot read total memory from /proc/meminfo.'
-read -r memory_high memory_max swap_max < <(
-  calculate_memory_shares "$total_kib" "$memory_high_percent" "$memory_max_percent" "$swap_max_percent" "$memory_reserve_percent"
-) || die "A ${memory_max_percent}% ceiling leaves less than the ${memory_reserve_percent}% reserve outside agent work; lower --memory-max-percent or the reserve."
 tasks_max=$(calculate_tasks_max "$total_kib")
+
+cpu_cores=$(awk '/^processor[[:space:]]*:/ {c++} END {print c + 0}' "$(host_path /proc/cpuinfo)" 2>/dev/null) || true
+if [[ ! "$cpu_cores" =~ ^[0-9]+$ || "$cpu_cores" -lt 1 ]] && [[ -z "$fs_root" ]]; then
+  cpu_cores=$(nproc 2>/dev/null || true)
+fi
+[[ "$cpu_cores" =~ ^[0-9]+$ && "$cpu_cores" -ge 1 ]] || die 'Cannot read CPU core count from /proc/cpuinfo.'
+
+desktop_present=false
+desktop_reason='headless (no graphical target or display manager active)'
+if systemctl is-active --quiet graphical.target 2>/dev/null; then
+  desktop_present=true
+  desktop_reason='graphical.target active'
+else
+  for dm in display-manager.service gdm.service gdm3.service sddm.service lightdm.service; do
+    if systemctl is-active --quiet "$dm" 2>/dev/null; then
+      desktop_present=true
+      desktop_reason="$dm active"
+      break
+    fi
+  done
+fi
+if [[ "$desktop_present" == true ]]; then
+  role_label=desktop
+  role_default_gib=6
+else
+  role_label=headless
+  role_default_gib=2
+fi
+role_default_kib=$((role_default_gib * 1024 * 1024))
 
 oomd_available=false
 for candidate in /usr/lib/systemd/systemd-oomd /lib/systemd/systemd-oomd; do
@@ -272,13 +344,106 @@ fi
 
 zram_swaps=0
 disk_swaps=0
-while read -r swap_name _; do
+swap_total_kib=0
+while read -r swap_name _ swap_size _; do
   case "$swap_name" in
     Filename|'') ;;
-    /dev/zram*) zram_swaps=$((zram_swaps + 1)) ;;
-    *) disk_swaps=$((disk_swaps + 1)) ;;
+    /dev/zram*)
+      zram_swaps=$((zram_swaps + 1))
+      [[ "$swap_size" =~ ^[0-9]+$ ]] && swap_total_kib=$((swap_total_kib + swap_size))
+      ;;
+    *)
+      disk_swaps=$((disk_swaps + 1))
+      [[ "$swap_size" =~ ^[0-9]+$ ]] && swap_total_kib=$((swap_total_kib + swap_size))
+      ;;
   esac
 done <"$(host_path /proc/swaps)"
+
+# Calculate memory reserve, MemoryMax, MemoryHigh, MemorySwapMax and CPU controls.
+min_slice_kib=$((2 * 1024 * 1024))
+measured_raw_kib=''
+measured_scaled_kib=''
+if [[ "$measure" == true ]]; then
+  read -r measured_raw_kib measured_scaled_kib < <(
+    measure_non_agent_memory_kib "$(host_path /sys/fs/cgroup)"
+  ) || die '--measure could not read memory.current from /sys/fs/cgroup/system.slice.'
+fi
+
+if [[ -n "$memory_reserve_percent" ]]; then
+  reserve_kib=$((total_kib * memory_reserve_percent / 100))
+  reserve_derivation="${memory_reserve_percent}% of RAM (override: --memory-reserve-percent)"
+else
+  if [[ -n "$reserve_fixed_gib" ]]; then
+    fixed_kib=$(gib_to_kib "$reserve_fixed_gib")
+    fixed_desc="${reserve_fixed_gib} GiB override (--reserve-fixed-gib)"
+  elif [[ "$measure" == true ]] && ((measured_scaled_kib > role_default_kib)); then
+    fixed_kib=$measured_scaled_kib
+    fixed_desc="$(gib "$measured_scaled_kib") measured baseline (1.5x $(gib "$measured_raw_kib") > ${role_default_gib} GiB ${role_label} default)"
+  elif [[ "$measure" == true ]]; then
+    fixed_kib=$role_default_kib
+    fixed_desc="${role_default_gib} GiB ${role_label} default (>= $(gib "$measured_scaled_kib") measured 1.5x of $(gib "$measured_raw_kib"))"
+  else
+    fixed_kib=$role_default_kib
+    fixed_desc="${role_default_gib} GiB ${role_label} default"
+  fi
+  reserve_kib=$(calculate_memory_reserve_kib "$total_kib" "$fixed_kib")
+  reserve_derivation="${fixed_desc} + 2% of RAM"
+fi
+
+if [[ -n "$memory_max_percent" ]]; then
+  memory_max=$((total_kib * memory_max_percent / 100))
+  if [[ -n "$memory_reserve_percent" ]] && ((total_kib - memory_max < reserve_kib)); then
+    die "A ${memory_max_percent}% ceiling leaves less than the ${memory_reserve_percent}% reserve outside agent work; lower --memory-max-percent or the reserve."
+  fi
+  ((memory_max >= min_slice_kib)) || die "MemoryMax ($(gib "$memory_max"), from --memory-max-percent ${memory_max_percent}%) is below 2.0 GiB; this machine is too small for an agent-work slice."
+  memory_max_derivation="${memory_max_percent}% of $(gib "$total_kib") RAM (override: --memory-max-percent)"
+else
+  if ((total_kib <= reserve_kib || total_kib - reserve_kib < min_slice_kib)); then
+    die "Host RAM ($(gib "$total_kib")) minus reserve ($(gib "$reserve_kib")) is below 2.0 GiB; this machine is too small for an agent-work slice."
+  fi
+  memory_max=$((total_kib - reserve_kib))
+  memory_max_derivation="$(gib "$total_kib") RAM - $(gib "$reserve_kib") reserve (${reserve_derivation})"
+fi
+
+if [[ -n "$memory_high_percent" ]]; then
+  memory_high=$((total_kib * memory_high_percent / 100))
+  ((memory_high > 0 && memory_high < memory_max)) || die "MemoryHigh ($(gib "$memory_high"), from --memory-high-percent ${memory_high_percent}%) must be positive and below MemoryMax ($(gib "$memory_max"))."
+  memory_high_derivation="${memory_high_percent}% of $(gib "$total_kib") RAM (override: --memory-high-percent)"
+else
+  memory_high=$(calculate_memory_high_kib "$memory_max") || die 'Cannot calculate MemoryHigh below MemoryMax.'
+  high_margin=$((memory_max - memory_high))
+  memory_high_derivation="$(gib "$memory_max") MemoryMax - $(gib "$high_margin") (min(10% of MemoryMax, 8 GiB))"
+fi
+
+if [[ -n "$swap_max_percent" ]]; then
+  swap_max=$((total_kib * swap_max_percent / 100))
+  swap_max_derivation="${swap_max_percent}% of $(gib "$total_kib") RAM (override: --swap-max-percent)"
+else
+  swap_max=$(calculate_swap_max_kib "$swap_total_kib")
+  if ((swap_total_kib == 0)); then
+    swap_max_derivation='no swap configured (formula: min(25% of swap, 8 GiB))'
+  else
+    swap_max_derivation="min(25% of $(gib "$swap_total_kib") swap, 8 GiB)"
+  fi
+fi
+
+if [[ -n "$cpu_weight" ]]; then
+  cpu_weight_source="override: --cpu-weight $cpu_weight"
+else
+  cpu_weight=50
+  cpu_weight_source='default: 50 (system and desktop keep 100)'
+fi
+
+if [[ -n "$reserve_cores" ]]; then
+  ((reserve_cores < cpu_cores)) || die "--reserve-cores ($reserve_cores) must be less than host CPU cores ($cpu_cores)."
+  reserved_cores=$reserve_cores
+  cpu_quota_percent=$(calculate_cpu_quota_percent "$cpu_cores" "$reserved_cores")
+  cpu_quota_derivation="(${cpu_cores} cores - ${reserved_cores} reserved) x 100% (override: --reserve-cores ${reserved_cores})"
+else
+  reserved_cores=$(calculate_cpu_reserve_cores "$cpu_cores")
+  cpu_quota_percent=$(calculate_cpu_quota_percent "$cpu_cores" "$reserved_cores")
+  cpu_quota_derivation="(${cpu_cores} cores - ${reserved_cores} reserved) x 100% (formula: clamp(ceil(${cpu_cores} x 0.05), 2, 4))"
+fi
 zram_generator=false
 [[ -x "$(host_path /usr/lib/systemd/system-generators/zram-generator)" ]] && zram_generator=true
 if ((zram_percent > 0)) && [[ "$zram_generator" != true ]]; then
@@ -340,7 +505,8 @@ Description=Agent work ceiling for $agent_account
 ConditionUser=$agent_account
 
 [Slice]
-CPUWeight=90
+CPUWeight=$cpu_weight
+CPUQuota=${cpu_quota_percent}%
 TasksMax=$tasks_max
 MemoryHigh=${memory_high}K
 MemoryMax=${memory_max}K
@@ -388,9 +554,6 @@ done
 [[ -e "$(host_path "/var/lib/systemd/linger/$agent_account")" ]] || changes+=("linger|$agent_account|enabled|-")
 [[ "$oomd_available" == true && "$oomd_enabled" != true ]] && changes+=("service|systemd-oomd.service|enabled|-")
 
-gib() {
-  awk -v kib="$1" 'BEGIN {printf "%.1f GiB", kib / 1048576}'
-}
 swap_summary="zram devices: $zram_swaps, disk swap areas: $disk_swaps"
 oomd_summary=unavailable
 [[ "$oomd_available" == true ]] && oomd_summary="available, $([[ "$oomd_enabled" == true ]] && echo enabled || echo not enabled)"
@@ -398,16 +561,25 @@ cat <<EOF
 Agent work ceiling for $agent_account (UID $uid)
   Slice:              $slice_name in the user manager of $agent_account
   Host memory:        $(gib "$total_kib")
+  Host CPUs:          $cpu_cores
+  Host role:          $role_label ($desktop_reason)
   systemd:            $systemd_version
   systemd-oomd:       $oomd_summary
-  Swap:               $swap_summary
+  Swap:               $(gib "$swap_total_kib") ($swap_summary)
   /tmp:               ${tmp_type:-not a separate mount}$([[ "$tmp_source" != none ]] && printf ' (%s)' "$tmp_source")
-  MemoryHigh:         ${memory_high_percent}% of RAM = $(gib "$memory_high")
-  MemoryMax:          ${memory_max_percent}% of RAM = $(gib "$memory_max")
-  MemorySwapMax:      ${swap_max_percent}% of RAM = $(gib "$swap_max")
-  Outside the slice:  $(gib $((total_kib - memory_max))) (reserve ${memory_reserve_percent}% of RAM)
-  CPUWeight:          90 of 100
-  TasksMax:           $tasks_max
+EOF
+if [[ "$measure" == true ]]; then
+  printf '  Measured baseline:  %s current x 1.5 = %s (role default: %s.0 GiB %s)\n' \
+    "$(gib "$measured_raw_kib")" "$(gib "$measured_scaled_kib")" "$role_default_gib" "$role_label"
+fi
+cat <<EOF
+  MemoryMax:          $(gib "$memory_max") = ${memory_max_derivation}
+  MemoryHigh:         $(gib "$memory_high") = ${memory_high_derivation}
+  MemorySwapMax:      $(gib "$swap_max") = ${swap_max_derivation}
+  Outside the slice:  $(gib $((total_kib - memory_max))) (reserve $(gib "$reserve_kib"): ${reserve_derivation})
+  CPUWeight:          ${cpu_weight} (${cpu_weight_source})
+  CPUQuota:           ${cpu_quota_percent}% = ${cpu_quota_derivation}
+  TasksMax:           $tasks_max (formula: clamp(RAM GiB x 128, 4096, 16384))
 EOF
 if [[ "$oomd_available" == true ]]; then
   printf '  oomd:               kill in the slice above %s%% memory pressure\n' "$oomd_pressure_percent"

@@ -175,6 +175,13 @@ if [[ $(uname -s) == Linux ]]; then
       else
         fail "agent-work.slice memory ceiling is missing for $agent_account"
       fi
+      if [[ -r "$resource_slice" && ! -L "$resource_slice" ]] && \
+         grep -Eq '^CPUWeight=[0-9]+$' "$resource_slice" && \
+         grep -Eq '^CPUQuota=[0-9]+%$' "$resource_slice"; then
+        pass "agent-work.slice CPU weight and quota exist for $agent_account"
+      else
+        fail "agent-work.slice CPU weight or quota is missing for $agent_account"
+      fi
       tasks_max=$(awk -F= '$1 == "TasksMax" {print $2}' "$resource_slice" 2>/dev/null || true)
       if [[ "$tasks_max" =~ ^[0-9]+$ ]] && ((tasks_max >= 4096 && tasks_max <= 16384)); then
         pass "resource TasksMax=$tasks_max is within the reviewed emergency range"

@@ -173,6 +173,93 @@ calculate_memory_shares() {
   printf '%d %d %d\n' "$memory_high" "$memory_max" "$swap_max"
 }
 
+# Convert a positive integer or decimal GiB value to KiB (rounded to nearest KiB).
+gib_to_kib() {
+  local value=$1 kib
+  [[ "$value" =~ ^[0-9]+([.][0-9]+)?$ ]] || return 2
+  kib=$(awk -v gib="$value" 'BEGIN { if (gib <= 0) exit 1; printf "%.0f\n", gib * 1048576 }') || return 2
+  [[ "$kib" =~ ^[0-9]+$ && "$kib" -gt 0 ]] || return 2
+  printf '%d\n' "$kib"
+}
+
+# Print memory reserve in KiB: fixed part + 2% of RAM, never below fixed part.
+calculate_memory_reserve_kib() {
+  local total_kib=$1 fixed_kib=$2 pct_kib reserve_kib
+  [[ "$total_kib" =~ ^[0-9]+$ && "$fixed_kib" =~ ^[0-9]+$ ]] || return 2
+  ((total_kib > 0)) || return 2
+  pct_kib=$((total_kib * 2 / 100))
+  reserve_kib=$((fixed_kib + pct_kib))
+  ((reserve_kib >= fixed_kib)) || reserve_kib=$fixed_kib
+  printf '%d\n' "$reserve_kib"
+}
+
+# Print MemoryHigh in KiB: MemoryMax - min(10% of MemoryMax, 8 GiB).
+calculate_memory_high_kib() {
+  local memory_max_kib=$1 cap_kib=$((8 * 1024 * 1024)) margin_kib memory_high_kib
+  [[ "$memory_max_kib" =~ ^[0-9]+$ ]] || return 2
+  ((memory_max_kib > 0)) || return 2
+  margin_kib=$((memory_max_kib * 10 / 100))
+  ((margin_kib <= cap_kib)) || margin_kib=$cap_kib
+  memory_high_kib=$((memory_max_kib - margin_kib))
+  ((memory_high_kib > 0 && memory_high_kib < memory_max_kib)) || return 1
+  printf '%d\n' "$memory_high_kib"
+}
+
+# Print MemorySwapMax in KiB: min(25% of total swap, 8 GiB); 0 when no swap.
+calculate_swap_max_kib() {
+  local swap_total_kib=$1 cap_kib=$((8 * 1024 * 1024)) swap_max_kib
+  [[ "$swap_total_kib" =~ ^[0-9]+$ ]] || return 2
+  if ((swap_total_kib == 0)); then
+    printf '0\n'
+    return 0
+  fi
+  swap_max_kib=$((swap_total_kib * 25 / 100))
+  ((swap_max_kib <= cap_kib)) || swap_max_kib=$cap_kib
+  printf '%d\n' "$swap_max_kib"
+}
+
+# Print reserved CPU cores: clamp(ceil(cores * 0.05), 2, 4), leaving at least 1 core.
+calculate_cpu_reserve_cores() {
+  local cores=$1 reserved
+  [[ "$cores" =~ ^[0-9]+$ && "$cores" -ge 1 ]] || return 2
+  reserved=$(((cores + 19) / 20))
+  ((reserved >= 2)) || reserved=2
+  ((reserved <= 4)) || reserved=4
+  if ((cores <= reserved)); then
+    reserved=$((cores - 1))
+  fi
+  printf '%d\n' "$reserved"
+}
+
+# Print CPUQuota percentage: (cores - reserved) * 100.
+calculate_cpu_quota_percent() {
+  local cores=$1 reserved=$2
+  [[ "$cores" =~ ^[0-9]+$ && "$reserved" =~ ^[0-9]+$ ]] || return 2
+  ((cores >= 1 && reserved < cores)) || return 1
+  printf '%d\n' $(((cores - reserved) * 100))
+}
+
+# Read current memory.current (bytes) of system.slice plus session and app slices
+# outside agent-work.slice. Print "<raw_kib> <scaled_1_5x_kib>".
+measure_non_agent_memory_kib() {
+  local cgroup_root=$1 total_bytes=0 value file
+  local system_file="$cgroup_root/system.slice/memory.current"
+  [[ -r "$system_file" ]] || return 1
+  value=$(cat "$system_file" 2>/dev/null) || return 1
+  [[ "$value" =~ ^[0-9]+$ ]] || return 1
+  total_bytes=$((total_bytes + value))
+  for file in \
+    "$cgroup_root"/user.slice/user-*.slice/session-*.scope/memory.current \
+    "$cgroup_root"/user.slice/user-*.slice/user@*.service/session.slice/memory.current \
+    "$cgroup_root"/user.slice/user-*.slice/user@*.service/app.slice/memory.current; do
+    [[ -r "$file" ]] || continue
+    value=$(cat "$file" 2>/dev/null) || continue
+    [[ "$value" =~ ^[0-9]+$ ]] || continue
+    total_bytes=$((total_bytes + value))
+  done
+  printf '%d %d\n' $((total_bytes / 1024)) $(((total_bytes * 3) / 2048))
+}
+
 # Print "PID NAME CGROUP" for each agent process of account UID that runs
 # outside agent-work.slice: a claude, codex or grok process, or any process in
 # an agent manager's pty slice (orca_ptys_*.slice). PROC_ROOT is /proc, or a

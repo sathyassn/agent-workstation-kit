@@ -73,7 +73,9 @@ endpoint_management = "ask"
 
 [resources]
 policy = "measured-balanced"
-os_memory_reserve_percent = 10
+# reserve_fixed_gib = 6 # Optional fixed RAM reserve override in GiB (default: 6 desktop, 2 headless, plus 2% of RAM).
+# reserve_cores = 2 # Optional reserved CPU core override (default: clamp(ceil(cores * 0.05), 2, 4)).
+# cpu_weight = 50 # Optional CPUWeight override for agent-work.slice (default: 50; system and desktop keep 100).
 os_cpu_reserve_threads = 2
 
 [backup]

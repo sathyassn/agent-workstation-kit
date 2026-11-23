@@ -33,7 +33,13 @@ PRESERVED_SECTIONS = (
     "backup",
     "maintenance",
 )
-RESERVE_KEYS = {"os_memory_reserve_gib", "os_memory_reserve_percent"}
+RESERVE_KEYS = {
+    "os_memory_reserve_gib",
+    "os_memory_reserve_percent",
+    "reserve_fixed_gib",
+    "reserve_cores",
+    "cpu_weight",
+}
 PRESERVED_MACHINE_FIELDS = (
     "hostname",
     "uuid",

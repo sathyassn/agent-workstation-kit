@@ -40,8 +40,9 @@ Do not statically reserve large amounts of RAM or cores for the OS. The balanced
 
 ### Agent work ceiling on Linux
 
-`apply-resource-policy-linux.sh` gives agent work one machine-wide memory
-ceiling. It previews by default; `--apply` changes the machine and needs root.
+`apply-resource-policy-linux.sh` gives agent work one machine-wide memory and
+CPU ceiling. It previews by default; `--apply` changes the machine and needs
+root.
 
 ```text
 -.slice
@@ -53,7 +54,7 @@ ceiling. It previews by default; `--apply` changes the machine and needs root.
             |-- session.slice       desktop shell (not limited)
             |-- orca_ptys_*.slice   agent-manager ptys (left by agent-work-shell)
             `-- agent.slice         implied parent (see slice naming below)
-                `-- agent-work.slice  MemoryHigh, MemoryMax, MemorySwapMax, oomd
+                `-- agent-work.slice  CPUWeight, CPUQuota, MemoryHigh, MemoryMax, MemorySwapMax, oomd
                     |-- agent services   (Slice=agent-work.slice)
                     |-- agentctl tmux sessions
                     `-- agent-manager terminals (through agent-work-shell)
@@ -126,13 +127,15 @@ use that form instead of the wrapper. Orca cannot: its slice name is fixed in
 code as `orca_ptys_` plus its daemon scope name, with every other character
 replaced by `_`, so the wrapper is the supported route.
 
-**What apply changes.** Each item is shown in the preview first.
+**What apply changes.** Each item is shown in the preview with its derivation
+and source (formula, measured baseline, or explicit override) before apply.
 
 | Change | Setting | Default | When it takes effect |
 |---|---|---|---|
-| Memory ceiling | `MemoryHigh` and `MemoryMax` as shares of total RAM read at run time | 70% and 80% | New and restarted work in the slice |
-| Swap for agent work | `MemorySwapMax` as a share of RAM | 10% | Same |
-| Headroom check | Refuse when the RAM outside `MemoryMax` is below the reserve share (`resources.os_memory_reserve_percent`) | 10% | Preview |
+| Memory reserve | `fixed + 2% of RAM` (never below the fixed part); fixed part is 6 GiB when `graphical.target` or a display manager is active, 2 GiB headless, or `1.5x` measured non-agent slices with `--measure` when larger | 6 GiB desktop or 2 GiB headless + 2% of RAM | Preview |
+| Memory ceiling | `MemoryMax = RAM - reserve` (refuses when below 2 GiB); `MemoryHigh = MemoryMax - min(10% of MemoryMax, 8 GiB)` | Reserve-based formula | New and restarted work in the slice |
+| Swap for agent work | `MemorySwapMax = min(25% of total swap, 8 GiB)`; `0` when no swap is active | Formula from `/proc/swaps` | Same |
+| CPU controls | `CPUWeight=50` (system and desktop keep 100); `reserved = clamp(ceil(cores * 0.05), 2, 4)` and `CPUQuota = (cores - reserved) * 100%` | Formula from `/proc/cpuinfo` | Same |
 | systemd-oomd | Enabled; kills in the slice above the pressure limit (states `enabled`, `enabled-runtime`, `static` and `alias` count as enabled) | 60% | At once |
 | oomd scope | Overrides each vendor oomd drop-in for `user@.service` and `-.slice` with `ManagedOOM...=auto`, so oomd acts only on `agent-work.slice` | | At once |
 | Swappiness | `vm.swappiness`: 100 with zram, 10 with disk swap only, unchanged with no swap | auto | At once |
@@ -141,17 +144,33 @@ replaced by `_`, so the wrapper is the supported route.
 | Old policy | Removes the earlier `user-UID.slice` drop-in | | At once |
 | Lingering | `loginctl enable-linger` so the user manager runs at boot | | At once |
 
-Shares are flags with these defaults: `--memory-high-percent`,
-`--memory-max-percent`, `--swap-max-percent`, `--memory-reserve-percent`,
-`--oomd-pressure-percent`,
-`--swappiness auto|keep|N`, `--zram-percent N` and `--tmp auto|disk|keep`.
-The `resources` phase of a plan uses the defaults and the profile's
-`os_memory_reserve_percent` (default 10). The older `os_memory_reserve_gib`
-field and `--memory-reserve-gib` flag are deprecated: profiles that still carry
-the field validate, but the policy no longer reads it, and the script refuses
-the old flag. `CPUWeight=90` is a contention preference, not a core
-reservation, `os_cpu_reserve_threads` is capacity-planning headroom, not CPU
-pinning, and `TasksMax` scales from 4,096 to 16,384 with RAM.
+Reserve-based sizing is the default: it reserves what the OS and desktop need
+and gives agent work the remainder, rather than taking a fixed percentage on
+every host size. With `--measure`, the script sums `memory.current` of
+`system.slice` plus the session and app slices outside `agent-work.slice`,
+multiplies by `1.5`, uses that baseline when it exceeds the role default, and
+prints both in the preview.
+
+Flags for tuning or explicit overrides:
+
+- Reserve and CPU tuning: `--reserve-fixed-gib N`, `--measure`,
+  `--reserve-cores N`, `--cpu-weight N`.
+- Explicit percentage overrides that win over the formula (labelled in the
+  preview): `--memory-high-percent N`, `--memory-max-percent N`,
+  `--swap-max-percent N`, `--memory-reserve-percent N`.
+- Other policy flags: `--oomd-pressure-percent N`, `--swappiness auto|keep|N`,
+  `--zram-percent N`, `--tmp auto|disk|keep`.
+
+The `resources` phase of a plan uses the reserve-based formula by default and
+passes `--reserve-fixed-gib`, `--reserve-cores`, `--cpu-weight`, or
+`--memory-reserve-percent` only when the matching optional field
+(`resources.reserve_fixed_gib`, `resources.reserve_cores`,
+`resources.cpu_weight`, or `resources.os_memory_reserve_percent`) is set in the
+profile. The older `os_memory_reserve_gib` field and `--memory-reserve-gib`
+flag are deprecated: profiles that still carry the field validate, but the
+policy no longer reads it, and the script refuses the old flag.
+`os_cpu_reserve_threads` remains capacity-planning headroom, and `TasksMax`
+scales from 4,096 to 16,384 with RAM.
 
 **oomd scope.** Ubuntu's `systemd-oomd` package can ship vendor drop-ins such
 as `user@.service.d/10-oomd-user-service-defaults.conf` and
