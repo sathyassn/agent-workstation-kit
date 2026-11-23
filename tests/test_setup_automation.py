@@ -197,6 +197,207 @@ class ExecutionAutomationTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 execution.prepare_journal(link)
 
+    def test_macos_host_lock_uses_application_support_run_dir(self):
+        self.assertEqual(
+            Path("/Library/Application Support/agent-workstation-kit/run"),
+            execution.MACOS_LOCK_ROOT / "agent-workstation-kit" / "run",
+        )
+        if sys.platform == "darwin":
+            # Proves the real macOS parent chain passes secure_root_path, unlike /var/run.
+            execution.secure_root_path(execution.MACOS_LOCK_ROOT)
+
+    def _modeled_root_lstat(self, base: Path, *, ancestor_mode: int = 0o755, uid_for=None):
+        """Model root-owned ancestors explicitly so /tmp (1777 on Linux) never masks fixture checks."""
+        import stat
+        original_lstat = Path.lstat
+        ancestors = {base, *base.parents}
+
+        def fake_lstat(path: Path, *args, **kwargs):
+            result = original_lstat(path, *args, **kwargs)
+            uid = uid_for(path) if uid_for else 0
+            if path in ancestors:
+                mode = stat.S_IFDIR | ancestor_mode
+            else:
+                mode = result.st_mode
+            return os.stat_result((
+                mode, result.st_ino, result.st_dev, result.st_nlink,
+                uid, 0, result.st_size, result.st_atime, result.st_mtime, result.st_ctime,
+            ))
+
+        return fake_lstat
+
+    def test_macos_host_apply_lock_creates_root_owned_run_dir_and_serializes(self):
+        original_fstat = os.fstat
+
+        def fake_fstat(fd):
+            result = original_fstat(fd)
+            return os.stat_result((
+                result.st_mode, result.st_ino, result.st_dev, result.st_nlink,
+                0, 0, result.st_size, result.st_atime, result.st_mtime, result.st_ctime,
+            ))
+
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory).resolve()
+            fake_lstat = self._modeled_root_lstat(base)
+
+            with mock.patch.object(execution.sys, "platform", "darwin"), \
+                 mock.patch.object(execution.os, "geteuid", return_value=0), \
+                 mock.patch.object(execution, "MACOS_LOCK_ROOT", base), \
+                 mock.patch.object(Path, "lstat", fake_lstat), \
+                 mock.patch.object(execution.os, "fstat", fake_fstat):
+                with execution.host_apply_lock():
+                    top = base / "agent-workstation-kit"
+                    run_dir = top / "run"
+                    lock_file = run_dir / "privileged-setup.lock"
+                    self.assertTrue(top.is_dir())
+                    self.assertEqual(0o755, top.lstat().st_mode & 0o777)
+                    self.assertTrue(run_dir.is_dir())
+                    self.assertEqual(0o700, run_dir.lstat().st_mode & 0o777)
+                    self.assertTrue(lock_file.is_file())
+                    self.assertEqual(0o600, lock_file.lstat().st_mode & 0o777)
+                    with self.assertRaisesRegex(ValueError, "host's privileged setup lock"):
+                        with execution.host_apply_lock():
+                            self.fail("concurrent macOS host lock must not succeed")
+
+    def test_macos_host_apply_lock_refuses_unsafe_existing_directories(self):
+        import re
+
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory).resolve()
+
+            # Unsafe ancestor permission (like /var/run 0775 on macOS or /tmp 1777 on Linux) is refused.
+            with mock.patch.object(execution.sys, "platform", "darwin"), \
+                 mock.patch.object(execution.os, "geteuid", return_value=0), \
+                 mock.patch.object(execution, "MACOS_LOCK_ROOT", base), \
+                 mock.patch.object(Path, "lstat", self._modeled_root_lstat(base, ancestor_mode=0o775)):
+                with self.assertRaisesRegex(ValueError, "root-owned and not group/world writable: " + re.escape(str(base))):
+                    with execution.host_apply_lock():
+                        pass
+
+            # Group-writable existing parent directory is refused.
+            top = base / "agent-workstation-kit"
+            top.mkdir(mode=0o775)
+            top.chmod(0o775)
+            with mock.patch.object(execution.sys, "platform", "darwin"), \
+                 mock.patch.object(execution.os, "geteuid", return_value=0), \
+                 mock.patch.object(execution, "MACOS_LOCK_ROOT", base), \
+                 mock.patch.object(Path, "lstat", self._modeled_root_lstat(base)):
+                with self.assertRaisesRegex(ValueError, "root-owned and not group/world writable: " + re.escape(str(top))):
+                    with execution.host_apply_lock():
+                        pass
+            self.assertFalse((top / "run").exists())
+
+            # Non-root-owned existing parent directory is refused.
+            top.chmod(0o755)
+            with mock.patch.object(execution.sys, "platform", "darwin"), \
+                 mock.patch.object(execution.os, "geteuid", return_value=0), \
+                 mock.patch.object(execution, "MACOS_LOCK_ROOT", base), \
+                 mock.patch.object(Path, "lstat", self._modeled_root_lstat(base, uid_for=lambda p: 501 if p == top else 0)):
+                with self.assertRaisesRegex(ValueError, "root-owned and not group/world writable: " + re.escape(str(top))):
+                    with execution.host_apply_lock():
+                        pass
+            self.assertFalse((top / "run").exists())
+
+            # Existing run directory with any other mode looser than 0700 (e.g. 0750) is refused.
+            run_dir = top / "run"
+            run_dir.mkdir(mode=0o750)
+            run_dir.chmod(0o750)
+            with mock.patch.object(execution.sys, "platform", "darwin"), \
+                 mock.patch.object(execution.os, "geteuid", return_value=0), \
+                 mock.patch.object(execution, "MACOS_LOCK_ROOT", base), \
+                 mock.patch.object(Path, "lstat", self._modeled_root_lstat(base)):
+                with self.assertRaisesRegex(ValueError, "mode 0700.*" + re.escape(str(run_dir))):
+                    with execution.host_apply_lock():
+                        pass
+            self.assertFalse((run_dir / "privileged-setup.lock").exists())
+            self.assertEqual(0o750, run_dir.lstat().st_mode & 0o777)
+            run_dir.rmdir()
+
+            # Symlinked run directory is refused.
+            target = base / "other"
+            target.mkdir(mode=0o755)
+            run_dir.symlink_to(target)
+            with mock.patch.object(execution.sys, "platform", "darwin"), \
+                 mock.patch.object(execution.os, "geteuid", return_value=0), \
+                 mock.patch.object(execution, "MACOS_LOCK_ROOT", base), \
+                 mock.patch.object(Path, "lstat", self._modeled_root_lstat(base)):
+                with self.assertRaisesRegex(ValueError, "regular directory: " + re.escape(str(run_dir))):
+                    with execution.host_apply_lock():
+                        pass
+            self.assertFalse((target / "privileged-setup.lock").exists())
+
+    def test_linux_host_apply_lock_creates_and_requires_0700_run_dir(self):
+        import re
+        original_fstat = os.fstat
+
+        def fake_fstat(fd):
+            result = original_fstat(fd)
+            return os.stat_result((
+                result.st_mode, result.st_ino, result.st_dev, result.st_nlink,
+                0, 0, result.st_size, result.st_atime, result.st_mtime, result.st_ctime,
+            ))
+
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory).resolve()
+            with mock.patch.object(execution.sys, "platform", "linux"), \
+                 mock.patch.object(execution.os, "geteuid", return_value=0), \
+                 mock.patch.object(execution, "LINUX_LOCK_ROOT", base), \
+                 mock.patch.object(Path, "lstat", self._modeled_root_lstat(base)), \
+                 mock.patch.object(execution.os, "fstat", fake_fstat):
+                with execution.host_apply_lock():
+                    run_dir = base / "agent-workstation-kit"
+                    self.assertEqual(0o700, run_dir.lstat().st_mode & 0o777)
+                # Upgrade: an earlier executor left the directory at 0755 with its
+                # lock file. It is tightened in place on the same inode and the
+                # existing lock file is reused.
+                lock_file = run_dir / "privileged-setup.lock"
+                lock_inode = lock_file.lstat().st_ino
+                run_dir.chmod(0o755)
+                dir_inode = run_dir.lstat().st_ino
+                with execution.host_apply_lock():
+                    self.assertEqual(0o700, run_dir.lstat().st_mode & 0o777)
+                    self.assertEqual(dir_inode, run_dir.lstat().st_ino)
+                    self.assertEqual(lock_inode, lock_file.lstat().st_ino)
+                # Any other loose mode is still refused and left unchanged.
+                run_dir.chmod(0o750)
+                with self.assertRaisesRegex(ValueError, "mode 0700.*" + re.escape(str(run_dir))):
+                    with execution.host_apply_lock():
+                        pass
+                self.assertEqual(0o750, run_dir.lstat().st_mode & 0o777)
+                # A group- or world-writable directory fails the ownership check first.
+                run_dir.chmod(0o775)
+                with self.assertRaisesRegex(ValueError, "not group/world writable"):
+                    with execution.host_apply_lock():
+                        pass
+                self.assertEqual(0o775, run_dir.lstat().st_mode & 0o777)
+
+    def test_macos_ci_lock_verifier_contend_exit_codes(self):
+        spec = importlib.util.spec_from_file_location("verify_macos_host_lock", ROOT / "tests/verify_macos_host_lock.py")
+        verifier = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(verifier)
+        original_fstat = os.fstat
+
+        def fake_fstat(fd):
+            result = original_fstat(fd)
+            return os.stat_result((
+                result.st_mode, result.st_ino, result.st_dev, result.st_nlink,
+                0, 0, result.st_size, result.st_atime, result.st_mtime, result.st_ctime,
+            ))
+
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory).resolve()
+            with mock.patch.object(execution.sys, "platform", "darwin"), \
+                 mock.patch.object(execution.os, "geteuid", return_value=0), \
+                 mock.patch.object(execution, "MACOS_LOCK_ROOT", base), \
+                 mock.patch.object(Path, "lstat", self._modeled_root_lstat(base)), \
+                 mock.patch.object(execution.os, "fstat", fake_fstat):
+                with execution.host_apply_lock():
+                    err = io.StringIO()
+                    with mock.patch("sys.stderr", new=err):
+                        self.assertEqual(verifier.CONTEND_REFUSED_EXIT, verifier.contend(execution))
+                    self.assertIn("host's privileged setup lock", err.getvalue())
+                self.assertEqual(0, verifier.contend(execution))
+
 
 class RemoteAutomationTests(unittest.TestCase):
     def test_tcp_failure_stops_before_any_authentication(self):

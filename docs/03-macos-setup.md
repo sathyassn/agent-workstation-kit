@@ -86,11 +86,23 @@ Then preview the base phase:
   --fleet-root "$FLEET_ROOT" run "$PROFILE" base
 ```
 
-After reviewing every package and cask, apply as that same package owner:
+After reviewing every package and cask, export the execution plan, preview the
+`packages` scope, and apply as that same package owner through
+`scripts/setup-workstation.sh`:
 
 ```bash
-"$PYTHON_BIN" ./scripts/fleetctl.py \
-  --fleet-root "$FLEET_ROOT" run "$PROFILE" base --apply
+AWK_PYTHON="$PYTHON_BIN" ./scripts/setup-workstation.sh plan \
+  --fleet-root "$FLEET_ROOT" --profile "$PROFILE" \
+  --export-plan /PRIVATE/EVIDENCE/execution-plan.json
+
+AWK_PYTHON="$PYTHON_BIN" ./scripts/setup-workstation.sh run \
+  --plan-file /PRIVATE/EVIDENCE/execution-plan.json --scope packages
+
+AWK_PYTHON="$PYTHON_BIN" ./scripts/setup-workstation.sh run \
+  --plan-file /PRIVATE/EVIDENCE/execution-plan.json --scope packages \
+  --apply --approve-plan REVIEWED_EXECUTION_PLAN_ID \
+  --confirm-target acme-mac-001 --execution-context host \
+  --journal /PRIVATE/PER_EXECUTOR_DIRECTORY/setup.json
 ```
 
 The baseline installs missing selected packages and preserves installed versions.
@@ -113,28 +125,40 @@ The identity phase sets:
   non-secret local record, mode `0644`.
 
 Keep local console or KVM recovery open. Preview from the clean ordinary
-checkout, then complete the
+checkout, export the execution plan with an explicit connection context, then
+complete the
 [root-owned macOS staging procedure](runbooks/stage-approved-macos-snapshots.md).
-A named human runs the exact staged apply with an explicit connection context:
+A named human previews and applies the staged `machine` scope through
+`scripts/setup-workstation.sh`:
 
 ```bash
 "$PYTHON_BIN" ./scripts/fleetctl.py \
   --fleet-root "$FLEET_ROOT" run "$PROFILE" identity
 
+AWK_PYTHON="$PYTHON_BIN" ./scripts/setup-workstation.sh plan \
+  --fleet-root "$FLEET_ROOT" --profile "$PROFILE" \
+  --confirm-recovery-tested --connection-context local-console \
+  --export-plan /PRIVATE/EVIDENCE/execution-plan.json
+
+# Stage the reviewed plan to /opt/agent-workstation-fleet/plans/execution-plan.json,
+# preview without --apply first, then apply as root:
 cd /opt/agent-workstation-kit
-sudo /usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME=/var/root \
-  /usr/bin/python3 \
-  /opt/agent-workstation-kit/scripts/install-machine-identity.py \
-  --hostname acme-mac-001 --display-name Orchard \
-  --uuid REVIEWED_UUIDV4 --asset-tag REVIEWED_ASSET_TAG \
-  --namespace acme --platform macos --role REVIEWED_ROLE --apply \
-  --confirm-recovery-tested --connection-context local-console
+sudo /bin/bash /opt/agent-workstation-kit/scripts/setup-workstation.sh run \
+  --plan-file /opt/agent-workstation-fleet/plans/execution-plan.json \
+  --scope machine
+
+sudo /bin/bash /opt/agent-workstation-kit/scripts/setup-workstation.sh run \
+  --plan-file /opt/agent-workstation-fleet/plans/execution-plan.json \
+  --scope machine --apply --approve-plan REVIEWED_EXECUTION_PLAN_ID \
+  --confirm-target acme-mac-001 --execution-context host \
+  --confirm-recovery-tested --journal /PRIVATE/ROOT_OWNED_DIRECTORY/setup.json
 sudo -K
 ```
 
-For Tailscale SSH, use `--connection-context tailscale-ssh` and the verified
-source address described by `fleetctl plan`. The installer checks process
-ancestry and fails closed when it cannot prove the declared context.
+For Tailscale SSH, pass `--connection-context tailscale-ssh` and
+`--ssh-source-ip "$ssh_peer"` (captured from `${SSH_CONNECTION%% *}` before
+`sudo`) when exporting the plan. The identity helper checks process ancestry
+and fails closed when it cannot prove the declared context.
 
 Verify:
 
