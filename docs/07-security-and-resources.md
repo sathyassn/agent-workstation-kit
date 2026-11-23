@@ -132,7 +132,7 @@ and source (formula, measured baseline, or explicit override) before apply.
 
 | Change | Setting | Default | When it takes effect |
 |---|---|---|---|
-| Memory reserve | `fixed + 2% of RAM` (never below the fixed part); fixed part is 6 GiB when `graphical.target` or a display manager is active, 2 GiB headless, or `1.5x` measured non-agent slices with `--measure` when larger | 6 GiB desktop or 2 GiB headless + 2% of RAM | Preview |
+| Memory reserve | `fixed + 2% of RAM` (never below the fixed part); fixed part is 8 GiB when `graphical.target` or a display manager is active, 2 GiB headless, or `1.5x` measured non-agent slices with `--measure` when larger | 8 GiB desktop or 2 GiB headless + 2% of RAM | Preview |
 | Memory ceiling | `MemoryMax = RAM - reserve` (refuses when below 2 GiB); `MemoryHigh = MemoryMax - min(10% of MemoryMax, 8 GiB)` | Reserve-based formula | New and restarted work in the slice |
 | Swap for agent work | `MemorySwapMax = min(25% of total swap, 8 GiB)`; `0` when no swap is active | Formula from `/proc/swaps` | Same |
 | CPU controls | `CPUWeight=50` (system and desktop keep 100); `reserved = clamp(ceil(cores * 0.05), 2, 4)` and `CPUQuota = (cores - reserved) * 100%` | Formula from `/proc/cpuinfo` | Same |

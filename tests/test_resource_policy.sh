@@ -160,8 +160,8 @@ for expected in \
   'Host memory:        60.0 GiB' \
   'Host CPUs:          32' \
   'Host role:          desktop (graphical.target active)' \
-  'MemoryMax:          52.8 GiB = 60.0 GiB RAM - 7.2 GiB reserve (6 GiB desktop default + 2% of RAM)' \
-  'MemoryHigh:         47.5 GiB = 52.8 GiB MemoryMax - 5.3 GiB (min(10% of MemoryMax, 8 GiB))' \
+  'MemoryMax:          50.8 GiB = 60.0 GiB RAM - 9.2 GiB reserve (8 GiB desktop default + 2% of RAM)' \
+  'MemoryHigh:         45.7 GiB = 50.8 GiB MemoryMax - 5.1 GiB (min(10% of MemoryMax, 8 GiB))' \
   'MemorySwapMax:      4.0 GiB = min(25% of 16.0 GiB swap, 8 GiB)' \
   'CPUWeight:          50 (default: 50 (system and desktop keep 100))' \
   'CPUQuota:           3000% = (32 cores - 2 reserved) x 100% (formula: clamp(ceil(32 x 0.05), 2, 4))' \
@@ -205,22 +205,22 @@ check_formula_case() {
   verify_slice_matches_verifier "$slice" $((mem_gib * 1048576)) $((swap_gib * 1048576)) "$cores" "$desktop"
 }
 
-# 16 GiB desktop: reserve = 6 GiB + 2%(16 GiB) = 6627000 K; max = 10150216 K; high = 9135195 K; swap = 2 GiB; 16 cores -> 1400%
-check_formula_case desktop-16 16 8 16 1 10150216 9135195 2097152 1400 4096
-# 60 GiB desktop: reserve = 6 GiB + 2%(60 GiB) = 7549747 K; max = 55364813 K; high = 49828332 K; swap = 4 GiB; 32 cores -> 3000%
-check_formula_case desktop-60 60 16 32 1 55364813 49828332 4194304 3000 7680
-# 128 GiB desktop: reserve = 6 GiB + 2%(128 GiB) = 8975810 K; max = 125241918 K; high = max - 8 GiB = 116853310 K; swap capped at 8 GiB; 64 cores -> 6000%
-check_formula_case desktop-128 128 64 64 1 125241918 116853310 8388608 6000 16384
-# 512 GiB desktop: reserve = 6 GiB + 2%(512 GiB) = 17028874 K; max = 519842038 K; high = max - 8 GiB = 511453430 K; swap capped at 8 GiB; 128 cores -> 12400%
-check_formula_case desktop-512 512 64 128 1 519842038 511453430 8388608 12400 16384
+# 16 GiB desktop: reserve = 8 GiB + 2%(16 GiB) = 8724152 K; max = 8053064 K; high = 7247758 K; swap = 2 GiB; 16 cores -> 1400%
+check_formula_case desktop-16 16 8 16 1 8053064 7247758 2097152 1400 4096
+# 60 GiB desktop: reserve = 8 GiB + 2%(60 GiB) = 9646899 K; max = 53267661 K; high = 47940895 K; swap = 4 GiB; 32 cores -> 3000%
+check_formula_case desktop-60 60 16 32 1 53267661 47940895 4194304 3000 7680
+# 128 GiB desktop: reserve = 8 GiB + 2%(128 GiB) = 11072962 K; max = 123144766 K; high = max - 8 GiB = 114756158 K; swap capped at 8 GiB; 64 cores -> 6000%
+check_formula_case desktop-128 128 64 64 1 123144766 114756158 8388608 6000 16384
+# 512 GiB desktop: reserve = 8 GiB + 2%(512 GiB) = 19126026 K; max = 517744886 K; high = max - 8 GiB = 509356278 K; swap capped at 8 GiB; 128 cores -> 12400%
+check_formula_case desktop-512 512 64 128 1 517744886 509356278 8388608 12400 16384
 # 16 GiB headless: reserve = 2 GiB + 2%(16 GiB) = 2432696 K; max = 14344520 K; high = 12910068 K; swap = 2 GiB; 8 cores -> 600%
 check_formula_case headless-16 16 8 8 0 14344520 12910068 2097152 600 4096
 
-# Display manager active without graphical.target counts as desktop (6 GiB default).
+# Display manager active without graphical.target counts as desktop (8 GiB default).
 host=$(new_host dm-desktop 16 8 16)
 dm_preview=$(STUB_GRAPHICAL_TARGET=0 STUB_DISPLAY_MANAGER=gdm3.service policy "$host")
 grep -Fq 'Host role:          desktop (gdm3.service active)' <<<"$dm_preview" || fail 'display manager was not detected as desktop'
-grep -Fq '6 GiB desktop default + 2% of RAM' <<<"$dm_preview" || fail 'display manager did not use 6 GiB desktop default'
+grep -Fq '8 GiB desktop default + 2% of RAM' <<<"$dm_preview" || fail 'display manager did not use 8 GiB desktop default'
 
 # 3. --measure reads system + session + app slices (ignoring agent-work.slice), multiplies by 1.5, and shows both.
 host=$(new_host measure-large 60 8 16)
@@ -229,7 +229,7 @@ mkdir -p "$host/sys/fs/cgroup/system.slice" \
   "$host/sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/session.slice" \
   "$host/sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/app.slice" \
   "$host/sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/agent.slice/agent-work.slice"
-# 3 + 1 + 1 + 1 = 6 GiB outside agent-work.slice -> 1.5x = 9 GiB (> 6 GiB desktop default).
+# 3 + 1 + 1 + 1 = 6 GiB outside agent-work.slice -> 1.5x = 9 GiB (> 8 GiB desktop default).
 # Put 20 GiB in agent-work.slice to prove it is excluded.
 printf '%d\n' $((3 * 1024 * 1024 * 1024)) >"$host/sys/fs/cgroup/system.slice/memory.current"
 printf '%d\n' $((1 * 1024 * 1024 * 1024)) >"$host/sys/fs/cgroup/user.slice/user-1001.slice/session-1.scope/memory.current"
@@ -237,9 +237,9 @@ printf '%d\n' $((1 * 1024 * 1024 * 1024)) >"$host/sys/fs/cgroup/user.slice/user-
 printf '%d\n' $((1 * 1024 * 1024 * 1024)) >"$host/sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/app.slice/memory.current"
 printf '%d\n' $((20 * 1024 * 1024 * 1024)) >"$host/sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/agent.slice/agent-work.slice/memory.current"
 measured_preview=$(policy "$host" --measure --apply)
-grep -Fq 'Measured baseline:  6.0 GiB current x 1.5 = 9.0 GiB (role default: 6.0 GiB desktop)' <<<"$measured_preview" ||
+grep -Fq 'Measured baseline:  6.0 GiB current x 1.5 = 9.0 GiB (role default: 8.0 GiB desktop)' <<<"$measured_preview" ||
   fail "measured baseline line missing: $measured_preview"
-grep -Fq '9.0 GiB measured baseline (1.5x 6.0 GiB > 6 GiB desktop default) + 2% of RAM' <<<"$measured_preview" ||
+grep -Fq '9.0 GiB measured baseline (1.5x 6.0 GiB > 8 GiB desktop default) + 2% of RAM' <<<"$measured_preview" ||
   fail "measured derivation missing: $measured_preview"
 # 60 GiB - (9 GiB + 2% of 60 GiB) = 62914560 - (9437184 + 1258291) = 52219085 K
 grep -Fxq 'MemoryMax=52219085K' "$host/etc/systemd/user/agent-work.slice" || fail 'measured reserve not applied'
@@ -249,9 +249,9 @@ host=$(new_host measure-small 60 8 16)
 mkdir -p "$host/sys/fs/cgroup/system.slice"
 printf '%d\n' $((2 * 1024 * 1024 * 1024)) >"$host/sys/fs/cgroup/system.slice/memory.current"
 measured_small=$(policy "$host" --measure)
-grep -Fq 'Measured baseline:  2.0 GiB current x 1.5 = 3.0 GiB (role default: 6.0 GiB desktop)' <<<"$measured_small" ||
+grep -Fq 'Measured baseline:  2.0 GiB current x 1.5 = 3.0 GiB (role default: 8.0 GiB desktop)' <<<"$measured_small" ||
   fail 'small measured baseline line missing'
-grep -Fq '6 GiB desktop default (>= 3.0 GiB measured 1.5x of 2.0 GiB) + 2% of RAM' <<<"$measured_small" ||
+grep -Fq '8 GiB desktop default (>= 3.0 GiB measured 1.5x of 2.0 GiB) + 2% of RAM' <<<"$measured_small" ||
   fail 'role default did not win over smaller measured baseline'
 
 # 4. No swap gives MemorySwapMax=0K.

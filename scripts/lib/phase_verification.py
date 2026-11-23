@@ -387,7 +387,7 @@ def resource_values(profile, total, command=(), *, swap_total_kib=None, cpu_core
     if reserve_pct is not None:
         reserve_kib = total * reserve_pct // 100
     else:
-        role_default_kib = (6 if desktop else 2) * gib
+        role_default_kib = (8 if desktop else 2) * gib
         if options["--reserve-fixed-gib"] is not None:
             fixed_kib = int(options["--reserve-fixed-gib"] * gib + 0.5)
         elif options["--measure"]:

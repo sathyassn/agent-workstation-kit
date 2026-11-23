@@ -56,7 +56,7 @@ Start with `fleetctl init` or an example; do not invent a profile from memory.
 | `security.remote_scope` | `tailscale-only` | Direct remote access is limited to the tailnet. | Validator/live firewall and SSH audit |
 | `security.endpoint_management` | `ask`, `mdm`, `edr`, `mdm-and-edr`, `not-required` | Final mobile-device-management (MDM) and endpoint-detection-and-response (EDR) state; `ask` is draft-only. | Manual MDM/EDR evidence |
 | `resources.policy` | `measured-balanced` | Soft pressure plus emergency ceiling. | Live audit/load test |
-| `resources.reserve_fixed_gib` | optional positive number, for example `8` | Overrides the fixed part of the Linux memory reserve in GiB (default: 6 GiB desktop, 2 GiB headless, plus 2% of RAM). Passed as `--reserve-fixed-gib`. | Live policy/load test |
+| `resources.reserve_fixed_gib` | optional positive number, for example `8` | Overrides the fixed part of the Linux memory reserve in GiB (default: 8 GiB desktop, 2 GiB headless, plus 2% of RAM). Passed as `--reserve-fixed-gib`. | Live policy/load test |
 | `resources.reserve_cores` | optional integer `>= 0`, for example `2` | Overrides reserved CPU cores used for Linux `CPUQuota` (default: `clamp(ceil(cores * 0.05), 2, 4)`). Passed as `--reserve-cores`. | Live policy/load test |
 | `resources.cpu_weight` | optional integer from `1` to `10000` (default `50`) | Overrides `CPUWeight` on `agent-work.slice` (system and desktop keep 100). Passed as `--cpu-weight`. | Live policy/load test |
 | `resources.os_memory_reserve_percent` | optional integer from `5` to `50` | Explicit RAM-share reserve override that wins over the reserve-based formula. Passed as `--memory-reserve-percent`; cannot be combined with `reserve_fixed_gib`. | Live policy/load test |

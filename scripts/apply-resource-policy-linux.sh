@@ -19,7 +19,7 @@ the machine. Apply backs up every file it touches and writes a receipt;
 --revert restores exactly what the receipt lists.
 
 Reserve-based sizing is the default (read at run time):
-  Memory reserve = fixed part (6 GiB desktop, 2 GiB headless) + 2% of RAM
+  Memory reserve = fixed part (8 GiB desktop, 2 GiB headless) + 2% of RAM
   MemoryMax      = RAM - reserve (refused below 2 GiB)
   MemoryHigh     = MemoryMax - min(10% of MemoryMax, 8 GiB)
   MemorySwapMax  = min(25% of total swap, 8 GiB); 0 when there is no swap
@@ -308,7 +308,7 @@ else
 fi
 if [[ "$desktop_present" == true ]]; then
   role_label=desktop
-  role_default_gib=6
+  role_default_gib=8
 else
   role_label=headless
   role_default_gib=2
