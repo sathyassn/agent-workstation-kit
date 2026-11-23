@@ -33,7 +33,13 @@ PRESERVED_SECTIONS = (
     "backup",
     "maintenance",
 )
-RESERVE_KEYS = {"os_memory_reserve_gib", "os_memory_reserve_percent"}
+# Only the reviewed rename of the memory reserve (GiB to a share of RAM) may
+# change during migration; every other resources field, the reserve-based
+# sizing overrides included, must stay as the source profile set it.
+RESERVE_RENAME_KEYS = {
+    "os_memory_reserve_gib",
+    "os_memory_reserve_percent",
+}
 PRESERVED_MACHINE_FIELDS = (
     "hostname",
     "uuid",
@@ -69,7 +75,7 @@ def check_migration(old: dict[str, Any], new: dict[str, Any]) -> list[str]:
         left, right = old.get(section), new.get(section)
         if section == "resources" and isinstance(left, dict) and isinstance(right, dict):
             # The deprecated GiB reserve may be replaced by the RAM-share reserve.
-            left, right = ({key: value for key, value in table.items() if key not in RESERVE_KEYS} for table in (left, right))
+            left, right = ({key: value for key, value in table.items() if key not in RESERVE_RENAME_KEYS} for table in (left, right))
         same(section, left, right)
     for field in PRESERVED_MACHINE_FIELDS:
         same(
