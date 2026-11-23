@@ -1,0 +1,7 @@
+# Changes to CI, the public-safety scan and its rules need the owner's review.
+# Branch protection must require code-owner review for this to take effect.
+/.github/ @sathyassn
+/tests/check_public_release.py @sathyassn
+/tests/public_scan_rules.json @sathyassn
+/tests/public_scan_exceptions.json @sathyassn
+/tests/fixtures/public_scan/ @sathyassn

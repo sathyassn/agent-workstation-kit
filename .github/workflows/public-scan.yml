@@ -1,16 +1,22 @@
 # public-scan: the keyed public-safety scan, the only job that sees
 # PUBLIC_SCAN_HMAC_KEY.
 #
+# The key is an environment secret of the `public-scan` environment, whose
+# deployment branches are limited to the default branch, so no workflow on any
+# other branch can read it. This job is the only one that names the
+# environment.
+#
 # It runs on `pull_request_target`, so GitHub runs this file from the default
 # branch, never from the pull request: a pull request that edits or deletes
-# this workflow cannot change the job that judges it. The job checks out the
-# pull request's base commit and runs that commit's scanner, rules and
-# exceptions. It fetches the pull request head only as git data and scans the
+# this workflow cannot change the job that judges it. It runs only for pull
+# requests into the default branch, and checks out the default branch's commit
+# (`github.sha` for this event), never the pull request's base, which could be
+# another branch. That commit's scanner, rules and exceptions judge the head. It fetches the pull request head only as git data and scans the
 # head commit's tree from git objects (`--tree`); it never checks out, builds
 # or runs head code. The secret is passed to the scan step alone, so fork pull
 # requests get the same keyed scan safely, and a same-repository branch's code
 # never sees the key. A push to main scans the pushed commit with that commit's
-# own scanner, which review already accepted.
+# own scanner, which review already accepted. There is no manual trigger.
 #
 # The required check is the job below: "public-scan / keyed scan".
 name: public-scan
@@ -20,7 +26,6 @@ on:
     types: [opened, synchronize, reopened]
   push:
     branches: [main]
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -32,15 +37,20 @@ concurrency:
 jobs:
   keyed-scan:
     name: keyed scan
+    # Only for the default branch: a pull request into it, or a push to it.
+    if: >-
+      (github.event_name == 'pull_request_target' && github.event.pull_request.base.ref == github.event.repository.default_branch) ||
+      (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
+    environment: public-scan
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      # The trusted side: the pull request's base commit, otherwise the
-      # event's own commit. The scanner, rules and exceptions come from here.
+      # The trusted side: the default branch's commit for both events. The
+      # scanner, rules and exceptions come from here.
       - name: Check out the trusted commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 1
           persist-credentials: false
 

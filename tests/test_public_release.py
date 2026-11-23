@@ -651,8 +651,7 @@ class PublicReleaseTests(unittest.TestCase):
                 "docs/sample.md:4: matched keyed rule 'personal-name'",
                 "docs/sample.md:5: matched keyed rule 'private-network-name'",
                 "docs/sample.md:6: matched keyed rule 'private-network-name'",
-                "docs/"
-                + public_release.path_component_id(key, f"{person_single}-notes.md")
+                public_release.path_component_id(key, f"docs/{person_single}-notes.md")
                 + ":0: matched keyed rule 'personal-name'",
             }
             self.assertEqual(expected, set(findings))
@@ -911,6 +910,12 @@ class PublicReleaseTests(unittest.TestCase):
         # branch, so a pull request cannot edit the job that judges it.
         self.assertRegex(scan, r"(?m)^  pull_request_target:$")
         self.assertNotRegex(scan, r"(?m)^  pull_request:$")
+        self.assertNotIn("workflow_dispatch", scan)
+        # Only for the default branch, and only through the environment
+        # whose deployment branches are limited to it.
+        self.assertIn("github.event.pull_request.base.ref == github.event.repository.default_branch", scan)
+        self.assertIn("github.ref == format('refs/heads/{0}', github.event.repository.default_branch)", scan)
+        self.assertRegex(scan, r"(?m)^    environment: public-scan$")
         self.assertRegex(scan, r"(?m)^permissions:\n  contents: read$")
 
         step_blocks = re.split(r"(?m)^      - name: ", scan)[1:]
@@ -921,7 +926,8 @@ class PublicReleaseTests(unittest.TestCase):
         )
 
         checkout = steps["Check out the trusted commit"]
-        self.assertIn("github.event.pull_request.base.sha", checkout)
+        self.assertIn("ref: ${{ github.sha }}", checkout)
+        self.assertNotIn("base.sha", checkout)
         self.assertNotIn("head.sha", checkout)
         self.assertIn("persist-credentials: false", checkout)
 
@@ -944,7 +950,15 @@ class PublicReleaseTests(unittest.TestCase):
         for other in workflows.glob("*.yml"):
             if other.name != "public-scan.yml":
                 with self.subTest(workflow=other.name):
-                    self.assertNotIn("PUBLIC_SCAN_HMAC_KEY", other.read_text(encoding="utf-8"))
+                    text = other.read_text(encoding="utf-8")
+                    self.assertNotIn("PUBLIC_SCAN_HMAC_KEY", text)
+                    self.assertNotRegex(text, r"environment:\s*(name:\s*)?public-scan")
+
+        # CI and the scan's own files need the owner's review.
+        owners = (ROOT / ".github/CODEOWNERS").read_text(encoding="utf-8")
+        for pattern in ("/.github/", "/tests/check_public_release.py", "/tests/public_scan_rules.json",
+                        "/tests/public_scan_exceptions.json", "/tests/fixtures/public_scan/"):
+            self.assertRegex(owners, r"(?m)^" + re.escape(pattern) + r" @\S+$")
 
         # The pull_request CI job runs head code, so it scans synthetically.
         ci = (workflows / "ci.yml").read_text(encoding="utf-8")

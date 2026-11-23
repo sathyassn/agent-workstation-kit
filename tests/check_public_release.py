@@ -89,6 +89,9 @@ KEY_BYTES = 32
 KEY_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 MAX_KEY_FILE_BYTES = 4096
 MAX_SCAN_FILE_BYTES = 20 * 1024 * 1024
+MAX_TREE_ENTRIES = 100_000
+MAX_TREE_BYTES = 512 * 1024 * 1024
+CANDIDATE_CACHE_LIMIT = 500_000
 RULES_SCHEMA_VERSION = 1
 RULES_ALGORITHM = "hmac-sha256"
 HMAC_DOMAIN_PREFIX = "wskit-public-scan:v1"
@@ -231,6 +234,7 @@ class SourceFile:
     content: bytes | None
     symlink: bool = False
     problem: str | None = None
+    object_id: str | None = None
 
 
 # --- normalisation and candidates -------------------------------------------
@@ -253,8 +257,8 @@ def normalize_text(text: str) -> str:
     """Canonicalise text before tokenising, keeping case for camelCase splits.
 
     JSON unicode escapes are decoded, then NFKC folds compatibility forms (a
-    fullwidth dot becomes "."), format and zero-width characters are removed,
-    Latin lookalikes are folded and apostrophes are dropped, so "O'Brien" and
+    fullwidth dot becomes "."), format and zero-width characters and combining
+    marks are removed (so accents fold: "José" matches "Jose"), Latin lookalikes are folded and apostrophes are dropped, so "O'Brien" and
     "OBrien" give the same token.
     """
     if text.isascii() and "\\u" not in text:
@@ -262,8 +266,11 @@ def normalize_text(text: str) -> str:
         return text.translate(_APOSTROPHE_TABLE)
     decoded = _decode_json_escapes(text)
     if not decoded.isascii():
-        decoded = unicodedata.normalize("NFKC", decoded)
-        decoded = "".join(ch for ch in decoded if unicodedata.category(ch) != "Cf").translate(CONFUSABLES)
+        # Decompose, drop format characters and combining marks (so an accent
+        # or a mark between octets cannot split a token), then recompose.
+        decoded = unicodedata.normalize("NFKD", decoded)
+        decoded = "".join(ch for ch in decoded if unicodedata.category(ch) not in ("Cf", "Mn"))
+        decoded = unicodedata.normalize("NFKC", decoded).translate(CONFUSABLES)
     return decoded.translate(_APOSTROPHE_TABLE)
 
 
@@ -330,6 +337,16 @@ def _extract_candidates(line: str) -> set[str]:
 
     _add(candidates, text)
     _add(candidates, PUNCTUATION_RE.sub(" ", text))
+    _add(candidates, PUNCTUATION_RE.sub("", text))
+    # Punctuation deleted inside each whitespace chunk, alone and in runs of
+    # two and three, so "ab!cd" gives "abcd".
+    chunks = [c for c in (PUNCTUATION_RE.sub("", chunk) for chunk in text.split()) if c]
+    for idx in range(len(chunks)):
+        _add(candidates, chunks[idx])
+        if idx + 1 < len(chunks):
+            _add(candidates, f"{chunks[idx]} {chunks[idx + 1]}")
+        if idx + 2 < len(chunks):
+            _add(candidates, f"{chunks[idx]} {chunks[idx + 1]} {chunks[idx + 2]}")
 
     for match in DOTTED_DECIMAL_RE.finditer(text):
         octets = canonical_octets(match.group(1))
@@ -836,7 +853,7 @@ def _git(root: Path, args: Sequence[str], *, stdin: bytes | None = None) -> byte
     return result.stdout
 
 
-def tree_sources(root: Path, revision: str) -> tuple[list[str], list[SourceFile]]:
+def tree_sources(root: Path, revision: str) -> tuple[list[str], Iterator[SourceFile]]:
     """Read every entry of a commit's tree as git objects, never as a checkout.
 
     The revision must be a full commit SHA, so the scan is bound to an exact
@@ -864,46 +881,66 @@ def tree_sources(root: Path, revision: str) -> tuple[list[str], list[SourceFile]
     if not entries:
         raise ScanConfigError("tracked file listing is empty")
 
-    blobs = [entry for entry in entries if entry[1] == "blob"]
-    contents: dict[str, bytes | None] = {}
-    if blobs:
-        sizes = _git(root, ["cat-file", "--batch-check"], stdin=b"".join(e[2].encode() + b"\n" for e in blobs))
-        wanted: list[str] = []
-        for line in sizes.splitlines():
-            parts = line.split(b" ")
-            if len(parts) != 3 or parts[1] != b"blob":
-                raise ScanConfigError("Git returned a malformed object listing")
-            sha = parts[0].decode("ascii")
-            if int(parts[2]) > MAX_SCAN_FILE_BYTES:
-                contents[sha] = None
-            else:
-                wanted.append(sha)
-        if wanted:
-            data = _git(root, ["cat-file", "--batch"], stdin=b"".join(s.encode() + b"\n" for s in wanted))
-            offset = 0
-            for sha in wanted:
-                header_end = data.index(b"\n", offset)
-                header = data[offset:header_end].split(b" ")
-                if len(header) != 3 or header[0].decode("ascii") != sha or header[1] != b"blob":
-                    raise ScanConfigError("Git returned a malformed object stream")
-                size = int(header[2])
-                start = header_end + 1
-                contents[sha] = data[start : start + size]
-                offset = start + size + 1
+    if len(entries) > MAX_TREE_ENTRIES:
+        raise ScanConfigError(f"tree has more than {MAX_TREE_ENTRIES} entries; refusing to scan")
 
-    paths: list[str] = []
-    sources: list[SourceFile] = []
+    # One size check per distinct object, so many paths sharing a blob cost
+    # one read; the total of distinct blob sizes is capped.
+    unique = sorted({sha for _, kind, sha, _ in entries if kind == "blob"})
+    sizes: dict[str, int] = {}
+    if unique:
+        listing = _git(root, ["cat-file", "--batch-check"], stdin="".join(f"{sha}\n" for sha in unique).encode("ascii"))
+        for line in listing.splitlines():
+            parts = line.split(b" ")
+            if len(parts) != 3 or parts[1] != b"blob" or not parts[2].isdigit():
+                raise ScanConfigError("Git returned a malformed object listing")
+            sizes[parts[0].decode("ascii")] = int(parts[2])
+        if set(sizes) != set(unique):
+            raise ScanConfigError("Git returned a malformed object listing")
+    readable = sum(size for size in sizes.values() if size <= MAX_SCAN_FILE_BYTES)
+    if readable > MAX_TREE_BYTES:
+        raise ScanConfigError(f"tree holds more than {MAX_TREE_BYTES} bytes of distinct content; refusing to scan")
+
+    paths = [path for _, _, _, path in entries]
+    return paths, _stream_tree(root, entries, sizes)
+
+
+def _stream_tree(root: Path, entries: list[tuple[str, str, str, str]], sizes: Mapping[str, int]) -> Iterator[SourceFile]:
+    """Yield entries grouped by object, reading one blob at a time."""
+    by_object: dict[str, list[tuple[str, str]]] = {}
     for mode, kind, sha, path in entries:
-        paths.append(path)
         if kind != "blob":
-            sources.append(SourceFile(path, None, problem="tracked entry is not a file (submodule or other object)"))
+            yield SourceFile(path, None, problem="tracked entry is not a file (submodule or other object)")
             continue
-        content = contents.get(sha)
-        if content is None:
-            sources.append(SourceFile(path, None, problem="tracked file is too large to scan"))
+        if sizes[sha] > MAX_SCAN_FILE_BYTES:
+            yield SourceFile(path, None, problem="tracked file is too large to scan")
             continue
-        sources.append(SourceFile(path, content, symlink=(mode == "120000")))
-    return paths, sources
+        by_object.setdefault(sha, []).append((mode, path))
+    if not by_object:
+        return
+    try:
+        process = subprocess.Popen(
+            ["git", "cat-file", "--batch"], cwd=root, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+        )
+    except OSError as exc:
+        raise ScanConfigError("Git could not be executed") from exc
+    assert process.stdin is not None and process.stdout is not None
+    try:
+        for sha, users in by_object.items():
+            process.stdin.write(f"{sha}\n".encode("ascii"))
+            process.stdin.flush()
+            header = process.stdout.readline().rstrip(b"\n").split(b" ")
+            if len(header) != 3 or header[0].decode("ascii", "replace") != sha or header[1] != b"blob" or int(header[2]) != sizes[sha]:
+                raise ScanConfigError("Git returned a malformed object stream")
+            content = process.stdout.read(sizes[sha])
+            if len(content) != sizes[sha] or process.stdout.read(1) != b"\n":
+                raise ScanConfigError("Git returned a truncated object stream")
+            for mode, path in users:
+                yield SourceFile(path, content, symlink=(mode == "120000"), object_id=sha)
+    finally:
+        process.stdin.close()
+        process.stdout.close()
+        process.wait()
 
 
 # --- decoding and scanning --------------------------------------------------
@@ -931,18 +968,35 @@ def decode_content(data: bytes) -> str:
     when a BOM or NUL-interleaved ASCII shows it. Anything else is not text.
     """
     try:
-        if data.startswith(codecs.BOM_UTF8):
-            return data[len(codecs.BOM_UTF8):].decode("utf-8")
         if data.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
-            return data.decode("utf-16")
-        codec = _looks_utf16(data)
-        if codec:
-            return data.decode(codec)
-        if b"\0" in data:
-            raise ScanConfigError("tracked file is binary, not text")
-        return data.decode("utf-8")
+            text = data.decode("utf-16")
+        else:
+            body = data[len(codecs.BOM_UTF8):] if data.startswith(codecs.BOM_UTF8) else data
+            codec = _looks_utf16(body)
+            text = body.decode(codec) if codec else body.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise ScanConfigError("tracked file is not valid UTF-8 or UTF-16 text") from exc
+    # Whatever the branch, the decoded text must not hide tokens behind NULs.
+    if "\0" in text:
+        raise ScanConfigError("tracked file is binary, not text")
+    return text
+
+
+def escape_for_display(text: str) -> str:
+    """Escape control, format and separator characters for one-line output."""
+    out = []
+    for ch in text:
+        if unicodedata.category(ch)[0] in ("C", "Z") and ch != " ":
+            code = ord(ch)
+            if code < 0x100:
+                out.append(f"\\x{code:02x}")
+            elif code < 0x10000:
+                out.append(f"\\u{code:04x}")
+            else:
+                out.append(f"\\U{code:08x}")
+        else:
+            out.append(ch)
+    return "".join(out)
 
 
 def path_component_id(key: bytes, component: str) -> str:
@@ -964,12 +1018,15 @@ class Scanner:
             if rule.digests
         )
         self.cache: dict[str, tuple[str, ...]] = {}
+        self.object_findings: dict[str, tuple[str | None, list[tuple[int, str]], list[tuple[int, str, str]]]] = {}
 
     def keyed_hits(self, candidates: Iterable[str]) -> set[str]:
         matched: set[str] = set()
         for candidate in candidates:
             cached = self.cache.get(candidate)
             if cached is None:
+                if len(self.cache) >= CANDIDATE_CACHE_LIMIT:
+                    self.cache.clear()
                 encoded = candidate.encode("utf-8")
                 cached = tuple(
                     rule_id
@@ -980,18 +1037,21 @@ class Scanner:
             matched.update(cached)
         return matched
 
-    def _component_flagged(self, component: str) -> bool:
-        if self.keyed_hits(extract_candidates(component)):
+    def path_flagged(self, relative: str) -> bool:
+        if self.keyed_hits(extract_candidates(relative)):
             return True
-        return bool(private_ipv4_hits(component))
+        return bool(private_ipv4_hits(relative))
 
     def display_path(self, relative: str) -> str:
-        """Return the path with each matching component replaced by an opaque id."""
-        parts = relative.split("/")
-        return "/".join(
-            path_component_id(self.key, part) if self._component_flagged(part) else part
-            for part in parts
-        )
+        """Return a printable path: an opaque id when anything in it matches.
+
+        A value can span components (a folder and a file name), so a match
+        anywhere hides the whole path. Other paths are printed with control
+        and format characters escaped, so a name cannot forge a log line.
+        """
+        if self.path_flagged(relative):
+            return path_component_id(self.key, relative)
+        return escape_for_display(relative)
 
     def scan_lines(self, text: str) -> list[tuple[int, str]]:
         """Return (line number, label) findings for text, without any value."""
@@ -1023,6 +1083,13 @@ class Scanner:
         if relative == DEFAULT_EXCEPTIONS_PATH.as_posix():
             return frozenset().union(*self.exceptions.private_ipv4.values())
         return self.exceptions.private_ipv4.get(relative, frozenset())
+
+    def private_ipv4_values(self, text: str) -> list[tuple[int, str, str]]:
+        found: list[tuple[int, str, str]] = []
+        for number, line in enumerate(text.replace("\r\n", "\n").replace("\r", "\n").split("\n"), start=1):
+            for label, value in private_ipv4_hits(line):
+                found.append((number, label, value))
+        return found
 
     def scan_private_ipv4(self, relative: str, text: str) -> list[tuple[int, str]]:
         allowed = self.allowed_private(relative)
@@ -1056,13 +1123,27 @@ class Scanner:
                 failures.append(f"binary exception content changed; review and update its sha256: {shown}")
             return failures
 
-        try:
-            text = decode_content(source.content)
-        except ScanConfigError as exc:
-            failures.append(f"{exc}: {shown}")
+        cached = self.object_findings.get(source.object_id) if source.object_id else None
+        if cached is None:
+            try:
+                text = decode_content(source.content)
+            except ScanConfigError as exc:
+                cached = (str(exc), [], [])
+            else:
+                cached = (None, self.scan_lines(text), self.private_ipv4_values(text))
+            if source.object_id:
+                self.object_findings[source.object_id] = cached
+        error, line_findings, address_hits = cached
+        if error is not None:
+            failures.append(f"{error}: {shown}")
             return failures
 
-        findings = self.scan_lines(text) + self.scan_private_ipv4(source.path, text)
+        allowed_values = self.allowed_private(source.path)
+        findings = line_findings + [
+            (number, f"private IPv4 address or prefix in {label}")
+            for number, label, value in address_hits
+            if value not in allowed_values
+        ]
         for number, label in sorted(findings):
             failures.append(f"{shown}:{number}: {label}")
         return failures
@@ -1370,7 +1451,7 @@ def _run(args: argparse.Namespace) -> int:
         # Scan a commit's tree as git objects with this checkout's scanner,
         # rules and exceptions; repository metadata checks do not apply.
         tree_paths: list[str] | None = None
-        sources: list[SourceFile] = []
+        sources: Iterable[SourceFile] = []
         try:
             tree_paths, sources = tree_sources(root, args.tree)
         except ScanConfigError as exc:
@@ -1388,7 +1469,10 @@ def _run(args: argparse.Namespace) -> int:
         if key_material is not None:
             rules = _select_rules(root, key_material, args.rules_file, failures)
             if rules is not None and tree_paths:
-                failures.extend(scan_sources(sources, rules=rules, key=key_material.key, exceptions=exceptions))
+                try:
+                    failures.extend(scan_sources(sources, rules=rules, key=key_material.key, exceptions=exceptions))
+                except ScanConfigError as exc:
+                    failures.append(f"tree read failed: {exc}")
         mode = "public synthetic scan" if key_material is not None and key_material.synthetic else "keyed scan"
         return _report(failures, key_material, f"Public-safety scan of the tree passed ({mode}).")
 

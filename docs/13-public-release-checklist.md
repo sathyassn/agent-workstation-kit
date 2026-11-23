@@ -89,25 +89,45 @@ path, for two things:
   only lowercase 64-character hex digests, never a name.
 - **Private IPv4 addresses**: 10/8, 172.16/12, 192.168/16, the 100.64/10
   CGNAT range and 169.254/16 link-local, found by a built-in detector that
-  needs no key. A full address in a range is flagged, and so is a prefix that
-  pins one, such as a bare `192.168` or `10.20.` with a trailing dot.
+  needs no key.
 
-Before matching, text is normalised: JSON `\u` escapes are decoded, NFKC folds
-fullwidth and compatibility forms, format and zero-width characters are
-removed, Latin lookalikes from Cyrillic and Greek are folded, apostrophes are
-dropped, and zero-padded octets are read as decimal. A name split across two
+Address policy, accepted with its trade-offs:
+
+| Form | Flagged | Why |
+|---|---|---|
+| Four groups inside a range | Always | An address. A four-part version number that falls in a range is flagged too; give it a reviewed exception. |
+| Three groups inside 172.16/12, 192.168/16, 100.64/10 or 169.254/16 | Always | These prefixes rarely mean anything else. |
+| Three groups inside 10/8 | Only with a trailing dot, `/` CIDR or `.x`/`.*` | A bare `10.15.7` is how version numbers look. |
+| Two groups for 172.16/12, 192.168/16, 169.254/16 | Always | Distinctive prefixes. |
+| Two groups for 10/8 or 100.64/10 | Only with a continuation as above | A bare `10.5` or `100.75` is usually a number. |
+| A prefix whose continuation starts the next line | On the first line, when it ends with the dot | The trailing dot is the continuation. |
+
+Octets are read as decimal, so zero-padding is folded. A letter glued to
+either end of an address does not hide it. More than four groups, or an octet
+above 255, is not an address.
+
+Before matching, text is normalised: JSON `\u` escapes are decoded,
+compatibility forms are folded (NFKD, then NFKC), format and zero-width
+characters and combining marks are removed (so accents fold), Latin
+lookalikes from Cyrillic and Greek are folded, and apostrophes are dropped.
+Punctuation inside a word is also tried deleted, so `ab!cd` is read as `abcd`. A name split across two
 lines, with or without a hyphen, is still found. Files must be UTF-8 or UTF-16
 text; anything else fails unless it is a reviewed binary exception.
 
-Findings never print a matched value. A matching path component is shown as
-`<redacted-ID>`, where the ID is keyed, so only the key holder can link it to
-a name. Errors never echo input text.
+Findings never print a matched value. When anything in a path matches,
+including a value split across a folder and a file name, the whole path is
+shown as `<redacted-ID>`, where the ID is keyed, so only the key holder can
+link it to a name. Other paths are printed with control characters escaped,
+so a file name cannot forge a log line. Errors never echo input text.
+
+The scan reads each distinct object once, however many paths share it, and
+fails closed above 100,000 tree entries or 512 MiB of distinct content.
 
 Where the scan runs:
 
 | Run | Key | Rules and scanner |
 |---|---|---|
-| `public-scan / keyed scan` (`.github/workflows/public-scan.yml`), on every pull request and every push to `main` | `PUBLIC_SCAN_HMAC_KEY`, passed only to the scan step | From the pull request's **base** commit. The head is fetched as git data and scanned with `--tree`; its code never runs. |
+| `public-scan / keyed scan` (`.github/workflows/public-scan.yml`), on every pull request into `main` and every push to `main` | `PUBLIC_SCAN_HMAC_KEY`, an environment secret of the `public-scan` environment, passed only to the scan step | From `main`'s current commit. The head is fetched as git data and scanned with `--tree`; its code never runs. |
 | `CI / repository-validation`, `make ci-check`, `make public-check` | None: the public synthetic key | From the checkout. This job runs pull request code, so it never receives the key. |
 | A local run without a key | None: falls back to synthetic, printing `WARNING: keyed private-name rules not checked locally; CI runs them.` | From the checkout. |
 
@@ -141,10 +161,14 @@ Owner setup:
    group or other permission bits. The check covers the mode bits only, not
    ACLs; do not grant ACL access to the file.
 
-2. Set the GitHub Actions repository secret `PUBLIC_SCAN_HMAC_KEY` to the exact
-   contents of `.secrets/public-scan-hmac` (in GitHub under **Settings ->
-   Secrets and variables -> Actions -> Repository secrets**, or with
-   `gh secret set PUBLIC_SCAN_HMAC_KEY < .secrets/public-scan-hmac`).
+2. Create the GitHub Actions environment `public-scan` with its deployment
+   branches limited to `main`, and set the environment secret
+   `PUBLIC_SCAN_HMAC_KEY` there to the exact contents of
+   `.secrets/public-scan-hmac` (**Settings -> Environments**, or
+   `gh secret set PUBLIC_SCAN_HMAC_KEY --env public-scan < .secrets/public-scan-hmac`).
+   Do not create a repository-level secret of that name: a repository secret
+   is readable by any workflow a branch adds, while an environment secret
+   limited to `main` is not. Delete any repository-level copy.
 
 3. Compute digests for private names from stdin, without putting private
    values in command arguments or shell history:
@@ -161,12 +185,19 @@ Owner setup:
    `tests/public_scan_rules.json`.
 
 4. Make `public-scan / keyed scan` a required status check on `main`, next to
-   the existing required checks.
+   the existing required checks, and require code-owner review so the
+   `.github/CODEOWNERS` rules apply to CI and to the scan's own files.
 
-- [ ] `PUBLIC_SCAN_HMAC_KEY` is configured as a GitHub Actions repository secret.
+Residual risk: a required check is matched by name, and a workflow in a pull
+request could report a job of the same name. The code-owner rule on
+`.github/` means any such workflow needs the owner's review, and the real
+keyed job runs as a visible deployment to the `public-scan` environment on the
+pull request.
+
+- [ ] `PUBLIC_SCAN_HMAC_KEY` is a secret of the `public-scan` environment, limited to `main`, and no repository-level copy exists.
 - [ ] Every rule in `tests/public_scan_rules.json` holds HMAC-SHA256 digests,
       and keyed `make public-check` passes.
-- [ ] `public-scan / keyed scan` is a required status check on `main`.
+- [ ] `public-scan / keyed scan` is a required status check on `main`, and code-owner review is required.
 
 ## Private fleet repositories
 

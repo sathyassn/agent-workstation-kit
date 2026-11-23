@@ -188,7 +188,8 @@ class DecodingTests(unittest.TestCase):
 
     def test_binary_fails_unless_its_exact_content_is_excepted(self) -> None:
         content = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR" + bytes(range(256))
-        self.assertEqual(["tracked file is binary, not text: docs/logo.png"], scan_bytes(content, "docs/logo.png"))
+        self.assertEqual(["tracked file is not valid UTF-8 or UTF-16 text: docs/logo.png"], scan_bytes(content, "docs/logo.png"))
+        self.assertEqual(["tracked file is binary, not text: docs/blob.bin"], scan_bytes(b"ab\x00\x00\x00cd", "docs/blob.bin"))
         exceptions = scan.Exceptions(binary={"docs/logo.png": hashlib.sha256(content).hexdigest()}, private_ipv4={})
         self.assertEqual([], scan_bytes(content, "docs/logo.png", exceptions))
         changed = scan_bytes(content + b"\x00", "docs/logo.png", exceptions)
@@ -273,7 +274,8 @@ class DiagnosticLeakTests(unittest.TestCase):
     def test_path_findings_show_an_opaque_id(self) -> None:
         findings = scan_line("clean\n", path=f"people/{PERSON}/notes\x07.md")
         self.assertEqual(1, len(findings))
-        self.assertIn("people/<redacted-", findings[0])
+        self.assertTrue(findings[0].startswith("<redacted-"), findings)
+        self.assertNotIn("people", findings[0])
         self.assertNoValue("\n".join(findings))
         address_path = scan_line("clean\n", path="hosts/" + ip("10", "1", "2", "3") + ".txt")
         self.assertTrue(address_path and all(ip("10", "1", "2", "3") not in f for f in address_path))
@@ -357,6 +359,91 @@ class KeyAndListingTests(unittest.TestCase):
             tracked, error = scan.tracked_files(Path("."))
         self.assertEqual(["a\rb.txt", "c.txt"], tracked)
         self.assertIsNone(error)
+
+
+
+class SecondReviewTests(unittest.TestCase):
+    """Regression tests for the second security review of PR #24."""
+
+    def test_utf8_bom_cannot_hide_nul_interleaved_text(self) -> None:
+        hidden = b"\xef\xbb\xbf" + ("owner " + PERSON + "\n").encode("utf-16-le")
+        self.assertEqual(["docs/sample.txt:1: matched keyed rule 'personal-name'"], scan_bytes(hidden))
+        self.assertEqual(["tracked file is binary, not text: docs/sample.txt"], scan_bytes(b"\xef\xbb\xbfab\x00\x00\x00cd"))
+
+    def test_a_value_spanning_path_components_hides_the_whole_path(self) -> None:
+        path = "people/" + FULL_NAME.replace(" ", "/") + ".md"
+        findings = scan_line("clean\n", path=path)
+        self.assertEqual(1, len(findings), findings)
+        self.assertTrue(findings[0].startswith("<redacted-"), findings)
+        for part in path.split("/"):
+            self.assertNotIn(part, findings[0])
+
+    def test_unmatched_paths_cannot_forge_log_lines(self) -> None:
+        findings = scan_bytes(b"\xff", "docs/evil\nFAKE: all checks passed\r\x1b[2K.md")
+        self.assertEqual(1, len(findings))
+        self.assertNotIn("\n", findings[0])
+        self.assertNotIn("\r", findings[0])
+        self.assertNotIn("\x1b", findings[0])
+        self.assertIn("docs/evil\\x0aFAKE", findings[0])
+
+    def test_punctuation_inside_a_name_is_deleted(self) -> None:
+        for text in ("owner alpha!person73", "owner al.pha_person73", "by alpha!person be?ta today"):
+            with self.subTest(text=text):
+                self.assertTrue(any("matched keyed rule" in f for f in scan_line(text)), text)
+
+    def test_combining_marks_are_removed(self) -> None:
+        self.assertTrue(scan_line("owner a\u0301lphaperson73"))
+        self.assertTrue(scan_line("owner alpha\u0308person73"))
+        self.assertEqual("10/8", scan.private_ipv4_hits("host 10\u0301." + ip("1", "2", "3"))[0][0])
+
+    def test_documented_address_policy_edges(self) -> None:
+        # A bare three-group 10.x run is not flagged: it is how versions look.
+        self.assertEqual([], scan.private_ipv4_hits("macOS " + ip("10", "15", "7")))
+        # A four-part value inside a private range is flagged, version or not;
+        # a real version that collides needs a reviewed exception.
+        self.assertTrue(scan.private_ipv4_hits("tool " + ip("10", "2", "3", "4")))
+        # A prefix with its continuation at the end of a line is flagged there.
+        findings = scan_line("net " + ip("10", "20") + ".\n" + ip("30", "40") + " end")
+        self.assertIn("docs/sample.txt:1: private IPv4 address or prefix in 10/8", findings)
+
+    def test_shared_blobs_are_read_and_scanned_once(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            git(root, "init", "-q", "-b", "main")
+            for index in range(40):
+                (root / f"copy{index}.txt").write_text("owner " + PERSON + "\n", encoding="utf-8")
+            git(root, "add", "-A")
+            git(root, "commit", "-q", "-m", "copies")
+            head = git(root, "rev-parse", "HEAD")
+            paths, sources = scan.tree_sources(root, head)
+            scanner = scan.Scanner(rules=rules(), key=KEY)
+            findings = [f for source in sources for f in scanner.scan_source(source)]
+            self.assertEqual(40, len(paths))
+            self.assertEqual(40, len(findings))
+            self.assertEqual(1, len(scanner.object_findings))
+
+    def test_tree_caps_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            git(root, "init", "-q", "-b", "main")
+            for index in range(4):
+                (root / f"f{index}.txt").write_text(f"distinct {index}\n", encoding="utf-8")
+            git(root, "add", "-A")
+            git(root, "commit", "-q", "-m", "four")
+            head = git(root, "rev-parse", "HEAD")
+            with mock.patch.object(scan, "MAX_TREE_ENTRIES", 3):
+                with self.assertRaisesRegex(scan.ScanConfigError, "more than 3 entries"):
+                    scan.tree_sources(root, head)
+            with mock.patch.object(scan, "MAX_TREE_BYTES", 10):
+                with self.assertRaisesRegex(scan.ScanConfigError, "more than 10 bytes"):
+                    scan.tree_sources(root, head)
+
+    def test_candidate_cache_is_bounded(self) -> None:
+        scanner = scan.Scanner(rules=rules(), key=KEY)
+        with mock.patch.object(scan, "CANDIDATE_CACHE_LIMIT", 50):
+            for index in range(20):
+                scanner.keyed_hits(scan.extract_candidates(f"line {index} with words {index * 7} more {index * 13}"))
+                self.assertLessEqual(len(scanner.cache), 50)
 
 
 if __name__ == "__main__":
