@@ -85,6 +85,16 @@ practice, relayed by the supervisor and approved as a process change.
 - Core and safety PRs (engine, planner, schema, root units, CI authority,
   the public-safety scan) get a cross-lineage adversarial review and stress
   evidence before merge.
+- Adopting CodeFlow in a repository: before the first adoption PR opens,
+  validate `.codeflow/policy.json` against the pinned CodeFlow schema,
+  including the keys the security-review job needs (`git.security_review`
+  and `git.dep_audit`). The PR that first adds CodeFlow fails "codeflow
+  gates" by design, because `main` has no `project.toml` yet, and the PR
+  body says so.
+- When strict up-to-date checks leave a PR behind its base after another
+  merge, merge `main` into it; never force push. Where a replacement branch
+  is used instead, verify it with `git range-diff` or an identical tree
+  hash. Wait for the checks, then merge with `--match-head-commit`.
 
 ## CI authority and scaffold updates
 

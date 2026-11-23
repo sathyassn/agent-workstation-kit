@@ -690,11 +690,12 @@ previous stable point, or to the baseline taken before the first change.
   automatically, shown in `plan` with their reason; each is configurable or
   can be opted out.
 - **Resources,** proven on the pilot: the agent-work memory and CPU ceiling
-  as shares of RAM with early OOM handling (systemd-oomd; launchd and
-  taskpolicy on macOS); swap and zram sized as a share of RAM; `/tmp` kept
+  sized from a reserve (section 7a) with early OOM handling (systemd-oomd;
+  launchd and taskpolicy on macOS); agent-work swap sized from the swap
+  device; `/tmp` kept
   disk-backed or caches redirected off tmpfs; disk free-space floors with
-  cleanup guidance; the resource runner and sweep wired into the agent
-  settings bundle.
+  cleanup guidance; the resource runner wired into the agent settings
+  bundle.
 - **macOS:** development volumes detected and confirmed; Spotlight and the
   FSEvents on-disk log off for them; Time Machine excluded where a
   destination exists (section 7b).
@@ -1358,10 +1359,31 @@ suite grew to about a third of RAM, several sessions ran full gates in
 parallel, swap filled, and every agent session and the desktop stalled for
 hours, while a guard that watched load and available memory stayed green.
 
-- **A reserve, set at setup.** A share of memory and CPU is kept for the OS,
-  the desktop and other users, larger while a desktop session is active.
+- **A reserve, set at setup.** Memory and CPU are kept for the OS, the
+  desktop and other users. Agent work gets the rest of the machine.
+- **One sizing rule (from the pilot hosts, 2026-11-23).** Every value
+  derives from the reserve:
+  - memory reserve = a fixed part + 2% of RAM;
+  - `MemoryMax` = RAM - reserve;
+  - `MemoryHigh` = `MemoryMax` - min(10% of `MemoryMax`, 8 GiB);
+  - agent-work swap (`MemorySwapMax`) = min(25% of the swap device,
+    8 GiB), from the swap device, never from RAM;
+  - CPU: a lower `CPUWeight` for agent work, reserved cores =
+    clamp(ceil(cores x 5%), 2, 4), and the agent slice's `CPUQuota` =
+    (cores - reserved) x 100%;
+  - PSI thresholds (`systemd-oomd` and admission) stay percentages;
+  - an explicit GB or core count overrides a value, and `plan` labels it
+    as an override next to each derivation.
+- **Measuring the fixed part.** The fixed part starts at the role default
+  (2 GiB headless, 8 GiB with a desktop). Until a real p95 baseline
+  exists, measurement is informational, as TSK-034 ships it in the frozen
+  script. Once the doctor has measured the non-agent p95 over time
+  (`system.slice`, the desktop session and the agent manager's own app),
+  the fixed part becomes that p95 x 1.5, and the doctor reports a
+  mismatch between the reserve and that need. EPC-010 ports the TSK-034
+  formula to the Go unit.
 - **One ceiling for all agent work, never on a person's desktop.** On Linux,
-  the ceiling (`MemoryHigh` and `MemoryMax` as shares of RAM) goes on a
+  the ceiling (`MemoryHigh` and `MemoryMax`, sized above) goes on a
   dedicated agent-work slice, per the topology table in section 2g: under
   the agent account's user manager with a separate account, or a separate
   agent-work slice for the processes the agent manager starts with a single
@@ -1378,27 +1400,16 @@ hours, while a guard that watched load and available memory stayed green.
 - **Admission by pressure.** Admission reads
   pressure-stall data on Linux (PSI) and the memory-pressure level on macOS.
   Swap use blocks only together with pressure, because cold pages in swap
-  are harmless.
+  are harmless. On macOS, at the warn level the runner stops admitting
+  heavy jobs, and at the critical level it stops the newest heavy job.
 - **`/tmp` policy.** Recent Ubuntu mounts `/tmp` as tmpfs, so agent scratch
   and package caches placed there use memory. The stage sets the policy: a
   disk-backed `/tmp`, or caches pointed at disk. The doctor reports tmpfs
   use.
-- **Budgets are relative.** Every limit is a share of the machine, read at
-  run time. Config and docs hold no fixed GB or load numbers. The schema
-  generates resource fields as shares, and `wskit migrate-profile` converts
-  existing absolute values to shares of the host they were written for,
-  with a preview.
-- **The session side** (a runner that caps each heavy job, and a scheduled
-  sweep) belongs to the agent tooling, not the kit. The kit installs the
-  machine-wide part and checks for it.
-- **Reserve-based sizing (amendment from the pilot hosts, 2026-11-23).**
-  Memory, agent-work swap and CPU are sized from a reserve, not from plain
-  shares of RAM: the reserve is a fixed part plus about 2% of RAM, and
-  agent work gets the rest. This replaces "Budgets are relative" for those
-  values; PSI thresholds stay percentages. TSK-034 implemented the Linux
-  formula in the frozen script, and EPC-010 ports it to the Go unit, with
-  the doctor measuring the non-agent baseline and `plan` showing each
-  derivation.
+- **The session side** (a runner that caps each heavy job, and upkeep run
+  at triggers such as setup, clone and doctor, never on a timer) belongs to
+  the agent tooling, not the kit. The kit installs the machine-wide part
+  and checks for it.
 
 ### 7b. Indexing on macOS development volumes
 
@@ -1406,33 +1417,32 @@ A macOS unit, `indexing`, on by default for `developer` and `agent-host`
 at every tier. Heavy file churn on development volumes makes `fseventsd`
 and Spotlight use CPU and memory for days.
 
-- Development volumes (separate volumes under `/Volumes` holding
-  repositories, worktrees or `node_modules`) are detected and confirmed in
-  the interview. The system volume is never accepted; folders on it are
-  left to System Settings.
-- Apply turns Spotlight indexing off, removes the volume's index store,
-  writes `.fseventsd/no_log` (live file watching keeps working), adds a
-  Time Machine exclusion when a destination exists, and restarts
-  `fseventsd` once. A keep-Spotlight option turns off only the FSEvents
-  on-disk log.
-- The previous state is recorded and revert restores it exactly. The
-  removed index store is in the cannot-undo list: macOS rebuilds it.
-- **Indexing decision (amendment from the macOS test hosts, 2026-11-23).**
-  - The default target is a dedicated APFS development volume in the same
-    container, created on approval or adopted. Per-volume settings apply
-    only there.
-  - Volumes holding File Provider data (`.CloudStorage` or a registered
-    File Provider domain) are refused for volume-level settings, and the
-    preview lists every cloud sync root found.
-  - Without a dedicated volume, nothing changes at volume level. The unit
-    hands over a System Settings step listing the development folders for
-    the Spotlight privacy list, and uses `.noindex` only for kit-owned
-    caches and build output.
-  - FSEvents history cannot be turned off per folder; this limit is
-    recorded.
-  - Revert restores the state before the first apply; a re-apply never
-    overwrites the first receipt.
-  - EPC-033 holds the criteria.
+- The default target is a dedicated APFS development volume in the same
+  container, created on approval or adopted. The system volume is never
+  accepted.
+- Before any volume-level change, the unit checks the volume for File
+  Provider data (a `.CloudStorage` folder or a registered File Provider
+  domain). A volume that holds it is refused, and the preview lists every
+  cloud sync root found.
+- Volume-level settings apply only on the dedicated development volume,
+  and only after that check passes: Spotlight indexing off, the volume's
+  index store removed, `.fseventsd/no_log` written (live file watching
+  keeps working), a Time Machine exclusion when a destination exists, and
+  one `fseventsd` restart. A keep-Spotlight option turns off only the
+  FSEvents on-disk log.
+- Without a dedicated volume, nothing changes at volume level. The unit
+  hands over a System Settings step listing the development folders for
+  the Spotlight privacy list, and uses `.noindex` only for kit-owned caches
+  and build output.
+- FSEvents history cannot be turned off per folder; this limit is recorded.
+- Revert restores the state before the first apply. The first receipt is
+  kept, and a re-apply never overwrites it. The removed index store is in
+  the cannot-undo list: macOS rebuilds it.
+- On Linux, the same unit checks GNOME localsearch (tracker3), reports it,
+  and adds ignore-list entries for development roots that lack `.git`
+  markers.
+- EPC-033 holds the criteria (decision from the macOS test hosts,
+  2026-11-23).
 
 ### 8. One schema (T1), interview and capabilities (T5)
 
@@ -1508,12 +1518,12 @@ builds `registry/capabilities.toml` from it.
 
 | Capability | Linux | macOS | Gap | Mitigation |
 |---|---|---|---|---|
-| Memory ceiling | cgroup slice and `systemd-oomd` | no per-group cap | macOS cannot cap a group's memory or swap | background or utility QoS, and the runner watches the memory-pressure level |
+| Memory ceiling | cgroup slice and `systemd-oomd` | no per-group cap | macOS cannot cap a group's memory or swap | background or utility QoS; the runner reads the memory-pressure level, stops admitting heavy jobs at warn, and stops the newest heavy job at critical (EPC-010) |
 | Reserve sizing | same formula; baseline from cgroups | same formula; baseline from process footprints | macOS baseline without root is approximate | `footprint` in the root audit step; `ps` RSS for the user-level estimate, labelled approximate |
 | CPU | `CPUWeight` and reserved cores through `CPUQuota` | QoS and `nice` | no CPU quota on macOS | runner concurrency limit |
 | `/tmp` | policy applied (tmpfs on recent Ubuntu) | on disk | none | macOS: report only |
-| File indexing | GNOME localsearch (tracker3) checked and reported; development roots are ignored only when they lack `.git` | Spotlight and FSEvents | FSEvents history cannot be turned off per folder | dedicated APFS development volume; otherwise a System Settings hand-over and `.noindex` for kit-owned caches (section 7b) |
-| Agent sandboxes | Claude Code uses bubblewrap and leaves placeholders; agy Auto needs the AppArmor user-namespace profile | Claude Code uses Seatbelt with no placeholders; agy Auto works as installed | Linux placeholders and AppArmor restriction | doctor detects placeholders, removal on demand (EPC-009); AppArmor profile in the agy entry (EPC-011) |
+| File indexing | GNOME localsearch (tracker3) checked and reported; development roots that lack `.git` markers get ignore-list entries (EPC-033 AC-7) | Spotlight and FSEvents | FSEvents history cannot be turned off per folder | dedicated APFS development volume; otherwise a System Settings hand-over and `.noindex` for kit-owned caches (section 7b) |
+| Agent sandboxes | Claude Code uses bubblewrap and leaves placeholders; agy Auto needs the AppArmor user-namespace profile | Claude Code uses Seatbelt with no placeholders; agy Auto works as installed | Linux placeholders and AppArmor restriction | the doctor reports only 0-byte read-only files at the exact placeholder names; removal on demand at a person's trigger, never automatic or scheduled, and only when no sandboxed process uses the folder (EPC-009 AC-8); AppArmor profile in the agy entry (EPC-011) |
 | Secrets | `secret-tool` and gnome-keyring | Keychain | agy over SSH uses a file store on both | sign in from the context the agents use; the doctor checks auth there |
 | Codex trust, agent modes, MCP | same per config home; agent-manager homes under `~/.config/orca` | same per config home; agent-manager homes under `~/Library/Application Support/orca` | none | none |
 | Upkeep | at triggers, no timers | at triggers, no timers | none | none |
@@ -1750,8 +1760,8 @@ What revert cannot undo, listed in every revert preview:
     below the measured need or far above it;
   - from the pilot hosts (EPC-022): project-level settings that override
     the user-level agent mode, repositories untrusted in a Codex home,
-    Claude Code sandbox placeholders, and agent CLI auth checked from the
-    context the agents use;
+    Claude Code sandbox placeholders, agent CLI auth checked from the
+    context the agents use, and `secret-tool` on Linux;
   - the earlier doctor items.
 
   `--admin` runs the root-only checks from the staged root and writes their
