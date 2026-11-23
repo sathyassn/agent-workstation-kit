@@ -166,19 +166,34 @@ if [[ $(uname -s) == Linux ]]; then
       fi
 
       uid=$(id -u "$agent_account")
-      resource_dropin="/etc/systemd/system/user-$uid.slice.d/50-agent-workstation.conf"
-      if [[ -r "$resource_dropin" ]] && \
-         grep -Eq '^MemoryHigh=' "$resource_dropin" && \
-         grep -Eq '^MemoryMax=' "$resource_dropin"; then
-        pass "resource policy exists for user-$uid.slice"
+      resource_slice=/etc/systemd/user/agent-work.slice
+      if [[ -r "$resource_slice" && ! -L "$resource_slice" ]] && \
+         grep -Fxq "ConditionUser=$agent_account" "$resource_slice" && \
+         grep -Eq '^MemoryHigh=[0-9]+K$' "$resource_slice" && \
+         grep -Eq '^MemoryMax=[0-9]+K$' "$resource_slice"; then
+        pass "agent-work.slice memory ceiling exists for $agent_account"
       else
-        fail "resource policy is missing for user-$uid.slice"
+        fail "agent-work.slice memory ceiling is missing for $agent_account"
       fi
-      tasks_max=$(awk -F= '$1 == "TasksMax" {print $2}' "$resource_dropin" 2>/dev/null || true)
+      tasks_max=$(awk -F= '$1 == "TasksMax" {print $2}' "$resource_slice" 2>/dev/null || true)
       if [[ "$tasks_max" =~ ^[0-9]+$ ]] && ((tasks_max >= 4096 && tasks_max <= 16384)); then
         pass "resource TasksMax=$tasks_max is within the reviewed emergency range"
       else
         fail 'resource TasksMax is missing or outside the reviewed 4096-16384 range'
+      fi
+      # The agent's own user configuration, including `systemctl --user
+      # set-property`, outranks /etc/systemd/user and could lift the ceiling.
+      agent_home=$(getent passwd "$agent_account" | cut -d: -f6)
+      if [[ -n "$agent_home" ]] && { compgen -G "$agent_home/.config/systemd/user/agent-work.slice*" ||
+           compgen -G "$agent_home/.config/systemd/user.control/agent-work.slice*"; } >/dev/null; then
+        fail "$agent_account has a user-level agent-work.slice override that can lift the ceiling"
+      else
+        pass "$agent_account has no user-level agent-work.slice override"
+      fi
+      if systemctl is-active --quiet systemd-oomd.service; then
+        pass 'systemd-oomd is active'
+      else
+        warn 'systemd-oomd is not active; only MemoryHigh and MemoryMax bound agent work'
       fi
 
       outside_slice=0
@@ -196,6 +211,19 @@ if [[ $(uname -s) == Linux ]]; then
         pass "all observed $agent_account processes are under user-$uid.slice"
       else
         fail "$outside_slice of $process_count $agent_account processes are outside user-$uid.slice"
+      fi
+      # Agent work must run under the ceiling: claude, codex, grok, and shells in
+      # an agent manager's pty slice belong in agent-work.slice.
+      if outside_ceiling=$(agent_processes_outside_slice /proc "$uid"); then
+        if [[ -z "$outside_ceiling" ]]; then
+          pass "no $agent_account agent process runs outside agent-work.slice"
+        else
+          while read -r pid name cgroup; do
+            fail "$agent_account agent process $name (PID $pid) is outside agent-work.slice: $cgroup"
+          done <<<"$outside_ceiling"
+        fi
+      else
+        fail "could not inspect $agent_account process placement"
       fi
     fi
 

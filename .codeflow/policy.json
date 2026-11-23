@@ -58,6 +58,8 @@
       "revert/",
       "codeflow/"
     ],
+    "security_review": "warn",
+    "dep_audit": "warn",
     "secret_scan": "block",
     "test_gate_on_push": "block"
   }

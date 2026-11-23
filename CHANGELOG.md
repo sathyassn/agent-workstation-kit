@@ -23,8 +23,18 @@ step is in [docs/maintenance/releasing.md](docs/maintenance/releasing.md).
 ### Changed
 
 - Versions: the Python `0.2.0-rc` line is frozen and never released as a final 0.2.0; the Go `wskit` releases as `1.0.0-alpha.N`, `-beta.N`, `-rc.N`, then `1.0.0` (`docs/maintenance/releasing.md`).
+- `.codeflow/policy.json` sets `git.security_review` and `git.dep_audit` to `warn`, as CodeFlow 3.1.1 writes them for the full tier, so the CI security review stops failing closed on a missing key.
 - The branch policy allows the `codeflow/` prefix, so CodeFlow can publish its ID registry branch (`codeflow/registry`).
 - The repository scan allows two exact sandbox wildcards only inside CodeFlow's own folders, and skips link checks there. CodeFlow's model-evaluation skill is left out until its eval case IDs stop matching CodeFlow's own secret scan.
+
+### Fixed
+
+- `agent-work-shell` falls back to the plain shell, with a warning, when it cannot start a scope in `agent-work.slice`, so a terminal never closes immediately.
+- The Linux resource policy now caps agent work in a dedicated `agent-work.slice` under the agent's user manager, with memory shares of RAM, systemd-oomd, swap, zram and `/tmp` policy, a receipt and an exact `--revert`; `agentctl start` runs sessions inside it.
+- `scripts/agent-work-shell` runs an agent manager's terminals inside `agent-work.slice`; the host audit and phase verifier fail when a claude, codex, grok or agent-manager pty process runs outside it.
+- The resource policy overrides vendor oomd defaults so oomd acts only on `agent-work.slice`, shows the current oomd settings in the preview, and treats static, alias and runtime-enabled oomd as enabled.
+- An interrupted resource-policy apply no longer blocks `--revert`.
+- The memory reserve is a share of RAM: `resources.os_memory_reserve_percent` and `--memory-reserve-percent` replace the deprecated `os_memory_reserve_gib` and `--memory-reserve-gib`; the schema migration check accepts that rename.
 
 ## [0.2.0-rc.7] - 2026-11-20
 

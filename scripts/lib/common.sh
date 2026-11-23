@@ -157,19 +157,42 @@ calculate_tasks_max() {
   printf '%d\n' "$result"
 }
 
-calculate_memory_limits() {
-  local total_kib=$1 reserve_gib=$2 gib_kib=$((1024 * 1024))
-  local soft_reserve hard_reserve memory_high memory_max
-  [[ "$total_kib" =~ ^[0-9]+$ && "$reserve_gib" =~ ^[0-9]+$ ]] || return 2
-  soft_reserve=$((reserve_gib * gib_kib))
-  hard_reserve=$((reserve_gib * gib_kib / 2))
-  if ((soft_reserve > 4 * gib_kib && hard_reserve < 4 * gib_kib)); then
-    hard_reserve=$((4 * gib_kib))
-  fi
-  memory_high=$((total_kib - soft_reserve))
-  memory_max=$((total_kib - hard_reserve))
-  ((memory_high > 0 && memory_max > memory_high)) || return 1
-  printf '%d %d\n' "$memory_high" "$memory_max"
+# Print MemoryHigh, MemoryMax and MemorySwapMax in KiB as shares (percent) of
+# total RAM. Fail when the ceiling would leave less than the reserve share.
+calculate_memory_shares() {
+  local total_kib=$1 high_percent=$2 max_percent=$3 swap_percent=$4 reserve_percent=$5
+  local memory_high memory_max swap_max value
+  for value in "$@"; do
+    [[ "$value" =~ ^[0-9]+$ ]] || return 2
+  done
+  ((max_percent > high_percent && max_percent <= 100)) || return 2
+  memory_high=$((total_kib * high_percent / 100))
+  memory_max=$((total_kib * max_percent / 100))
+  swap_max=$((total_kib * swap_percent / 100))
+  ((memory_high > 0 && total_kib - memory_max >= total_kib * reserve_percent / 100)) || return 1
+  printf '%d %d %d\n' "$memory_high" "$memory_max" "$swap_max"
+}
+
+# Print "PID NAME CGROUP" for each agent process of account UID that runs
+# outside agent-work.slice: a claude, codex or grok process, or any process in
+# an agent manager's pty slice (orca_ptys_*.slice). PROC_ROOT is /proc, or a
+# fixture tree in tests. Processes that exit while being read are skipped.
+agent_processes_outside_slice() {
+  local proc_root=$1 uid=$2 dir owner name cgroup argv0 argv1
+  for dir in "$proc_root"/[0-9]*; do
+    owner=$(awk '$1 == "Uid:" {print $2}' "$dir/status" 2>/dev/null) || continue
+    [[ "$owner" == "$uid" ]] || continue
+    cgroup=$(sed -n 1p "$dir/cgroup" 2>/dev/null) || continue
+    case "$cgroup" in */agent-work.slice/*) continue ;; esac
+    name=$(cat "$dir/comm" 2>/dev/null) || name=''
+    argv0='' argv1=''
+    { IFS= read -r -d '' argv0 && IFS= read -r -d '' argv1; } <"$dir/cmdline" 2>/dev/null || true
+    case "$name:${argv0##*/}:${argv1##*/}" in
+      claude:*|codex:*|grok*:*|*:claude:*|*:codex:*|*:grok*:*|*:*:claude|*:*:codex|*:*:grok*) ;;
+      *) [[ "$cgroup" == */orca_ptys_* ]] || continue ;;
+    esac
+    printf '%s %s %s\n' "${dir##*/}" "${name:-${argv0##*/}}" "${cgroup#0::}"
+  done
 }
 
 usage_mode() {
