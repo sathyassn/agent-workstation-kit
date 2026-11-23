@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "algorithm": "hmac-sha256",
+  "rules": [
+    {
+      "id": "personal-name",
+      "digests": []
+    },
+    {
+      "id": "private-network-name",
+      "digests": []
+    }
+  ]
+}

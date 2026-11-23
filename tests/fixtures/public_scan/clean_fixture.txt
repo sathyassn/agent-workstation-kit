@@ -1,0 +1,3 @@
+# Public clean fixture for synthetic keyed-scan verification.
+host = "lab-ws-001.example.invalid"
+org = "acme"

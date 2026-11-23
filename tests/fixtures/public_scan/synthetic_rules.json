@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "algorithm": "hmac-sha256",
+  "rules": [
+    {
+      "id": "personal-name",
+      "digests": [
+        "fe7b2730f5ad76f60b5d46d5c33909bbb800692eac0008b0f6577916ea01ca1a",
+        "95b58d328a85a8561db7fb974193350328e32e06d5fdc504635961b3aa7327df"
+      ]
+    },
+    {
+      "id": "private-network-name",
+      "digests": [
+        "54ba0d990d6b6c017e3dcd8a06baa70072664b77aa91fbc97e95e5531c01c08a"
+      ]
+    }
+  ]
+}
