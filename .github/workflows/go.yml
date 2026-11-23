@@ -35,6 +35,8 @@ jobs:
         uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
+          # Pull requests may restore the default branch's module and build cache;
+          # go mod verify checks module zips against go.sum.
           cache: true
 
       - name: Verify Go modules
@@ -42,17 +44,17 @@ jobs:
 
       - name: Check gofmt
         run: |
-          unformatted="$(gofmt -l .)"
-          if [ -n "$unformatted" ]; then
-            printf '%s\n' "$unformatted"
+          out="$(gofmt -l .)" || exit 1
+          if [ -n "$out" ]; then
+            printf '%s\n' "$out"
             exit 1
           fi
 
       - name: Check gofmt and goimports
         run: |
-          diff="$(go tool golangci-lint fmt --diff)"
-          if [ -n "$diff" ]; then
-            printf '%s\n' "$diff"
+          out="$(go tool golangci-lint fmt --diff)" || exit 1
+          if [ -n "$out" ]; then
+            printf '%s\n' "$out"
             exit 1
           fi
 
@@ -70,3 +72,7 @@ jobs:
 
       - name: Build release targets (make go-check)
         run: make go-check
+
+      - name: Verify workflow action pins
+        if: matrix.os == 'ubuntu-24.04'
+        run: python3 tests/verify_action_pins.py

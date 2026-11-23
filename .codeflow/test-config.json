@@ -29,13 +29,13 @@
       "runner": "custom",
       "modes": {
         "quick": {
-          "command": "sh -c 'out=$(gofmt -l .); if [ -n \"$out\" ]; then printf \"%s\\n\" \"$out\"; exit 1; fi'"
+          "command": "sh -c 'out=\"$(gofmt -l .)\" || exit 1; if [ -n \"$out\" ]; then printf \"%s\\n\" \"$out\"; exit 1; fi'"
         },
         "essential": {
-          "command": "sh -c 'out=$(gofmt -l .); if [ -n \"$out\" ]; then printf \"%s\\n\" \"$out\"; exit 1; fi'"
+          "command": "sh -c 'out=\"$(gofmt -l .)\" || exit 1; if [ -n \"$out\" ]; then printf \"%s\\n\" \"$out\"; exit 1; fi'"
         },
         "full": {
-          "command": "sh -c 'out=$(gofmt -l .); if [ -n \"$out\" ]; then printf \"%s\\n\" \"$out\"; exit 1; fi; diff=$(go tool golangci-lint fmt --diff); if [ -n \"$diff\" ]; then printf \"%s\\n\" \"$diff\"; exit 1; fi'"
+          "command": "sh -c 'out=\"$(gofmt -l .)\" || exit 1; if [ -n \"$out\" ]; then printf \"%s\\n\" \"$out\"; exit 1; fi; out=\"$(go tool golangci-lint fmt --diff)\" || exit 1; if [ -n \"$out\" ]; then printf \"%s\\n\" \"$out\"; exit 1; fi'"
         }
       }
     },

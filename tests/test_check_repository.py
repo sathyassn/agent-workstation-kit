@@ -1,6 +1,9 @@
 """Tests for Git-aware repository scanning and workflow action SHA pinning."""
 from __future__ import annotations
 
+import json
+import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -11,6 +14,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import check_repository as scan  # noqa: E402
+import verify_action_pins as pin_verifier  # noqa: E402
 
 SAMPLE_HOME = "/home" + "/alice/work"
 
@@ -56,14 +60,89 @@ class GitAwareScanTests(unittest.TestCase):
             self.assertEqual(len(failures), 1)
             self.assertIn("git is unavailable", failures[0])
 
+    def test_force_added_ignored_file_with_home_path_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _init_git_repo(root)
+            (root / ".gitignore").write_text("target/\n", encoding="utf-8")
+            ignored = root / "target/codeflow-gate/run.json"
+            ignored.parent.mkdir(parents=True)
+            ignored.write_text(f'{{"cwd": "{SAMPLE_HOME}"}}\n', encoding="utf-8")
+            subprocess.run(["git", "-C", str(root), "add", "-f", "target/codeflow-gate/run.json"], check=True)
+
+            failures = scan.scan_repository_files(root)
+            self.assertEqual(len(failures), 1)
+            self.assertIn("personal absolute path in target/codeflow-gate/run.json", failures[0])
+
+    def test_tracked_symlink_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _init_git_repo(root)
+            target = root / "real.txt"
+            target.write_text("clean\n", encoding="utf-8")
+            link = root / "link.txt"
+            link.symlink_to("real.txt")
+            subprocess.run(["git", "-C", str(root), "add", "real.txt", "link.txt"], check=True)
+
+            failures = scan.scan_repository_files(root)
+            self.assertEqual(len(failures), 1)
+            self.assertIn("symlink", failures[0])
+            self.assertIn("link.txt", failures[0])
+
+    def test_missing_tracked_file_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _init_git_repo(root)
+            tracked = root / "gone.txt"
+            tracked.write_text("clean\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(root), "add", "gone.txt"], check=True)
+            tracked.unlink()
+
+            failures = scan.scan_repository_files(root)
+            self.assertEqual(len(failures), 1)
+            self.assertIn("missing", failures[0])
+            self.assertIn("gone.txt", failures[0])
+
+    def test_tracked_gitlink_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _init_git_repo(root)
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(root),
+                    "update-index",
+                    "--add",
+                    "--cacheinfo",
+                    "160000,3d3c42e5aac5ba805825da76410c181273ba90b1,submod",
+                ],
+                check=True,
+            )
+
+            failures = scan.scan_repository_files(root)
+            self.assertEqual(len(failures), 1)
+            self.assertIn("gitlink", failures[0])
+            self.assertIn("submod", failures[0])
+
+
+SAMPLE_PINS = {
+    "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1": "v7.0.1",
+    "owner/repo@d8cbb8045d7f43706b9177cceb36c1f91a6644d5": "v7.1.0",
+}
+
 
 class WorkflowActionPinTests(unittest.TestCase):
-    def _check_workflow(self, content: str) -> list[str]:
+    def _check_workflow(self, content: str, pins: dict[str, str] | None = None) -> list[str]:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             wf = root / ".github/workflows/sample.yml"
             wf.parent.mkdir(parents=True)
             wf.write_text(content, encoding="utf-8")
+            table = SAMPLE_PINS if pins is None else pins
+            pins_file = root / "tests/action_pins.json"
+            pins_file.parent.mkdir(parents=True)
+            pins_file.write_text(json.dumps(table, indent=2) + "\n", encoding="utf-8")
             return scan.workflow_action_pin_issues(root)
 
     def test_good_sha_pin_with_version_comment_passes(self) -> None:
@@ -84,6 +163,74 @@ class WorkflowActionPinTests(unittest.TestCase):
             "      - uses: ./.github/actions/local-step\n"
         )
         self.assertEqual(self._check_workflow(content), [])
+
+    def test_job_level_reusable_workflow_pinned_passes(self) -> None:
+        content = (
+            "jobs:\n"
+            "  call:\n"
+            "    uses: owner/repo/.github/workflows/x.yml@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0\n"
+        )
+        self.assertEqual(self._check_workflow(content), [])
+
+    def test_job_level_reusable_workflow_unpinned_fails(self) -> None:
+        content = (
+            "jobs:\n"
+            "  call:\n"
+            "    uses: owner/repo/.github/workflows/x.yml@main\n"
+        )
+        issues = self._check_workflow(content)
+        self.assertEqual(len(issues), 1)
+        self.assertIn("unpinned workflow action", issues[0])
+
+    def test_local_reusable_workflow_passes(self) -> None:
+        content = (
+            "jobs:\n"
+            "  call:\n"
+            "    uses: ./.github/workflows/x.yml\n"
+        )
+        self.assertEqual(self._check_workflow(content), [])
+
+    def test_flow_mapping_uses_fails(self) -> None:
+        content = (
+            "jobs:\n"
+            "  build:\n"
+            "    steps:\n"
+            "      - {uses: actions/checkout@main}\n"
+        )
+        issues = self._check_workflow(content)
+        self.assertEqual(len(issues), 1)
+
+    def test_quoted_uses_key_fails(self) -> None:
+        content = (
+            "jobs:\n"
+            "  build:\n"
+            "    steps:\n"
+            "      - 'uses': actions/checkout@main\n"
+        )
+        issues = self._check_workflow(content)
+        self.assertEqual(len(issues), 1)
+
+    def test_pin_missing_from_table_fails(self) -> None:
+        content = (
+            "jobs:\n"
+            "  build:\n"
+            "    steps:\n"
+            "      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n"
+        )
+        issues = self._check_workflow(content, pins={})
+        self.assertEqual(len(issues), 1)
+        self.assertIn("action_pins.json", issues[0])
+
+    def test_pin_comment_differs_from_table_fails(self) -> None:
+        content = (
+            "jobs:\n"
+            "  build:\n"
+            "    steps:\n"
+            "      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.2\n"
+        )
+        issues = self._check_workflow(content)
+        self.assertEqual(len(issues), 1)
+        self.assertIn("v7.0.1", issues[0])
 
     def test_tag_pin_fails(self) -> None:
         content = "      - uses: actions/checkout@v7.0.1\n"
@@ -117,6 +264,103 @@ class WorkflowActionPinTests(unittest.TestCase):
 
     def test_current_repository_workflows_pass(self) -> None:
         self.assertEqual(scan.workflow_action_pin_issues(scan.ROOT), [])
+
+
+class FormatterGateTests(unittest.TestCase):
+    def _load_go_format_modes(self) -> dict[str, dict[str, str]]:
+        config = json.loads((scan.ROOT / ".codeflow/test-config.json").read_text(encoding="utf-8"))
+        for target in config["targets"]:
+            if target["name"] == "go-format":
+                return target["modes"]
+        self.fail("go-format target not found in .codeflow/test-config.json")
+
+    def test_go_format_modes_fail_when_gofmt_exits_nonzero(self) -> None:
+        modes = self._load_go_format_modes()
+        with tempfile.TemporaryDirectory() as tmp:
+            stub_dir = Path(tmp)
+            stub_gofmt = stub_dir / "gofmt"
+            stub_gofmt.write_text("#!/bin/sh\nexit 2\n", encoding="utf-8")
+            stub_gofmt.chmod(stub_gofmt.stat().st_mode | stat.S_IXUSR)
+
+            env = os.environ.copy()
+            env["PATH"] = f"{stub_dir}:{env.get('PATH', '')}"
+            for mode_name, mode_cfg in modes.items():
+                with self.subTest(mode=mode_name):
+                    res = subprocess.run(
+                        mode_cfg["command"],
+                        shell=True,
+                        cwd=tmp,
+                        env=env,
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    self.assertNotEqual(
+                        res.returncode,
+                        0,
+                        f"go-format mode {mode_name!r} succeeded when gofmt exited 2 with empty stdout",
+                    )
+
+    def test_go_format_full_fails_when_golangci_lint_fmt_exits_nonzero(self) -> None:
+        modes = self._load_go_format_modes()
+        with tempfile.TemporaryDirectory() as tmp:
+            stub_dir = Path(tmp)
+            stub_gofmt = stub_dir / "gofmt"
+            stub_gofmt.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            stub_gofmt.chmod(stub_gofmt.stat().st_mode | stat.S_IXUSR)
+            stub_go = stub_dir / "go"
+            stub_go.write_text("#!/bin/sh\nexit 2\n", encoding="utf-8")
+            stub_go.chmod(stub_go.stat().st_mode | stat.S_IXUSR)
+
+            env = os.environ.copy()
+            env["PATH"] = f"{stub_dir}:{env.get('PATH', '')}"
+            res = subprocess.run(
+                modes["full"]["command"],
+                shell=True,
+                cwd=tmp,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(
+                res.returncode,
+                0,
+                "go-format full mode succeeded when golangci-lint fmt exited 2 with empty stdout",
+            )
+
+
+class VerifyActionPinsTests(unittest.TestCase):
+    PIN = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
+    TAG_OBJ = "1111111111111111111111111111111111111111"
+    OTHER_COMMIT = "2222222222222222222222222222222222222222"
+
+    def test_annotated_tag_uses_peeled_commit(self) -> None:
+        output = (
+            f"{self.TAG_OBJ}\trefs/tags/v7.0.1\n"
+            f"3d3c42e5aac5ba805825da76410c181273ba90b1\trefs/tags/v7.0.1^{{}}\n"
+        )
+        self.assertIsNone(pin_verifier.verify_ls_remote_output(self.PIN, "v7.0.1", output))
+
+    def test_lightweight_tag_passes(self) -> None:
+        output = "3d3c42e5aac5ba805825da76410c181273ba90b1\trefs/tags/v7.0.1\n"
+        self.assertIsNone(pin_verifier.verify_ls_remote_output(self.PIN, "v7.0.1", output))
+
+    def test_missing_tag_fails(self) -> None:
+        error = pin_verifier.verify_ls_remote_output(self.PIN, "v7.0.1", "")
+        self.assertIsNotNone(error)
+        assert error is not None
+        self.assertIn("not found", error)
+
+    def test_mismatched_commit_fails(self) -> None:
+        output = (
+            f"{self.TAG_OBJ}\trefs/tags/v7.0.1\n"
+            f"{self.OTHER_COMMIT}\trefs/tags/v7.0.1^{{}}\n"
+        )
+        error = pin_verifier.verify_ls_remote_output(self.PIN, "v7.0.1", output)
+        self.assertIsNotNone(error)
+        assert error is not None
+        self.assertIn(self.OTHER_COMMIT, error)
 
 
 if __name__ == "__main__":
