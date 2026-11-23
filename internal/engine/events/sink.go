@@ -26,6 +26,10 @@ var (
 	// ErrRunLog wraps the first error writing the run log; the step that
 	// sees it through Err fails closed.
 	ErrRunLog = errors.New("write run log")
+	// ErrReplay wraps the first error replaying the run log to the UI. The
+	// UI then missed events, so the step that sees it through Err fails
+	// closed.
+	ErrReplay = errors.New("replay run log to the UI")
 	// ErrOptions reports a Sink built without a required option.
 	ErrOptions = errors.New("invalid event sink options")
 )
@@ -37,15 +41,14 @@ type Options struct {
 	Log io.Writer
 	// OpenLog opens the run log from its start. The UI's missed events are
 	// replayed from it, and a replay keeps reading it as the log grows, as an
-	// *os.File does; a reader that ends early only delays the replay to the
-	// next non-progress event. Required when UI is set.
+	// *os.File does. Required when UI is set.
 	OpenLog func() (io.ReadCloser, error)
 	// UI is the terminal UI's bounded queue. The Sink only ever sends to it
 	// without blocking Deliver; the owner may close it after Close returns.
 	// Optional.
 	UI chan<- contract.Event
-	// PendingProgress bounds the progress events held for the run log;
-	// zero or less uses DefaultPendingProgress.
+	// PendingProgress bounds the progress events held for the run log, and
+	// those held for the UI; zero or less uses DefaultPendingProgress.
 	PendingProgress int
 }
 
@@ -77,13 +80,19 @@ func (b progressBatch) event() contract.Event {
 //   - A progress event never touches the log writer in Deliver. It waits in
 //     a bounded buffer for the next log write; a full buffer coalesces it
 //     into the newest waiting progress event with a count.
-//   - The UI gets every event by a non-blocking send. When the queue is
-//     full, progress events are coalesced into one waiting event, and a
-//     non-progress event starts a replay: a background reader sends the UI
-//     every non-progress event after the last one it saw, from the run log.
-//     Non-progress events are never coalesced or dropped.
-//   - The first log write error is kept and returned by Err; later writes
-//     are skipped, because the log may end in a torn line.
+//   - The UI sees events in increasing Seq order and gets every one:
+//     non-progress events as they are, progress events alone or coalesced
+//     with a count. Deliver only ever sends to the UI without blocking.
+//     Progress that cannot be sent at once waits in a bounded buffer for the
+//     UI, coalescing when it is full, and a non-progress event that cannot
+//     be sent is replayed later from the run log. Both are sent by one
+//     background worker, which merges them in Seq order and is the only
+//     sender while it runs. Non-progress events are never coalesced or
+//     dropped.
+//   - The first run-log write error and the first replay error are kept and
+//     returned by Err. After a write error nothing more is written, because
+//     the log may end in a torn line. After a replay error the UI has
+//     missed events, and later ones are sent directly again.
 //
 // Callers deliver events with increasing Seq, as the engine assigns them.
 type Sink struct {
@@ -99,14 +108,24 @@ type Sink struct {
 	// mu guards the fields below. It is never held during I/O or a
 	// blocking send.
 	mu         sync.Mutex
-	err        error
+	logErr     error
+	uiErr      error
 	waiting    []progressBatch // progress waiting for the run log
 	lastLogged uint64          // Seq of the last non-progress event in the log
-	uiSeen     uint64          // highest Seq sent to the UI
-	uiWaiting  *progressBatch  // coalesced progress waiting for UI room
-	spilled    bool            // the UI missed a non-progress event
-	replaying  bool
-	closed     bool
+	// inflight counts non-progress events between the start of Deliver and
+	// their UI send. Progress delivered meanwhile is newer, so it waits.
+	inflight int
+	// uiNonProgress is the Seq of the last non-progress event the UI got. It
+	// moves only for non-progress events, so progress never hides one.
+	uiNonProgress uint64
+	uiWaiting     []progressBatch // progress waiting for the UI, in Seq order
+	// lastNonProgress is the Seq of the newest non-progress event Deliver
+	// has started. Waiting progress coalesces only within the run between
+	// two non-progress events, so the UI order stays exact.
+	lastNonProgress uint64
+	spilled         bool // the UI missed a logged non-progress event
+	pumping         bool // the worker is running and is the only sender
+	closed          bool
 
 	done chan struct{}
 	wg   sync.WaitGroup
@@ -149,27 +168,41 @@ func (s *Sink) Deliver(e contract.Event) {
 		return
 	}
 
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return
+	}
+	s.inflight++
+	s.lastNonProgress = max(s.lastNonProgress, e.Seq)
+	s.mu.Unlock()
+
 	s.writeLog(&e)
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.inflight--
 	if s.closed {
 		return
 	}
 	s.showLocked(e)
 }
 
-// Err returns the first run-log write error, wrapping ErrRunLog and the
-// writer's error, or nil. The engine checks it at every step boundary and
-// fails the step closed when it is set.
+// Err returns the first run-log write error, wrapping ErrRunLog, or else the
+// first replay error, wrapping ErrReplay, or nil. The engine checks it at
+// every step boundary and fails the step closed when it is set.
 func (s *Sink) Err() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.err
+	if s.logErr != nil {
+		return s.logErr
+	}
+	return s.uiErr
 }
 
-// Close writes the progress events still waiting, stops the replay reader
-// and returns Err. After Close, Deliver does nothing and nothing more is
-// sent to the UI.
+// Close writes the progress events still waiting for the log, stops the UI
+// worker and returns Err. After Close, Deliver does nothing and nothing more
+// is sent to the UI.
 func (s *Sink) Close() error {
 	s.logMu.Lock()
 	s.mu.Lock()
@@ -209,7 +242,7 @@ func (s *Sink) writeLog(e *contract.Event) {
 func (s *Sink) takeWaitingLocked() []progressBatch {
 	batch := s.waiting
 	s.waiting = nil
-	if s.err != nil {
+	if s.logErr != nil {
 		return nil
 	}
 	return batch
@@ -219,7 +252,7 @@ func (s *Sink) takeWaitingLocked() []progressBatch {
 // holds logMu.
 func (s *Sink) writeBatch(batch []progressBatch, e *contract.Event) {
 	s.mu.Lock()
-	failed := s.err != nil
+	failed := s.logErr != nil
 	s.mu.Unlock()
 	if failed {
 		return
@@ -240,7 +273,7 @@ func (s *Sink) writeBatch(batch []progressBatch, e *contract.Event) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err != nil {
-		s.err = fmt.Errorf("%w: %w", ErrRunLog, err)
+		s.logErr = fmt.Errorf("%w: %w", ErrRunLog, err)
 		return
 	}
 	if e != nil {
@@ -248,147 +281,224 @@ func (s *Sink) writeBatch(batch []progressBatch, e *contract.Event) {
 	}
 }
 
-// showProgressLocked offers a progress event to the UI, coalescing it when
-// the queue is full or a replay is running.
+// directLocked reports whether Deliver may send to the UI itself: no worker
+// is running and no non-progress event is between Deliver and its send.
+func (s *Sink) directLocked() bool {
+	return !s.pumping && !s.spilled && s.inflight == 0
+}
+
+// showProgressLocked sends a progress event to the UI, or holds it for the
+// worker when the UI is full or an older event is still on its way.
 func (s *Sink) showProgressLocked(e contract.Event) {
 	if s.ui == nil {
 		return
 	}
 	// The UI gets its own copy of Data: the run log still holds e.
-	if !s.spilled && s.flushUIWaitingLocked() && s.trySendLocked(cloneEvent(e)) {
+	if s.directLocked() && len(s.uiWaiting) == 0 && s.trySend(cloneEvent(e)) {
 		return
 	}
-	if s.uiWaiting == nil {
-		s.uiWaiting = &progressBatch{ev: e, n: 1}
-		return
+	if n := len(s.uiWaiting); n > 0 && s.uiWaiting[n-1].ev.Seq > s.lastNonProgress {
+		last := &s.uiWaiting[n-1]
+		last.ev = e
+		last.n++
+	} else {
+		s.uiWaiting = addProgress(s.uiWaiting, e, s.maxWait)
 	}
-	s.uiWaiting.ev = e
-	s.uiWaiting.n++
+	if s.inflight == 0 {
+		s.startWorkerLocked()
+	}
+	// Otherwise the non-progress Deliver in flight sends it, or starts the
+	// worker.
 }
 
-// showLocked offers a non-progress event to the UI. When the queue is full
-// the UI misses it, and a replay from the run log delivers it later.
+// showLocked sends a non-progress event to the UI after the progress that
+// is older than it. When the UI is full, the event is left to the worker,
+// which replays it from the run log.
 func (s *Sink) showLocked(e contract.Event) {
-	if s.ui == nil || e.Seq <= s.uiSeen {
+	if s.ui == nil || e.Seq <= s.uiNonProgress {
 		return
 	}
-	if !s.spilled && s.flushUIWaitingLocked() && s.trySendLocked(e) {
+	if s.directLocked() && s.sendOlderLocked(e.Seq) && s.trySend(e) {
+		s.uiNonProgress = e.Seq
+		s.sendOlderLocked(^uint64(0))
+		if len(s.uiWaiting) > 0 && s.inflight == 0 {
+			s.startWorkerLocked()
+		}
 		return
 	}
 	s.spilled = true
-	if !s.replaying {
-		s.replaying = true
-		s.wg.Add(1)
-		go s.replay()
+	if s.inflight == 0 {
+		s.startWorkerLocked()
 	}
+	// Otherwise the non-progress Deliver still in flight starts it.
 }
 
-// flushUIWaitingLocked sends the coalesced progress event, if any, and
-// reports whether nothing is left waiting.
-func (s *Sink) flushUIWaitingLocked() bool {
-	if s.uiWaiting == nil {
-		return true
+// sendOlderLocked sends, without blocking, the waiting progress older than
+// seq, and reports whether none is left.
+func (s *Sink) sendOlderLocked(seq uint64) bool {
+	for len(s.uiWaiting) > 0 && s.uiWaiting[0].ev.Seq < seq {
+		if !s.trySend(s.uiWaiting[0].event()) {
+			return false
+		}
+		s.uiWaiting = s.uiWaiting[1:]
 	}
-	if !s.trySendLocked(s.uiWaiting.event()) {
-		return false
-	}
-	s.uiWaiting = nil
 	return true
 }
 
-func (s *Sink) trySendLocked(e contract.Event) bool {
+func (s *Sink) trySend(e contract.Event) bool {
 	select {
 	case s.ui <- e:
-		s.uiSeen = max(s.uiSeen, e.Seq)
 		return true
 	default:
 		return false
 	}
 }
 
-// replay sends the UI, from the run log, every non-progress event it
-// missed, until it has seen the last one logged. It runs in the background
-// and may block on a stalled UI; Deliver never waits for it. One replay
-// reads the log once, front to back, however many passes it takes.
-func (s *Sink) replay() {
+func (s *Sink) startWorkerLocked() {
+	if s.pumping || s.closed {
+		return
+	}
+	s.pumping = true
+	s.wg.Add(1)
+	go s.work()
+}
+
+// work is the UI worker. It replays missed non-progress events from the
+// run log and sends the waiting progress, merged in Seq order, with blocking
+// sends; Deliver never waits for it. It stops when nothing is left, or when
+// a non-progress event is in flight, whose Deliver starts it again.
+func (s *Sink) work() {
 	defer s.wg.Done()
-	var r *bufio.Reader
 	var rc io.ReadCloser
-	defer func() {
+	var r *bufio.Reader
+	closeReplay := func() {
 		if rc != nil {
 			_ = rc.Close()
 		}
-	}()
+		rc, r = nil, nil
+	}
+	defer closeReplay()
 	for {
 		s.mu.Lock()
-		from, target := s.uiSeen, s.lastLogged
-		if from >= target {
-			s.spilled = false
-			s.replaying = false
-			s.flushUIWaitingLocked()
+		if s.closed {
 			s.mu.Unlock()
 			return
 		}
-		s.mu.Unlock()
-
-		if rc == nil {
-			var err error
-			if rc, err = s.openLog(); err != nil {
-				rc = nil
-				s.stopReplay()
-				return
+		if s.spilled && s.uiNonProgress < s.lastLogged {
+			from, target := s.uiNonProgress, s.lastLogged
+			s.mu.Unlock()
+			if r == nil {
+				var err error
+				if rc, err = s.openLog(); err != nil {
+					rc = nil
+					s.replayFailed(fmt.Errorf("open: %w", err))
+					continue
+				}
+				r = bufio.NewReader(rc)
 			}
-			r = bufio.NewReader(rc)
+			if err := s.replayUntil(r, from, target); err != nil {
+				if errors.Is(err, errStopped) {
+					return
+				}
+				closeReplay()
+				s.replayFailed(err)
+			}
+			continue
 		}
-		if !s.replayUntil(r, from, target) {
-			s.stopReplay()
+		if s.inflight > 0 {
+			s.pumping = false
+			s.mu.Unlock()
+			return
+		}
+		s.spilled = false
+		if len(s.uiWaiting) == 0 {
+			s.pumping = false
+			s.mu.Unlock()
+			return
+		}
+		b := s.uiWaiting[0]
+		s.uiWaiting = s.uiWaiting[1:]
+		s.mu.Unlock()
+		if !s.send(b.event()) {
 			return
 		}
 	}
 }
 
-// stopReplay ends a replay that was stopped or could not read the log. A
-// later non-progress event starts a new one.
-func (s *Sink) stopReplay() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.replaying = false
-}
+// errStopped ends the worker when the Sink closes.
+var errStopped = errors.New("event sink closed")
 
 // replayUntil reads r up to the line of target and sends the UI the
-// non-progress events with from < Seq <= target. It reads no further than
-// target's line, because a later line may still be partly written, so the
-// next pass continues where this one stopped.
-func (s *Sink) replayUntil(r *bufio.Reader, from, target uint64) bool {
+// non-progress events with from < Seq <= target, each after the waiting
+// progress older than it. It reads no further than target's line, because
+// a later line may still be partly written, so the next pass continues
+// where this one stopped.
+func (s *Sink) replayUntil(r *bufio.Reader, from, target uint64) error {
 	for {
 		line, err := r.ReadBytes('\n')
 		if err != nil {
-			// The log ended before target: truncated or unreadable.
-			return false
+			return fmt.Errorf("read up to seq %d: %w", target, err)
 		}
 		var rec logRecord
 		if err := json.Unmarshal(line, &rec); err != nil {
-			return false
+			return fmt.Errorf("decode a line before seq %d: %w", target, err)
 		}
 		ev := rec.Event
 		if ev.Seq > target {
-			// Out of sequence: target's line was not where it belongs.
-			return false
+			return fmt.Errorf("seq %d found before seq %d", ev.Seq, target)
 		}
 		if ev.Seq > from && !isProgress(ev.Kind) {
-			select {
-			case s.ui <- ev:
-			case <-s.done:
-				return false
+			if !s.sendWaitingBefore(ev.Seq) || !s.send(ev) {
+				return errStopped
 			}
 			s.mu.Lock()
-			s.uiSeen = max(s.uiSeen, ev.Seq)
+			s.uiNonProgress = max(s.uiNonProgress, ev.Seq)
 			s.mu.Unlock()
 		}
 		if ev.Seq == target {
-			return true
+			return nil
 		}
 	}
+}
+
+// sendWaitingBefore sends the waiting progress older than seq.
+func (s *Sink) sendWaitingBefore(seq uint64) bool {
+	for {
+		s.mu.Lock()
+		if len(s.uiWaiting) == 0 || s.uiWaiting[0].ev.Seq >= seq {
+			s.mu.Unlock()
+			return true
+		}
+		b := s.uiWaiting[0]
+		s.uiWaiting = s.uiWaiting[1:]
+		s.mu.Unlock()
+		if !s.send(b.event()) {
+			return false
+		}
+	}
+}
+
+// send blocks until the UI takes e or the Sink closes. Only the worker
+// calls it.
+func (s *Sink) send(e contract.Event) bool {
+	select {
+	case s.ui <- e:
+		return true
+	case <-s.done:
+		return false
+	}
+}
+
+// replayFailed keeps the first replay error for Err and lets Deliver send
+// to the UI directly again: the events it missed cannot be recovered, and
+// the step fails closed on Err.
+func (s *Sink) replayFailed(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.uiErr == nil {
+		s.uiErr = fmt.Errorf("%w: %w", ErrReplay, err)
+	}
+	s.spilled = false
 }
 
 // logRecord is one run-log line (event.schema.json).

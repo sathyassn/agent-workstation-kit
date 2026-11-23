@@ -163,6 +163,52 @@ func sameEvent(a, b contract.Event) bool {
 	return reflect.DeepEqual(a, b)
 }
 
+// drainUI reads ui until it has seen every non-progress event of sent and
+// progress counts that add up to the progress events in sent. It fails on a
+// sequence number that does not increase, a changed or repeated
+// non-progress event, or a stall.
+func drainUI(t *testing.T, ui <-chan contract.Event, sent []contract.Event) {
+	t.Helper()
+	nonProgress := map[uint64]contract.Event{}
+	var wantProgress uint64
+	for _, e := range sent {
+		if e.Kind == contract.EventProgress {
+			wantProgress++
+		} else {
+			nonProgress[e.Seq] = e
+		}
+	}
+	var gotProgress uint64
+	gotNonProgress := 0
+	var last uint64
+	deadline := time.After(waitLong)
+	for gotNonProgress < len(nonProgress) || gotProgress < wantProgress {
+		select {
+		case e := <-ui:
+			if e.Seq <= last {
+				t.Fatalf("UI got seq %d after %d: the UI sequence must increase", e.Seq, last)
+			}
+			last = e.Seq
+			switch e.Kind {
+			case contract.EventProgress, contract.EventCoalesced:
+				gotProgress += count(t, e)
+			default:
+				want, ok := nonProgress[e.Seq]
+				if !ok || !sameEvent(e, want) {
+					t.Fatalf("UI got non-progress event %+v, want %+v", e, want)
+				}
+				gotNonProgress++
+			}
+		case <-deadline:
+			t.Fatalf("UI got %d of %d non-progress events and %d of %d progress events",
+				gotNonProgress, len(nonProgress), gotProgress, wantProgress)
+		}
+	}
+	if gotProgress != wantProgress {
+		t.Fatalf("UI progress counts add up to %d, want %d", gotProgress, wantProgress)
+	}
+}
+
 func TestNewRejectsMissingOptions(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -223,6 +269,7 @@ func TestDeliverNeverBlocksOnStalledUI(t *testing.T) {
 	ui := make(chan contract.Event, 2)
 	s := newSink(t, events.Options{Log: log, OpenLog: open, UI: ui, PendingProgress: 8})
 
+	var sent []contract.Event
 	var want []uint64 // non-progress sequence numbers
 	var wantProgress uint64
 	within(t, "Deliver to a stalled UI", func() {
@@ -234,33 +281,12 @@ func TestDeliverNeverBlocksOnStalledUI(t *testing.T) {
 				kind = contract.EventOutput
 				want = append(want, seq)
 			}
-			s.Deliver(event(seq, kind))
+			e := event(seq, kind)
+			sent = append(sent, e)
+			s.Deliver(e)
 		}
 	})
-
-	var got []uint64
-	deadline := time.After(waitLong)
-	for len(got) < len(want) {
-		select {
-		case e := <-ui:
-			switch e.Kind {
-			case contract.EventProgress, contract.EventCoalesced:
-				count(t, e)
-			default:
-				if !sameEvent(e, event(e.Seq, contract.EventOutput)) {
-					t.Fatalf("non-progress event %d changed: %+v", e.Seq, e)
-				}
-				got = append(got, e.Seq)
-			}
-		case <-deadline:
-			t.Fatalf("UI got %d of %d non-progress events", len(got), len(want))
-		}
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("UI non-progress event %d = seq %d, want %d", i, got[i], want[i])
-		}
-	}
+	drainUI(t, ui, sent)
 	if err := s.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -342,21 +368,26 @@ func (w *blockingWriter) Write(p []byte) (int, error) {
 func TestDeliverBlocksOnlyForNonProgressLogWrite(t *testing.T) {
 	t.Parallel()
 	w := &blockingWriter{started: make(chan struct{}), release: make(chan struct{})}
-	s, err := events.New(events.Options{Log: w})
+	ui := make(chan contract.Event, 16)
+	emptyLog := func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(nil)), nil }
+	s, err := events.New(events.Options{Log: w, OpenLog: emptyLog, UI: ui})
 	if err != nil {
 		t.Fatalf("events.New: %v", err)
 	}
 
+	sent := []contract.Event{event(1, contract.EventChange)}
 	returned := make(chan struct{})
 	go func() {
 		defer close(returned)
-		s.Deliver(event(1, contract.EventChange))
+		s.Deliver(sent[0])
 	}()
 	<-w.started
 
 	within(t, "progress Deliver during a run-log write", func() {
 		for seq := uint64(2); seq <= 200; seq++ {
-			s.Deliver(event(seq, contract.EventProgress))
+			e := event(seq, contract.EventProgress)
+			sent = append(sent, e)
+			s.Deliver(e)
 		}
 	})
 	select {
@@ -366,6 +397,9 @@ func TestDeliverBlocksOnlyForNonProgressLogWrite(t *testing.T) {
 	}
 	close(w.release)
 	within(t, "non-progress Deliver after the write", func() { <-returned })
+	// The change event must reach the UI before the progress that followed
+	// it, although that progress was delivered during its log write.
+	drainUI(t, ui, sent)
 	within(t, "Close", func() {
 		if err := s.Close(); err != nil {
 			t.Errorf("Close: %v", err)
@@ -423,5 +457,110 @@ func TestFullDiskFailsClosed(t *testing.T) {
 	}
 	if got := w.count(); got != 2 {
 		t.Fatalf("run log got %d writes, want 2: none after the first failure", got)
+	}
+}
+
+// TestUISequenceIncreases delivers steps of progress, warnings and step ends
+// to a UI that is stalled, or read concurrently, and checks that the UI never
+// sees an older event after a newer one and still gets every event.
+func TestUISequenceIncreases(t *testing.T) {
+	t.Parallel()
+	for _, concurrent := range []bool{false, true} {
+		t.Run("concurrent reader "+strconv.FormatBool(concurrent), func(t *testing.T) {
+			t.Parallel()
+			log, open, _ := fileLog(t)
+			ui := make(chan contract.Event, 1)
+			s := newSink(t, events.Options{Log: log, OpenLog: open, UI: ui, PendingProgress: 4})
+
+			var sent []contract.Event
+			var seq uint64
+			emit := func(step contract.StepID, kind contract.EventKind) {
+				seq++
+				e := event(seq, kind)
+				e.Step = step
+				sent = append(sent, e)
+			}
+			for _, step := range []contract.StepID{contract.StepPlan, contract.StepApply, contract.StepVerify} {
+				emit(step, contract.EventStepStart)
+				for range 20 {
+					emit(step, contract.EventProgress)
+				}
+				emit(step, contract.EventWarning)
+				for range 20 {
+					emit(step, contract.EventProgress)
+				}
+				emit(step, contract.EventStepEnd)
+			}
+
+			drained := make(chan struct{})
+			if concurrent {
+				go func() {
+					defer close(drained)
+					drainUI(t, ui, sent)
+				}()
+			}
+			within(t, "Deliver", func() {
+				for _, e := range sent {
+					s.Deliver(e)
+				}
+			})
+			if concurrent {
+				<-drained
+			} else {
+				drainUI(t, ui, sent)
+			}
+		})
+	}
+}
+
+// TestReplayFailureFailsClosed breaks the replay of missed UI events and
+// checks that the failure reaches Err and that later events reach the UI
+// directly.
+func TestReplayFailureFailsClosed(t *testing.T) {
+	t.Parallel()
+	errOpen := errors.New("open run log: permission denied")
+	cases := []struct {
+		name string
+		open func(*memLog) func() (io.ReadCloser, error)
+	}{
+		{name: "open fails", open: func(*memLog) func() (io.ReadCloser, error) {
+			return func() (io.ReadCloser, error) { return nil, errOpen }
+		}},
+		{name: "corrupt line", open: func(l *memLog) func() (io.ReadCloser, error) {
+			return func() (io.ReadCloser, error) {
+				rc, _ := l.open()
+				return io.NopCloser(io.MultiReader(bytes.NewReader([]byte("not json\n")), rc)), nil
+			}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			runLog := &memLog{}
+			ui := make(chan contract.Event, 1)
+			s := newSink(t, events.Options{Log: runLog, OpenLog: tc.open(runLog), UI: ui})
+
+			s.Deliver(event(1, contract.EventStepStart)) // fills the UI queue
+			s.Deliver(event(2, contract.EventWarning))   // missed: needs a replay
+			deadline := time.Now().Add(waitShort)
+			for s.Err() == nil && time.Now().Before(deadline) {
+				time.Sleep(time.Millisecond)
+			}
+			if err := s.Err(); !errors.Is(err, events.ErrReplay) {
+				t.Fatalf("Err = %v, want ErrReplay", err)
+			}
+			if got := <-ui; got.Seq != 1 {
+				t.Fatalf("first UI event = %+v, want seq 1", got)
+			}
+			s.Deliver(event(3, contract.EventStepEnd))
+			select {
+			case got := <-ui:
+				if got.Seq != 3 {
+					t.Fatalf("UI event after the failure = %+v, want seq 3 sent directly", got)
+				}
+			case <-time.After(waitShort):
+				t.Fatal("UI got nothing after the replay failed")
+			}
+		})
 	}
 }
