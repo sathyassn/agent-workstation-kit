@@ -1,0 +1,11 @@
+id = "TSK-041"
+uid = "50c57126-6877-4c11-be6b-1bd7d447bc4e"
+kind = "TSK"
+title = "Full metadata backup for ACLs and extended attributes"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-23T22:22:31Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
