@@ -2,9 +2,8 @@
 """Check or regenerate unit catalog outputs via the Go catalog generator.
 
 Delegates to `go run ./internal/units/catalog/gen/cmd` so the Go generator is
-the single renderer for generated Go files and Markdown unit tables. When `go`
-is not available on PATH (for example in a Python-only CI job), prints a SKIP
-notice and exits 0.
+the single renderer for generated Go files and Markdown unit tables. Exits
+non-zero when `go` is not available on PATH.
 """
 from __future__ import annotations
 
@@ -14,14 +13,14 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SKIP_MESSAGE = "SKIP catalog tables: Go not available here; the Go CI jobs enforce them"
+MISSING_GO_MESSAGE = "Go is required for the catalog check"
 
 
 def main(argv: list[str]) -> int:
     go_bin = shutil.which("go")
     if go_bin is None:
-        print(SKIP_MESSAGE)
-        return 0
+        print(MISSING_GO_MESSAGE, file=sys.stderr)
+        return 1
     cmd = [go_bin, "run", "./internal/units/catalog/gen/cmd", "-root", str(ROOT)]
     if "--write" not in argv:
         cmd.append("-check")

@@ -1,4 +1,4 @@
-"""The catalog_tables.py wrapper delegates to the Go generator when go is on PATH."""
+"""The catalog_tables.py wrapper delegates to the Go generator and fails if go is missing."""
 from __future__ import annotations
 
 import os
@@ -49,14 +49,13 @@ class CatalogTablesWrapperTests(unittest.TestCase):
             self.assertEqual(proc.returncode, 0)
             self.assertIn("-check", proc.stdout)
 
-    def test_missing_go_prints_skip_and_exits_zero(self) -> None:
-        with tempfile.TemporaryDirectory() as empty_bin:
-            proc = self._run_wrapper(empty_bin)
-            self.assertEqual(proc.returncode, 0)
-            self.assertIn(
-                "SKIP catalog tables: Go not available here; the Go CI jobs enforce them",
-                proc.stdout,
-            )
+    def test_missing_go_fails_for_check_and_write(self) -> None:
+        for args in ((), ("--write",)):
+            with self.subTest(args=args), tempfile.TemporaryDirectory() as empty_bin:
+                proc = self._run_wrapper(empty_bin, *args)
+                self.assertNotEqual(proc.returncode, 0)
+                combined = proc.stdout + proc.stderr
+                self.assertIn("Go is required for the catalog check", combined)
 
 
 if __name__ == "__main__":

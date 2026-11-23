@@ -16,11 +16,95 @@ const (
 	docsEndMarker   = "<!-- catalog:units:end -->"
 	docsNoneCell    = "none"
 
+	typeUnitID    = "UnitID"
+	prefixUnit    = "Unit"
 	typeStage     = "Stage"
 	typeScope     = "Scope"
 	typeDomain    = "Domain"
 	typePrivilege = "Privilege"
+
+	catalogTypeCondition      = "Condition"
+	catalogTypeBarrier        = "Barrier"
+	catalogTypeEntry          = "Entry"
+	catalogTypePlatformMeta   = "PlatformMeta"
+	catalogTypeConditionalDep = "ConditionalDep"
+	catalogTypeConstructor    = "Constructor"
+	catalogFuncEntries        = "Entries"
+	catalogFuncLookup         = "Lookup"
 )
+
+// contractEnumDefs is the single source of truth for the enum types, constant
+// prefixes and helper functions emitted in internal/contract/enums_gen.go.
+func contractEnumDefs() []enumSpec {
+	return []enumSpec{
+		{
+			typeName: typeUnitID,
+			typeDoc:  "UnitID identifies a unit in the catalog.",
+			constDoc: "UnitID values generated from registry/units.toml.",
+			prefix:   prefixUnit,
+			allFunc:  "AllUnitIDs",
+			allDoc:   "AllUnitIDs returns a fresh slice of every valid UnitID in catalog order.",
+			recv:     "u",
+		},
+		{
+			typeName: typeStage,
+			typeDoc:  "Stage identifies an execution stage scope in the setup order.",
+			constDoc: "Stage values generated from registry/units.toml.",
+			prefix:   typeStage,
+			allFunc:  "AllStages",
+			allDoc:   "AllStages returns a fresh slice of every valid Stage in catalog order.",
+			recv:     "s",
+		},
+		{
+			typeName: typeScope,
+			typeDoc:  "Scope identifies the execution privilege scope (root or user).",
+			constDoc: "Scope values derived from registry/units.toml privileges.",
+			prefix:   typeScope,
+			allFunc:  "AllScopes",
+			allDoc:   "AllScopes returns a fresh slice of every valid Scope.",
+			recv:     "s",
+		},
+		{
+			typeName: typeDomain,
+			typeDoc:  "Domain groups related units in the catalog.",
+			constDoc: "Domain values generated from registry/units.toml.",
+			prefix:   typeDomain,
+			allFunc:  "AllDomains",
+			allDoc:   "AllDomains returns a fresh slice of every valid Domain in catalog order.",
+			recv:     "d",
+		},
+		{
+			typeName: typePrivilege,
+			typeDoc:  "Privilege identifies the account role that executes a unit on an OS.",
+			constDoc: "Privilege values generated from registry/units.toml.",
+			prefix:   typePrivilege,
+			allFunc:  "AllPrivileges",
+			allDoc:   "AllPrivileges returns a fresh slice of every valid Privilege in catalog order.",
+			recv:     "p",
+		},
+	}
+}
+
+// reservedGoNames returns every top-level Go identifier emitted or referenced
+// by the generator (types, helper functions, and any constants or table
+// variables). Both Validate and the renderer draw from the same symbol table.
+func reservedGoNames() map[string]bool {
+	reserved := map[string]bool{
+		catalogTypeCondition:      true,
+		catalogTypeBarrier:        true,
+		catalogTypeEntry:          true,
+		catalogTypePlatformMeta:   true,
+		catalogTypeConditionalDep: true,
+		catalogTypeConstructor:    true,
+		catalogFuncEntries:        true,
+		catalogFuncLookup:         true,
+	}
+	for _, spec := range contractEnumDefs() {
+		reserved[spec.typeName] = true
+		reserved[spec.allFunc] = true
+	}
+	return reserved
+}
 
 // DocTargets returns the repository-relative Markdown files whose unit catalog
 // tables are generated from registry/units.toml.
@@ -64,16 +148,31 @@ func RenderDocsTable(cat Catalog) string {
 // ReplaceDocsTable replaces the table between the catalog:units markers in doc
 // with table.
 func ReplaceDocsTable(doc []byte, table string) ([]byte, error) {
-	beginIdx := bytes.Index(doc, []byte(docsBeginMarker))
-	if beginIdx < 0 {
+	beginMarker := []byte(docsBeginMarker)
+	endMarker := []byte(docsEndMarker)
+
+	beginCount := bytes.Count(doc, beginMarker)
+	if beginCount == 0 {
 		return nil, errors.New("missing catalog:units:begin marker")
 	}
-	start := beginIdx + len(docsBeginMarker)
-	endIdx := bytes.Index(doc[start:], []byte(docsEndMarker))
-	if endIdx < 0 {
+	if beginCount > 1 {
+		return nil, errors.New("duplicate catalog:units:begin marker")
+	}
+	endCount := bytes.Count(doc, endMarker)
+	if endCount == 0 {
 		return nil, errors.New("missing catalog:units:end marker")
 	}
-	end := start + endIdx
+	if endCount > 1 {
+		return nil, errors.New("duplicate catalog:units:end marker")
+	}
+
+	beginIdx := bytes.Index(doc, beginMarker)
+	endIdx := bytes.Index(doc, endMarker)
+	if endIdx < beginIdx {
+		return nil, errors.New("catalog:units:end marker appears before catalog:units:begin marker")
+	}
+	start := beginIdx + len(beginMarker)
+	end := endIdx
 
 	var out bytes.Buffer
 	out.Grow(start + len(table) + 2 + len(doc) - end)
@@ -112,60 +211,7 @@ func writef(b *bytes.Buffer, format string, args ...any) {
 // RenderContractEnums renders internal/contract/enums_gen.go from a validated
 // Catalog.
 func RenderContractEnums(cat Catalog) ([]byte, error) {
-	unitIDs := collectUnitIDs(cat)
-	stages := collectStages(cat)
-	scopes := collectScopes(cat)
-	domains := collectDomains(cat)
 	privileges := collectPrivileges(cat)
-
-	var b bytes.Buffer
-	b.WriteString(generatedHeader)
-	b.WriteString("\npackage contract\n\n")
-
-	writeEnum(&b, enumSpec{
-		typeName: "UnitID",
-		typeDoc:  "UnitID identifies a unit in the catalog.",
-		constDoc: "UnitID values generated from registry/units.toml.",
-		prefix:   "Unit",
-		allFunc:  "AllUnitIDs",
-		allDoc:   "AllUnitIDs returns a fresh slice of every valid UnitID in catalog order.",
-		recv:     "u",
-		values:   unitIDs,
-	})
-
-	writeEnum(&b, enumSpec{
-		typeName: typeStage,
-		typeDoc:  "Stage identifies an execution stage scope in the setup order.",
-		constDoc: "Stage values generated from registry/units.toml.",
-		prefix:   typeStage,
-		allFunc:  "AllStages",
-		allDoc:   "AllStages returns a fresh slice of every valid Stage in catalog order.",
-		recv:     "s",
-		values:   stages,
-	})
-
-	writeEnum(&b, enumSpec{
-		typeName: typeScope,
-		typeDoc:  "Scope identifies the execution privilege scope (root or user).",
-		constDoc: "Scope values derived from registry/units.toml privileges.",
-		prefix:   typeScope,
-		allFunc:  "AllScopes",
-		allDoc:   "AllScopes returns a fresh slice of every valid Scope.",
-		recv:     "s",
-		values:   scopes,
-	})
-
-	writeEnum(&b, enumSpec{
-		typeName: typeDomain,
-		typeDoc:  "Domain groups related units in the catalog.",
-		constDoc: "Domain values generated from registry/units.toml.",
-		prefix:   typeDomain,
-		allFunc:  "AllDomains",
-		allDoc:   "AllDomains returns a fresh slice of every valid Domain in catalog order.",
-		recv:     "d",
-		values:   domains,
-	})
-
 	scopeCases := make([]scopeMapping, 0, len(privileges))
 	for _, p := range privileges {
 		scopeCases = append(scopeCases, scopeMapping{
@@ -173,17 +219,25 @@ func RenderContractEnums(cat Catalog) ([]byte, error) {
 			scopeConst: goIdent(typeScope, scopeForPrivilege(p)),
 		})
 	}
-	writeEnum(&b, enumSpec{
-		typeName:   typePrivilege,
-		typeDoc:    "Privilege identifies the account role that executes a unit on an OS.",
-		constDoc:   "Privilege values generated from registry/units.toml.",
-		prefix:     typePrivilege,
-		allFunc:    "AllPrivileges",
-		allDoc:     "AllPrivileges returns a fresh slice of every valid Privilege in catalog order.",
-		recv:       "p",
-		values:     privileges,
-		scopeCases: scopeCases,
-	})
+	valuesByType := map[string][]string{
+		typeUnitID:    collectUnitIDs(cat),
+		typeStage:     collectStages(cat),
+		typeScope:     collectScopes(cat),
+		typeDomain:    collectDomains(cat),
+		typePrivilege: privileges,
+	}
+
+	var b bytes.Buffer
+	b.WriteString(generatedHeader)
+	b.WriteString("\npackage contract\n\n")
+
+	for _, spec := range contractEnumDefs() {
+		spec.values = valuesByType[spec.typeName]
+		if spec.typeName == typePrivilege {
+			spec.scopeCases = scopeCases
+		}
+		writeEnum(&b, spec)
+	}
 
 	formatted, err := format.Source(b.Bytes())
 	if err != nil {
@@ -263,40 +317,40 @@ func RenderCatalog(cat Catalog) ([]byte, error) {
 	b.WriteString("import \"github.com/sathyassn/agent-workstation-kit/internal/contract\"\n\n")
 
 	if len(conditions) > 0 {
-		b.WriteString("// Condition values generated from registry/units.toml.\nconst (\n")
+		writef(&b, "// %s values generated from registry/units.toml.\nconst (\n", catalogTypeCondition)
 		for _, c := range conditions {
-			ident := goIdent("Condition", c)
+			ident := goIdent(catalogTypeCondition, c)
 			writef(&b, "\t// %s is the %q dependency condition.\n", ident, c)
-			writef(&b, "\t%s Condition = %q\n", ident, c)
+			writef(&b, "\t%s %s = %q\n", ident, catalogTypeCondition, c)
 		}
 		b.WriteString(")\n\n")
 	}
 
 	if len(barriers) > 0 {
-		b.WriteString("// Barrier values generated from registry/units.toml.\nconst (\n")
+		writef(&b, "// %s values generated from registry/units.toml.\nconst (\n", catalogTypeBarrier)
 		for _, br := range barriers {
-			ident := goIdent("Barrier", br)
+			ident := goIdent(catalogTypeBarrier, br)
 			writef(&b, "\t// %s is the %q synchronisation barrier.\n", ident, br)
-			writef(&b, "\t%s Barrier = %q\n", ident, br)
+			writef(&b, "\t%s %s = %q\n", ident, catalogTypeBarrier, br)
 		}
 		b.WriteString(")\n\n")
 	}
 
-	b.WriteString("// Entries returns a fresh slice of every unit's catalog metadata in catalog order.\n")
-	b.WriteString("func Entries() []Entry {\n\treturn []Entry{\n")
+	writef(&b, "// %s returns a fresh slice of every unit's catalog metadata in catalog order.\n", catalogFuncEntries)
+	writef(&b, "func %s() []%s {\n\treturn []%s{\n", catalogFuncEntries, catalogTypeEntry, catalogTypeEntry)
 	for _, u := range cat.Units {
 		writeEntryLiteral(&b, u)
 	}
 	b.WriteString("\t}\n}\n\n")
 
-	b.WriteString("// Lookup returns the catalog Entry for id, or false when id is unknown.\n")
-	b.WriteString("func Lookup(id contract.UnitID) (Entry, bool) {\n")
-	b.WriteString("\tfor _, e := range Entries() {\n")
+	writef(&b, "// %s returns the catalog %s for id, or false when id is unknown.\n", catalogFuncLookup, catalogTypeEntry)
+	writef(&b, "func %s(id contract.%s) (%s, bool) {\n", catalogFuncLookup, typeUnitID, catalogTypeEntry)
+	writef(&b, "\tfor _, e := range %s() {\n", catalogFuncEntries)
 	b.WriteString("\t\tif e.ID == id {\n")
 	b.WriteString("\t\t\treturn e, true\n")
 	b.WriteString("\t\t}\n")
 	b.WriteString("\t}\n")
-	b.WriteString("\treturn Entry{}, false\n")
+	writef(&b, "\treturn %s{}, false\n", catalogTypeEntry)
 	b.WriteString("}\n")
 
 	formatted, err := format.Source(b.Bytes())
@@ -308,7 +362,7 @@ func RenderCatalog(cat Catalog) ([]byte, error) {
 
 func writeEntryLiteral(b *bytes.Buffer, u UnitSpec) {
 	b.WriteString("\t\t{\n")
-	writef(b, "\t\t\tID: contract.%s,\n", goIdent("Unit", u.ID))
+	writef(b, "\t\t\tID: contract.%s,\n", goIdent(prefixUnit, u.ID))
 	writef(b, "\t\t\tDomain: contract.%s,\n", goIdent(typeDomain, u.Domain))
 	b.WriteString("\t\t\tLinux: ")
 	writePlatformMeta(b, u, osLinux)
@@ -317,12 +371,12 @@ func writeEntryLiteral(b *bytes.Buffer, u UnitSpec) {
 	writePlatformMeta(b, u, osMacOS)
 	b.WriteString(",\n")
 	if len(u.WaitsFor) > 0 {
-		b.WriteString("\t\t\tWaitsFor: []Barrier{")
+		writef(b, "\t\t\tWaitsFor: []%s{", catalogTypeBarrier)
 		for i, br := range u.WaitsFor {
 			if i > 0 {
 				b.WriteString(", ")
 			}
-			b.WriteString(goIdent("Barrier", br))
+			b.WriteString(goIdent(catalogTypeBarrier, br))
 		}
 		b.WriteString("},\n")
 	}
@@ -334,25 +388,25 @@ func writeEntryLiteral(b *bytes.Buffer, u UnitSpec) {
 func writePlatformMeta(b *bytes.Buffer, u UnitSpec, osName string) {
 	st := u.Stage.forOS(osName)
 	if st == unsetMarker || st == "" {
-		b.WriteString("PlatformMeta{}")
+		writef(b, "%s{}", catalogTypePlatformMeta)
 		return
 	}
 	pr := u.Privilege.forOS(osName)
 	sc := scopeForPrivilege(pr)
 
-	b.WriteString("PlatformMeta{\n")
+	writef(b, "%s{\n", catalogTypePlatformMeta)
 	b.WriteString("\t\t\t\tSupported: true,\n")
 	writef(b, "\t\t\t\tStage: contract.%s,\n", goIdent(typeStage, st))
 	writef(b, "\t\t\t\tPrivilege: contract.%s,\n", goIdent(typePrivilege, pr))
 	writef(b, "\t\t\t\tScope: contract.%s,\n", goIdent(typeScope, sc))
 	deps := u.Depends.forOS(osName)
 	if len(deps) > 0 {
-		b.WriteString("\t\t\t\tDepends: []contract.UnitID{")
+		writef(b, "\t\t\t\tDepends: []contract.%s{", typeUnitID)
 		for i, d := range deps {
 			if i > 0 {
 				b.WriteString(", ")
 			}
-			writef(b, "contract.%s", goIdent("Unit", d))
+			writef(b, "contract.%s", goIdent(prefixUnit, d))
 		}
 		b.WriteString("},\n")
 	}
@@ -364,14 +418,14 @@ func writePlatformMeta(b *bytes.Buffer, u UnitSpec, osName string) {
 		}
 	}
 	if len(condEntries) > 0 {
-		b.WriteString("\t\t\t\tDependsIf: []ConditionalDep{\n")
+		writef(b, "\t\t\t\tDependsIf: []%s{\n", catalogTypeConditionalDep)
 		for _, cond := range condEntries {
-			writef(b, "\t\t\t\t\t{Condition: %s, Units: []contract.UnitID{", goIdent("Condition", cond))
+			writef(b, "\t\t\t\t\t{Condition: %s, Units: []contract.%s{", goIdent(catalogTypeCondition, cond), typeUnitID)
 			for i, d := range u.DependsIf[cond].forOS(osName) {
 				if i > 0 {
 					b.WriteString(", ")
 				}
-				writef(b, "contract.%s", goIdent("Unit", d))
+				writef(b, "contract.%s", goIdent(prefixUnit, d))
 			}
 			b.WriteString("}},\n")
 		}

@@ -292,6 +292,7 @@ func Validate(cat Catalog) []error {
 		}
 	}
 
+	reserved := reservedGoNames()
 	checkCollisions := func(kind, prefix string, values []string) {
 		byIdent := make(map[string]string, len(values))
 		for _, v := range values {
@@ -299,6 +300,11 @@ func Validate(cat Catalog) []error {
 				continue
 			}
 			ident := goIdent(prefix, v)
+			if reserved[ident] {
+				add("%s %q collides with reserved Go identifier %s", kind, v, ident)
+			} else if bare := goIdent("", v); reserved[bare] {
+				add("%s %q collides with reserved Go identifier %s", kind, v, bare)
+			}
 			if prev, exists := byIdent[ident]; exists && prev != v {
 				add("%s %q and %q collide on Go identifier %s", kind, prev, v, ident)
 			} else if !exists {
@@ -306,13 +312,13 @@ func Validate(cat Catalog) []error {
 			}
 		}
 	}
-	checkCollisions("unit id", "Unit", collectUnitIDs(cat))
+	checkCollisions("unit id", prefixUnit, collectUnitIDs(cat))
 	checkCollisions("stage", typeStage, collectStages(cat))
 	checkCollisions("scope", typeScope, collectScopes(cat))
 	checkCollisions("domain", typeDomain, collectDomains(cat))
 	checkCollisions("privilege", typePrivilege, collectPrivileges(cat))
-	checkCollisions("condition", "Condition", collectConditions(cat))
-	checkCollisions("barrier", "Barrier", collectBarriers(cat))
+	checkCollisions("condition", catalogTypeCondition, collectConditions(cat))
+	checkCollisions("barrier", catalogTypeBarrier, collectBarriers(cat))
 
 	for _, osName := range oses {
 		present := make(map[string]bool)
@@ -505,13 +511,7 @@ func planDocUpdates(repoRoot, docsTable string) ([]docUpdate, error) {
 		abs := filepath.Join(repoRoot, filepath.FromSlash(rel))
 		data, err := os.ReadFile(abs) //nolint:gosec // path is inside caller-supplied repository root
 		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
 			return nil, fmt.Errorf("read %s: %w", rel, err)
-		}
-		if !bytes.Contains(data, []byte(docsBeginMarker)) || !bytes.Contains(data, []byte(docsEndMarker)) {
-			continue
 		}
 		updated, err := ReplaceDocsTable(data, docsTable)
 		if err != nil {
@@ -527,11 +527,104 @@ func planDocUpdates(repoRoot, docsTable string) ([]docUpdate, error) {
 	return updates, nil
 }
 
+type plannedWrite struct {
+	label string
+	path  string
+	data  []byte
+}
+
+type stagedWrite struct {
+	label   string
+	target  string
+	tmpPath string
+}
+
+type fileOps struct {
+	writeTemp func(targetPath string, data []byte) (string, error)
+	rename    func(oldPath, newPath string) error
+	remove    func(path string) error
+}
+
+func defaultFileOps() fileOps {
+	return fileOps{
+		writeTemp: writeTempFile,
+		rename:    os.Rename,
+		remove:    os.Remove,
+	}
+}
+
+func writeTempFile(targetPath string, data []byte) (string, error) {
+	dir := filepath.Dir(targetPath)
+	base := filepath.Base(targetPath)
+	tmp, err := os.CreateTemp(dir, "."+base+".tmp-*")
+	if err != nil {
+		return "", fmt.Errorf("create temp for %s: %w", targetPath, err)
+	}
+	tmpPath := tmp.Name()
+	cleanup := func() {
+		_ = os.Remove(tmpPath)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return "", fmt.Errorf("write temp for %s: %w", targetPath, err)
+	}
+	if info, err := os.Stat(targetPath); err == nil {
+		if chmodErr := tmp.Chmod(info.Mode().Perm()); chmodErr != nil {
+			_ = tmp.Close()
+			cleanup()
+			return "", fmt.Errorf("chmod temp for %s: %w", targetPath, chmodErr)
+		}
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return "", fmt.Errorf("sync temp for %s: %w", targetPath, err)
+	}
+	if err := tmp.Close(); err != nil {
+		cleanup()
+		return "", fmt.Errorf("close temp for %s: %w", targetPath, err)
+	}
+	return tmpPath, nil
+}
+
+func commitWrites(writes []plannedWrite, ops fileOps) error {
+	staged := make([]stagedWrite, 0, len(writes))
+	cleanup := func(items []stagedWrite) {
+		for _, item := range items {
+			_ = ops.remove(item.tmpPath)
+		}
+	}
+	for _, w := range writes {
+		tmpPath, err := ops.writeTemp(w.path, w.data)
+		if err != nil {
+			cleanup(staged)
+			return fmt.Errorf("write %s: %w", w.label, err)
+		}
+		staged = append(staged, stagedWrite{
+			label:   w.label,
+			target:  w.path,
+			tmpPath: tmpPath,
+		})
+	}
+	for i, s := range staged {
+		if err := ops.rename(s.tmpPath, s.target); err != nil {
+			cleanup(staged[i:])
+			return fmt.Errorf("rename %s: %w", s.label, err)
+		}
+	}
+	return nil
+}
+
 // WriteRepo reads registry/units.toml (and registry/presets.toml if present)
 // under repoRoot, validates them, type-checks the generated Go sources against
 // the repository's contract and catalog packages, and writes the generated Go
 // files and Markdown unit tables only after all checks succeed.
 func WriteRepo(repoRoot string) error {
+	return writeRepoWithOps(repoRoot, defaultFileOps())
+}
+
+func writeRepoWithOps(repoRoot string, ops fileOps) error {
 	out, err := loadAndGenerateRepo(repoRoot)
 	if err != nil {
 		return err
@@ -557,22 +650,23 @@ func WriteRepo(repoRoot string) error {
 	}
 
 	enumsPath := filepath.Join(contractDir, "enums_gen.go")
-	if err := os.WriteFile(enumsPath, out.ContractEnums, 0o600); err != nil {
-		return fmt.Errorf("write %s: %w", enumsPath, err)
-	}
 	catalogPath := filepath.Join(catalogDir, "catalog_gen.go")
-	if err := os.WriteFile(catalogPath, out.CatalogTable, 0o600); err != nil {
-		return fmt.Errorf("write %s: %w", catalogPath, err)
-	}
+	writes := make([]plannedWrite, 0, 2+len(docUpdates))
+	writes = append(writes,
+		plannedWrite{label: "internal/contract/enums_gen.go", path: enumsPath, data: out.ContractEnums},
+		plannedWrite{label: "internal/units/catalog/catalog_gen.go", path: catalogPath, data: out.CatalogTable},
+	)
 	for _, upd := range docUpdates {
 		if !upd.stale {
 			continue
 		}
-		if err := os.WriteFile(upd.absPath, upd.updated, 0o600); err != nil {
-			return fmt.Errorf("write %s: %w", upd.relPath, err)
-		}
+		writes = append(writes, plannedWrite{
+			label: upd.relPath,
+			path:  upd.absPath,
+			data:  upd.updated,
+		})
 	}
-	return nil
+	return commitWrites(writes, ops)
 }
 
 // CheckRepo verifies that registry/units.toml, registry/presets.toml, the

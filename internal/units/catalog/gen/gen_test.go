@@ -545,6 +545,38 @@ milestone = "alpha"
 			},
 			want: `collide on Go identifier UnitFooBar`,
 		},
+		{
+			name: "reserved type name collision unit id",
+			mutate: func(_ *testing.T, src string) string {
+				return src + `
+[[unit]]
+id = "id"
+domain = "ops"
+stage = { linux = "audit", macos = "audit" }
+privilege = { linux = "root", macos = "root" }
+depends = { linux = [], macos = [] }
+epic = "EPC-999"
+milestone = "alpha"
+`
+			},
+			want: `collides with reserved Go identifier UnitID`,
+		},
+		{
+			name: "reserved helper name collision lookup",
+			mutate: func(_ *testing.T, src string) string {
+				return src + `
+[[unit]]
+id = "lookup"
+domain = "ops"
+stage = { linux = "audit", macos = "audit" }
+privilege = { linux = "root", macos = "root" }
+depends = { linux = [], macos = [] }
+epic = "EPC-999"
+milestone = "alpha"
+`
+			},
+			want: `collides with reserved Go identifier Lookup`,
+		},
 	}
 
 	for _, tc := range cases {
@@ -754,4 +786,143 @@ milestone = "alpha"
 			t.Fatalf("TypeCheckSources() error = %v, want contract type-check error", err)
 		}
 	})
+}
+
+func TestDocTargetErrorsFailCheckAndWrite(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		mutate func(t *testing.T, targetPath string)
+		want   string
+	}{
+		{
+			name: "missing target doc",
+			mutate: func(t *testing.T, targetPath string) {
+				if err := os.Remove(targetPath); err != nil {
+					t.Fatalf("remove target doc: %v", err)
+				}
+			},
+			want: "docs/plan/roadmap.md",
+		},
+		{
+			name: "missing begin marker",
+			mutate: func(t *testing.T, targetPath string) {
+				if err := os.WriteFile(targetPath, []byte("# Doc\n<!-- catalog:units:end -->\n"), 0o600); err != nil {
+					t.Fatalf("write doc: %v", err)
+				}
+			},
+			want: "missing catalog:units:begin marker",
+		},
+		{
+			name: "missing end marker",
+			mutate: func(t *testing.T, targetPath string) {
+				if err := os.WriteFile(targetPath, []byte("# Doc\n<!-- catalog:units:begin -->\n"), 0o600); err != nil {
+					t.Fatalf("write doc: %v", err)
+				}
+			},
+			want: "missing catalog:units:end marker",
+		},
+		{
+			name: "duplicate begin marker",
+			mutate: func(t *testing.T, targetPath string) {
+				doc := "# Doc\n<!-- catalog:units:begin -->\n<!-- catalog:units:begin -->\n<!-- catalog:units:end -->\n"
+				if err := os.WriteFile(targetPath, []byte(doc), 0o600); err != nil {
+					t.Fatalf("write doc: %v", err)
+				}
+			},
+			want: "duplicate catalog:units:begin marker",
+		},
+		{
+			name: "duplicate end marker",
+			mutate: func(t *testing.T, targetPath string) {
+				doc := "# Doc\n<!-- catalog:units:begin -->\n<!-- catalog:units:end -->\n<!-- catalog:units:end -->\n"
+				if err := os.WriteFile(targetPath, []byte(doc), 0o600); err != nil {
+					t.Fatalf("write doc: %v", err)
+				}
+			},
+			want: "duplicate catalog:units:end marker",
+		},
+		{
+			name: "end marker before begin marker",
+			mutate: func(t *testing.T, targetPath string) {
+				doc := "# Doc\n<!-- catalog:units:end -->\n<!-- catalog:units:begin -->\n"
+				if err := os.WriteFile(targetPath, []byte(doc), 0o600); err != nil {
+					t.Fatalf("write doc: %v", err)
+				}
+			},
+			want: "appears before",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			root := setupTempRepo(t, minimalValidCatalog)
+			if err := gen.WriteRepo(root); err != nil {
+				t.Fatalf("initial WriteRepo: %v", err)
+			}
+			target := filepath.Join(root, filepath.FromSlash(gen.DocTargets()[0]))
+			tc.mutate(t, target)
+
+			if err := gen.CheckRepo(root); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("CheckRepo() error = %v, want substring %q", err, tc.want)
+			}
+			if err := gen.WriteRepo(root); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("WriteRepo() error = %v, want substring %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestWriteRepoSecondWriteFailureLeavesTargetsUnchanged(t *testing.T) {
+	t.Parallel()
+
+	root := setupTempRepo(t, minimalValidCatalog)
+	if err := gen.WriteRepo(root); err != nil {
+		t.Fatalf("initial WriteRepo: %v", err)
+	}
+
+	enumsPath := filepath.Join(root, "internal", "contract", "enums_gen.go")
+	origEnums, err := os.ReadFile(enumsPath) //nolint:gosec // test temp dir
+	if err != nil {
+		t.Fatalf("read initial enums_gen.go: %v", err)
+	}
+	catalogPath := filepath.Join(root, "internal", "units", "catalog", "catalog_gen.go")
+	if err := os.Remove(catalogPath); err != nil {
+		t.Fatalf("remove catalog_gen.go: %v", err)
+	}
+	catalogDir := filepath.Dir(catalogPath)
+	if err := os.Chmod(catalogDir, 0o500); err != nil { //nolint:gosec // test temp dir read-only to trigger write failure
+		t.Fatalf("chmod catalog dir read-only: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(catalogDir, 0o750) //nolint:gosec // restore test temp dir permissions for cleanup
+	})
+
+	edited := minimalValidCatalog + `
+[[unit]]
+id = "extra-unit"
+domain = "ops"
+stage = { linux = "audit", macos = "audit" }
+privilege = { linux = "root", macos = "root" }
+depends = { linux = [], macos = [] }
+epic = "EPC-999"
+milestone = "alpha"
+`
+	if err := os.WriteFile(filepath.Join(root, "registry", "units.toml"), []byte(edited), 0o600); err != nil {
+		t.Fatalf("write edited units.toml: %v", err)
+	}
+
+	if err := gen.WriteRepo(root); err == nil {
+		t.Fatal("WriteRepo unexpectedly succeeded when catalog dir is read-only")
+	}
+
+	gotEnums, err := os.ReadFile(enumsPath) //nolint:gosec // test temp dir
+	if err != nil {
+		t.Fatalf("read enums_gen.go after failure: %v", err)
+	}
+	if string(gotEnums) != string(origEnums) {
+		t.Fatal("enums_gen.go was modified despite failure on second write")
+	}
 }
