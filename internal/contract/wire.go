@@ -1,5 +1,10 @@
 package contract
 
+import (
+	"encoding/json"
+	"fmt"
+)
+
 // This file defines the plain JSON value types for the published CLI schemas
 // that do not already have a Go contract type in contract.go: next, handover,
 // failure, explain and error (SPC-001 "Interfaces and formats").
@@ -28,6 +33,11 @@ func (s HandoverStatus) String() string { return string(s) }
 // UnmarshalText decodes a HandoverStatus and rejects unknown values.
 func (s *HandoverStatus) UnmarshalText(b []byte) error {
 	return decodeEnum(b, s, HandoverStatus.Valid, "handover status")
+}
+
+// UnmarshalJSON decodes a HandoverStatus and rejects null and unknown values.
+func (s *HandoverStatus) UnmarshalJSON(b []byte) error {
+	return decodeEnumJSON(b, s, HandoverStatus.Valid, "handover status")
 }
 
 // HandoverCommand is the command a person runs to complete a hand-over step.
@@ -102,12 +112,14 @@ type ExplainSource struct {
 // Explain is the structured explanation for a unit or configuration field
 // returned by wskit explain --json (explain.schema.json).
 type Explain struct {
-	SchemaVersion    int             `json:"schema_version"`
-	Subject          string          `json:"subject"`
-	What             string          `json:"what"`
-	Why              string          `json:"why"`
-	Options          []string        `json:"options"`
-	Default          any             `json:"default"`
+	SchemaVersion int      `json:"schema_version"`
+	Subject       string   `json:"subject"`
+	What          string   `json:"what"`
+	Why           string   `json:"why"`
+	Options       []string `json:"options"`
+	// Default is kept as raw JSON so any value, including integers beyond
+	// float64 precision, survives decoding unchanged.
+	Default          json.RawMessage `json:"default"`
 	Risk             string          `json:"risk"`
 	Undo             string          `json:"undo"`
 	ManualEquivalent string          `json:"manual_equivalent"`
@@ -122,4 +134,19 @@ type CLIError struct {
 	Class         string   `json:"class"`
 	Message       string   `json:"message"`
 	Rule          *string  `json:"rule"`
+}
+
+// UnmarshalJSON decodes a CLIError and requires a failure exit code: an error
+// never carries ExitDone.
+func (e *CLIError) UnmarshalJSON(b []byte) error {
+	type plain CLIError
+	var p plain
+	if err := json.Unmarshal(b, &p); err != nil {
+		return fmt.Errorf("cli error: %w", err)
+	}
+	if p.Code == ExitDone {
+		return fmt.Errorf("%w: a cli error has exit code 0", ErrUnknownValue)
+	}
+	*e = CLIError(p)
+	return nil
 }

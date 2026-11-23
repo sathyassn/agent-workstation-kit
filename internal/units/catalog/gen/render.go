@@ -229,7 +229,7 @@ func RenderContractEnums(cat Catalog) ([]byte, error) {
 
 	var b bytes.Buffer
 	b.WriteString(generatedHeader)
-	b.WriteString("\npackage contract\n\nimport \"fmt\"\n\n")
+	b.WriteString("\npackage contract\n\nimport (\n\t\"encoding/json\"\n\t\"fmt\"\n)\n\n")
 
 	for _, spec := range contractEnumDefs() {
 		spec.values = valuesByType[spec.typeName]
@@ -296,6 +296,17 @@ func writeEnum(b *bytes.Buffer, spec enumSpec) {
 	writef(b, "\t}\n")
 	writef(b, "\t*%s = v\n", spec.recv)
 	writef(b, "\treturn nil\n")
+	writef(b, "}\n\n")
+	writef(b, "// UnmarshalJSON decodes a %s and rejects null and unknown values.\n", spec.typeName)
+	writef(b, "func (%s *%s) UnmarshalJSON(b []byte) error {\n", spec.recv, spec.typeName)
+	writef(b, "\tif string(b) == \"null\" {\n")
+	writef(b, "\t\treturn fmt.Errorf(\"unknown %s: null\")\n", spec.typeName)
+	writef(b, "\t}\n")
+	writef(b, "\tvar raw string\n")
+	writef(b, "\tif err := json.Unmarshal(b, &raw); err != nil {\n")
+	writef(b, "\t\treturn fmt.Errorf(\"%s: %%w\", err)\n", spec.typeName)
+	writef(b, "\t}\n")
+	writef(b, "\treturn %s.UnmarshalText([]byte(raw))\n", spec.recv)
 	writef(b, "}\n\n")
 
 	if len(spec.scopeCases) > 0 {

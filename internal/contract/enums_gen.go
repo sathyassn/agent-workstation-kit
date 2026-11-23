@@ -2,7 +2,10 @@
 
 package contract
 
-import "fmt"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 // UnitID identifies a unit in the catalog.
 type UnitID string
@@ -82,6 +85,18 @@ func (u *UnitID) UnmarshalText(b []byte) error {
 	}
 	*u = v
 	return nil
+}
+
+// UnmarshalJSON decodes a UnitID and rejects null and unknown values.
+func (u *UnitID) UnmarshalJSON(b []byte) error {
+	if string(b) == "null" {
+		return fmt.Errorf("unknown UnitID: null")
+	}
+	var raw string
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return fmt.Errorf("UnitID: %w", err)
+	}
+	return u.UnmarshalText([]byte(raw))
 }
 
 // AllUnitIDs returns a fresh slice of every valid UnitID in catalog order.
@@ -165,6 +180,18 @@ func (s *Stage) UnmarshalText(b []byte) error {
 	return nil
 }
 
+// UnmarshalJSON decodes a Stage and rejects null and unknown values.
+func (s *Stage) UnmarshalJSON(b []byte) error {
+	if string(b) == "null" {
+		return fmt.Errorf("unknown Stage: null")
+	}
+	var raw string
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return fmt.Errorf("Stage: %w", err)
+	}
+	return s.UnmarshalText([]byte(raw))
+}
+
 // AllStages returns a fresh slice of every valid Stage in catalog order.
 func AllStages() []Stage {
 	return []Stage{
@@ -213,6 +240,18 @@ func (s *Scope) UnmarshalText(b []byte) error {
 	}
 	*s = v
 	return nil
+}
+
+// UnmarshalJSON decodes a Scope and rejects null and unknown values.
+func (s *Scope) UnmarshalJSON(b []byte) error {
+	if string(b) == "null" {
+		return fmt.Errorf("unknown Scope: null")
+	}
+	var raw string
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return fmt.Errorf("Scope: %w", err)
+	}
+	return s.UnmarshalText([]byte(raw))
 }
 
 // AllScopes returns a fresh slice of every valid Scope.
@@ -269,6 +308,18 @@ func (d *Domain) UnmarshalText(b []byte) error {
 	return nil
 }
 
+// UnmarshalJSON decodes a Domain and rejects null and unknown values.
+func (d *Domain) UnmarshalJSON(b []byte) error {
+	if string(b) == "null" {
+		return fmt.Errorf("unknown Domain: null")
+	}
+	var raw string
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return fmt.Errorf("Domain: %w", err)
+	}
+	return d.UnmarshalText([]byte(raw))
+}
+
 // AllDomains returns a fresh slice of every valid Domain in catalog order.
 func AllDomains() []Domain {
 	return []Domain{
@@ -319,6 +370,18 @@ func (p *Privilege) UnmarshalText(b []byte) error {
 	}
 	*p = v
 	return nil
+}
+
+// UnmarshalJSON decodes a Privilege and rejects null and unknown values.
+func (p *Privilege) UnmarshalJSON(b []byte) error {
+	if string(b) == "null" {
+		return fmt.Errorf("unknown Privilege: null")
+	}
+	var raw string
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return fmt.Errorf("Privilege: %w", err)
+	}
+	return p.UnmarshalText([]byte(raw))
 }
 
 // Scope returns the execution Scope for p, or an empty Scope when invalid.

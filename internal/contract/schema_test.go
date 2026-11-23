@@ -3,6 +3,7 @@ package contract_test
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"os"
 	"path"
@@ -509,7 +510,7 @@ func TestMarshalledGoStructsValidateAgainstSchemas(t *testing.T) {
 				What:             "Hardens OpenSSH.",
 				Why:              "Restricts remote logins.",
 				Options:          []string{"enabled", "disabled"},
-				Default:          "enabled",
+				Default:          json.RawMessage(`"enabled"`),
 				Risk:             "high",
 				Undo:             "Run wskit ssh revert --apply.",
 				ManualEquivalent: "Edit sshd_config and reload ssh.",
@@ -766,11 +767,14 @@ func TestValidFixturesRoundTripThroughGoTypes(t *testing.T) {
 						t.Fatalf("round-tripped %s failed schema %s: %v\njson: %s", f, name, err, remarshalled)
 					}
 
-					var origTree, gotTree any
-					if err := json.Unmarshal(raw, &origTree); err != nil {
+					// Numbers stay json.Number, so a value beyond float64
+					// precision cannot hide a lossy round trip.
+					origTree, err := decodeNumberTree(raw)
+					if err != nil {
 						t.Fatalf("parse orig %s: %v", f, err)
 					}
-					if err := json.Unmarshal(remarshalled, &gotTree); err != nil {
+					gotTree, err := decodeNumberTree(remarshalled)
+					if err != nil {
 						t.Fatalf("parse remarshalled %s: %v", f, err)
 					}
 					if !reflect.DeepEqual(origTree, gotTree) {
@@ -918,3 +922,13 @@ func ptrString(s string) *string                            { return &s }
 func ptrStage(s contract.Stage) *contract.Stage             { return &s }
 func ptrUnitID(u contract.UnitID) *contract.UnitID          { return &u }
 func ptrBackupRef(b contract.BackupRef) *contract.BackupRef { return &b }
+
+func decodeNumberTree(b []byte) (any, error) {
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.UseNumber()
+	var tree any
+	if err := dec.Decode(&tree); err != nil {
+		return nil, fmt.Errorf("decode: %w", err)
+	}
+	return tree, nil
+}

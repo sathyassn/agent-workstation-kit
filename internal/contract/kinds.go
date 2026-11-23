@@ -1,9 +1,11 @@
 package contract
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 )
 
 // The enums below are named in SPC-001 "Interfaces and formats". They are
@@ -258,12 +260,35 @@ func (t *Topology) UnmarshalText(b []byte) error {
 	return decodeEnum(b, t, Topology.Valid, "topology")
 }
 
-// UnmarshalJSON decodes an ExitCode and rejects unknown values.
+// UnmarshalJSON decodes an ExitCode and rejects null and unknown values, so
+// a missing code never reads as 0, which means success.
 func (c *ExitCode) UnmarshalJSON(b []byte) error {
+	if isJSONNull(b) {
+		return fmt.Errorf("%w: exit code is null", ErrUnknownValue)
+	}
+	// encoding/json hands a map key over as a quoted string; validate it the
+	// same way. The schemas still require an integer for exit code values.
+	var quoted string
+	if json.Unmarshal(b, &quoted) == nil {
+		return c.UnmarshalText([]byte(quoted))
+	}
 	var n int
 	if err := json.Unmarshal(b, &n); err != nil {
 		return fmt.Errorf("exit code: %w", err)
 	}
+	return c.set(n)
+}
+
+// UnmarshalText decodes an ExitCode map key and rejects unknown values.
+func (c *ExitCode) UnmarshalText(b []byte) error {
+	n, err := strconv.Atoi(string(b))
+	if err != nil {
+		return fmt.Errorf("%w: exit code %q", ErrUnknownValue, string(b))
+	}
+	return c.set(n)
+}
+
+func (c *ExitCode) set(n int) error {
 	if !ExitCode(n).Valid() {
 		return fmt.Errorf("%w: exit code %d", ErrUnknownValue, n)
 	}
@@ -282,4 +307,52 @@ func decodeEnum[T ~string](b []byte, dst *T, valid func(T) bool, name string) er
 	}
 	*dst = v
 	return nil
+}
+
+// decodeEnumJSON decodes a JSON string into a string enum. Unlike
+// UnmarshalText, which encoding/json never calls for null, it refuses null,
+// so a required enum field cannot be left empty or keep an old value.
+func decodeEnumJSON[T ~string](b []byte, dst *T, valid func(T) bool, name string) error {
+	if isJSONNull(b) {
+		return fmt.Errorf("%w: %s is null", ErrUnknownValue, name)
+	}
+	var raw string
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return fmt.Errorf("%s: %w", name, err)
+	}
+	return decodeEnum([]byte(raw), dst, valid, name)
+}
+
+func isJSONNull(b []byte) bool { return bytes.Equal(bytes.TrimSpace(b), []byte("null")) }
+
+// UnmarshalJSON decodes a Verb and rejects null and unknown values.
+func (v *Verb) UnmarshalJSON(b []byte) error { return decodeEnumJSON(b, v, Verb.Valid, "verb") }
+
+// UnmarshalJSON decodes an Outcome and rejects null and unknown values. A
+// nullable outcome is a *Outcome, which JSON null leaves nil.
+func (o *Outcome) UnmarshalJSON(b []byte) error {
+	return decodeEnumJSON(b, o, Outcome.Valid, "outcome")
+}
+
+// UnmarshalJSON decodes an EventKind and rejects null and unknown values.
+func (k *EventKind) UnmarshalJSON(b []byte) error {
+	return decodeEnumJSON(b, k, EventKind.Valid, "event kind")
+}
+
+// UnmarshalJSON decodes a StepID and rejects null and unknown values.
+func (s *StepID) UnmarshalJSON(b []byte) error { return decodeEnumJSON(b, s, StepID.Valid, "step") }
+
+// UnmarshalJSON decodes a DataKey and rejects null and unknown values.
+func (k *DataKey) UnmarshalJSON(b []byte) error {
+	return decodeEnumJSON(b, k, DataKey.Valid, "data key")
+}
+
+// UnmarshalJSON decodes a FormFactor and rejects null and unknown values.
+func (f *FormFactor) UnmarshalJSON(b []byte) error {
+	return decodeEnumJSON(b, f, FormFactor.Valid, "form factor")
+}
+
+// UnmarshalJSON decodes a Topology and rejects null and unknown values.
+func (t *Topology) UnmarshalJSON(b []byte) error {
+	return decodeEnumJSON(b, t, Topology.Valid, "topology")
 }

@@ -153,6 +153,11 @@ func (a *ChangeAction) UnmarshalText(b []byte) error {
 	return decodeEnum(b, a, ChangeAction.Valid, "change action")
 }
 
+// UnmarshalJSON decodes a ChangeAction and rejects null and unknown values.
+func (a *ChangeAction) UnmarshalJSON(b []byte) error {
+	return decodeEnumJSON(b, a, ChangeAction.Valid, "change action")
+}
+
 // Risk grades a change for the preview.
 type Risk string
 
@@ -171,6 +176,9 @@ func (r Risk) Valid() bool { return contains(AllRisks(), r) }
 
 // UnmarshalText decodes a Risk and rejects unknown values.
 func (r *Risk) UnmarshalText(b []byte) error { return decodeEnum(b, r, Risk.Valid, "risk") }
+
+// UnmarshalJSON decodes a Risk and rejects null and unknown values.
+func (r *Risk) UnmarshalJSON(b []byte) error { return decodeEnumJSON(b, r, Risk.Valid, "risk") }
 
 // Change is one planned change to one target.
 type Change struct {

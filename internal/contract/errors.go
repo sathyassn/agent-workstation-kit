@@ -27,6 +27,16 @@ func (k TargetKind) Valid() bool { return contains(AllTargetKinds(), k) }
 // String returns k as a string.
 func (k TargetKind) String() string { return string(k) }
 
+// UnmarshalText decodes a TargetKind and rejects unknown values.
+func (k *TargetKind) UnmarshalText(b []byte) error {
+	return decodeEnum(b, k, TargetKind.Valid, "target kind")
+}
+
+// UnmarshalJSON decodes a TargetKind and rejects null and unknown values.
+func (k *TargetKind) UnmarshalJSON(b []byte) error {
+	return decodeEnumJSON(b, k, TargetKind.Valid, "target kind")
+}
+
 // ErrUndeclaredTarget is the sentinel error for mutations or command
 // environment variables outside a unit's Description.
 // It is a sentinel for errors.Is and must never be reassigned.
