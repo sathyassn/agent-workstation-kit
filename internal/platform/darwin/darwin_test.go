@@ -115,7 +115,7 @@ func TestRunReadsExitCodeAfterJobEnds(t *testing.T) {
 		t.Fatalf("ack = %+v", ack)
 	}
 	calls := r.Calls()
-	if !slices.Equal(calls[0][:3], []string{"launchctl", "bootstrap", "gui/501"}) {
+	if !slices.Equal(calls[0][:3], []string{"/bin/launchctl", "bootstrap", "gui/501"}) {
 		t.Fatalf("first call = %q", calls[0])
 	}
 	if last := calls[len(calls)-1]; last[1] != "bootout" {
@@ -238,5 +238,47 @@ func TestPlistIsDurableBeforeBootstrap(t *testing.T) {
 	folder := slices.Index(events, "sync "+filepath.Base(dir))
 	if boot < 0 || file < 0 || folder < 0 || file > boot || folder > boot {
 		t.Fatalf("events = %q, want the plist and its folder fsynced before bootstrap", events)
+	}
+}
+
+// TestLaunchctlIgnoresHostilePathAndEnvironment is finding 2 on macOS: a
+// launchctl planted first on PATH is never run, and launchctl gets a fixed
+// minimal environment; the tool's variables travel only in the plist.
+func TestLaunchctlIgnoresHostilePathAndEnvironment(t *testing.T) {
+	hostile := t.TempDir()
+	marker := filepath.Join(hostile, "ran")
+	if err := os.WriteFile(filepath.Join(hostile, "launchctl"), []byte("#!/bin/sh\ntouch "+marker+"\nexit 113\n"), 0o700); err != nil { //nolint:gosec // test executable
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", hostile)
+	c := &Containment{Runner: platform.OSCommandRunner{}, PlistDir: privateDir(t)}
+	_ = c.Empty(context.Background(), label, platform.EmptyOptions{})
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("launchctl was found through PATH")
+	}
+
+	r := (&launchd{runFor: 1}).runner()
+	c = &Containment{Runner: r, Inspector: fixedIdentity{}, PlistDir: privateDir(t), PollInterval: time.Millisecond}
+	if _, err := c.Run(context.Background(), platform.LaunchSpec{Name: label, Scope: contract.ScopeRoot, Argv: []string{"/usr/bin/true"}, Env: []string{"WSKIT_TOKEN=s3cret"}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	for i, argv := range r.Calls() {
+		if argv[0] != "/bin/launchctl" {
+			t.Fatalf("call %d runs %q, want /bin/launchctl", i, argv[0])
+		}
+		for _, kv := range r.Envs()[i] {
+			if strings.HasPrefix(kv, "WSKIT_TOKEN=") {
+				t.Fatalf("launchctl environment holds %s", kv)
+			}
+		}
+		if len(r.Envs()[i]) == 0 {
+			t.Fatalf("call %d has an empty environment, want a fixed PATH", i)
+		}
+	}
+}
+
+func TestNewContainmentChecksBinaries(t *testing.T) {
+	if _, err := NewContainment(privateDir(t)); err != nil {
+		t.Fatalf("NewContainment on this host: %v", err)
 	}
 }

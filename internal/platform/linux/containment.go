@@ -15,13 +15,25 @@ import (
 )
 
 const (
-	systemdRunBin = "systemd-run"
-	systemctlBin  = "systemctl"
-	flagUser      = "--user"
-	scopePrefix   = "wskit-run-"
-	scopeSuffix   = ".scope"
-	envRuntimeDir = "XDG_RUNTIME_DIR"
+	flagUser       = "--user"
+	scopePrefix    = "wskit-run-"
+	scopeSuffix    = ".scope"
+	defaultRunUser = "/run/user"
+	supervisorPath = "PATH=/usr/sbin:/usr/bin:/sbin:/bin"
 )
+
+// Binaries are the absolute paths the adapter executes. Nothing is looked
+// up through PATH.
+type Binaries struct {
+	SystemdRun string
+	Systemctl  string
+	Shell      string
+}
+
+// DefaultBinaries are the Ubuntu paths of the supervisor tools.
+func DefaultBinaries() Binaries {
+	return Binaries{SystemdRun: "/usr/bin/systemd-run", Systemctl: "/usr/bin/systemctl", Shell: "/bin/sh"}
+}
 
 // validScopeName matches the names NameFor makes; nothing else is passed to
 // systemctl. It is compiled once and never changed.
@@ -40,14 +52,60 @@ type identityReader interface {
 type Containment struct {
 	Runner    platform.CommandRunner
 	Inspector identityReader
+	// Bin are the supervisor binaries; empty fields take DefaultBinaries.
+	Bin Binaries
+	// UID owns the user manager for a user scope.
+	UID int
+	// RunUserRoot holds each user's runtime folder; empty is /run/user.
+	RunUserRoot string
 	// UserManager reports whether a user service manager runs. Nil checks
-	// for $XDG_RUNTIME_DIR/bus.
+	// for a bus socket in RunUserRoot/<UID>, owned by UID.
 	UserManager func(ctx context.Context) bool
 }
 
-// NewContainment returns an adapter that runs the real systemd tools.
-func NewContainment() *Containment {
-	return &Containment{Runner: platform.OSCommandRunner{}, Inspector: NewProcessInspector()}
+// NewContainment returns an adapter that runs the real systemd tools, after
+// checking that each binary is owned by root and not writable by others.
+func NewContainment() (*Containment, error) {
+	bin := DefaultBinaries()
+	for _, b := range []string{bin.SystemdRun, bin.Systemctl, bin.Shell} {
+		if err := platform.CheckTrustedBinary(b); err != nil {
+			return nil, fmt.Errorf("linux containment: %w", err)
+		}
+	}
+	return &Containment{Runner: platform.OSCommandRunner{}, Inspector: NewProcessInspector(), Bin: bin, UID: os.Getuid()}, nil
+}
+
+func (c *Containment) bin() Binaries {
+	b, d := c.Bin, DefaultBinaries()
+	if b.SystemdRun == "" {
+		b.SystemdRun = d.SystemdRun
+	}
+	if b.Systemctl == "" {
+		b.Systemctl = d.Systemctl
+	}
+	if b.Shell == "" {
+		b.Shell = d.Shell
+	}
+	return b
+}
+
+func (c *Containment) runtimeDir() string {
+	root := c.RunUserRoot
+	if root == "" {
+		root = defaultRunUser
+	}
+	return filepath.Join(root, strconv.Itoa(c.UID))
+}
+
+// supervisorEnv is the whole environment systemd-run and systemctl get: a
+// fixed PATH, and for a user manager its runtime folder and bus.
+func (c *Containment) supervisorEnv(user bool) []string {
+	env := []string{supervisorPath, "LANG=C"}
+	if user {
+		dir := c.runtimeDir()
+		env = append(env, "XDG_RUNTIME_DIR="+dir, "DBUS_SESSION_BUS_ADDRESS=unix:path="+filepath.Join(dir, "bus"))
+	}
+	return env
 }
 
 // NameFor returns the scope name for the seq-th command of a run.
@@ -73,17 +131,12 @@ func (c *Containment) Run(ctx context.Context, spec platform.LaunchSpec, onAck f
 		return contract.CommandResult{}, fmt.Errorf("%w: %q", platform.ErrInvalidContainmentName, spec.Name)
 	}
 	user := spec.Scope != contract.ScopeRoot
-	env := append([]string{}, spec.Env...)
-	if user {
-		if !c.hasUserManager(ctx) {
-			return contract.CommandResult{}, platform.ErrNoUserManager
-		}
-		// systemd-run --user finds the user bus through this variable.
-		env = append(env, envRuntimeDir+"="+os.Getenv(envRuntimeDir))
+	if user && !c.hasUserManager(ctx) {
+		return contract.CommandResult{}, platform.ErrNoUserManager
 	}
 	res, err := c.Runner.Run(ctx, platform.ExecSpec{
-		Argv:   SystemdRunArgv(spec.Name, user, spec.Argv),
-		Env:    env,
+		Argv:   SystemdRunArgv(c.bin().SystemdRun, spec.Name, user, spec.Env, spec.Argv),
+		Env:    c.supervisorEnv(user),
 		Dir:    spec.Dir,
 		Stdout: spec.Output,
 		Stderr: spec.Output,
@@ -124,8 +177,8 @@ func (c *Containment) Empty(ctx context.Context, name string, opts platform.Empt
 // or tool failure it does not recognise is an error, so the caller treats
 // the scope as not empty.
 func (c *Containment) Active(ctx context.Context, name string, sel platform.ScopeSelector) (bool, error) {
-	argv := systemctlArgv(sel, "show", "--property=ActiveState", "--value", name)
-	res, err := c.Runner.Run(ctx, platform.ExecSpec{Argv: argv})
+	argv := c.systemctlArgv(sel, "show", "--property=ActiveState", "--value", name)
+	res, err := c.Runner.Run(ctx, platform.ExecSpec{Argv: argv, Env: c.supervisorEnv(sel.User)})
 	if err != nil {
 		return false, fmt.Errorf("systemctl show %q: %w", name, err)
 	}
@@ -150,38 +203,58 @@ func (c *Containment) Signal(ctx context.Context, name string, sel platform.Scop
 	if !ok {
 		return fmt.Errorf("%w: signal %v", platform.ErrSupervisorState, sig)
 	}
-	argv := systemctlArgv(sel, "kill", "--signal="+sigName, name)
-	if _, err := c.Runner.Run(ctx, platform.ExecSpec{Argv: argv}); err != nil {
+	argv := c.systemctlArgv(sel, "kill", "--signal="+sigName, name)
+	if _, err := c.Runner.Run(ctx, platform.ExecSpec{Argv: argv, Env: c.supervisorEnv(sel.User)}); err != nil {
 		return fmt.Errorf("systemctl kill %q: %w", name, err)
 	}
 	return nil
 }
 
+// hasUserManager checks for the user manager's bus in /run/user/<uid>: the
+// folder and the socket must be owned by that uid and the folder must not be
+// writable by others. The caller's XDG_RUNTIME_DIR is never trusted.
 func (c *Containment) hasUserManager(ctx context.Context) bool {
 	if c.UserManager != nil {
 		return c.UserManager(ctx)
 	}
-	dir := os.Getenv(envRuntimeDir)
-	if dir == "" {
-		return false
+	dir := c.runtimeDir()
+	for _, p := range []string{dir, filepath.Join(dir, "bus")} {
+		info, err := os.Lstat(p)
+		if err != nil {
+			return false
+		}
+		st, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || int(st.Uid) != c.UID {
+			return false
+		}
+		if p == dir && (!info.IsDir() || info.Mode().Perm()&0o022 != 0) {
+			return false
+		}
+		if p != dir && info.Mode()&os.ModeSocket == 0 {
+			return false
+		}
 	}
-	info, err := os.Stat(filepath.Join(dir, "bus")) //nolint:gosec // only stats the user bus socket; nothing is read or written
-	return err == nil && info.Mode()&os.ModeSocket != 0
+	return true
 }
 
 // SystemdRunArgv is the systemd-run command line that starts command in the
-// named transient scope.
-func SystemdRunArgv(name string, user bool, command []string) []string {
-	argv := []string{systemdRunBin}
+// named transient scope. The tool's variables go in as --setenv, so the
+// supervisor's own environment stays minimal.
+func SystemdRunArgv(bin, name string, user bool, env, command []string) []string {
+	argv := []string{bin}
 	if user {
 		argv = append(argv, flagUser)
 	}
-	argv = append(argv, "--scope", "--quiet", "--collect", "--unit="+name, "--")
+	argv = append(argv, "--scope", "--quiet", "--collect", "--unit="+name)
+	for _, kv := range env {
+		argv = append(argv, "--setenv="+kv)
+	}
+	argv = append(argv, "--")
 	return append(argv, command...)
 }
 
-func systemctlArgv(sel platform.ScopeSelector, args ...string) []string {
-	argv := []string{systemctlBin}
+func (c *Containment) systemctlArgv(sel platform.ScopeSelector, args ...string) []string {
+	argv := []string{c.bin().Systemctl}
 	if sel.User {
 		argv = append(argv, flagUser)
 	}

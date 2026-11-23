@@ -91,12 +91,18 @@ func startTime(pid int) (string, bool, error) {
 }
 
 // NewContainment returns an adapter that runs the real launchctl, keeping
-// its job definitions in plistDir.
-func NewContainment(plistDir string) *Containment {
+// its job definitions in plistDir, after checking that launchctl and the
+// shell are owned by root and not writable by others.
+func NewContainment(plistDir string) (*Containment, error) {
+	for _, b := range []string{launchctlBin, shellBin} {
+		if err := platform.CheckTrustedBinary(b); err != nil {
+			return nil, fmt.Errorf("darwin containment: %w", err)
+		}
+	}
 	return &Containment{
 		Runner:    platform.OSCommandRunner{},
 		Inspector: NewProcessInspector(),
 		PlistDir:  plistDir,
 		UID:       os.Getuid(),
-	}
+	}, nil
 }

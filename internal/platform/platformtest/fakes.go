@@ -263,6 +263,7 @@ type Runner struct {
 	mu      sync.Mutex
 	respond func(argv []string) (platform.ExecResult, error)
 	calls   [][]string
+	envs    [][]string
 }
 
 // NewRunner returns a runner that answers with respond.
@@ -274,12 +275,20 @@ func NewRunner(respond func(argv []string) (platform.ExecResult, error)) *Runner
 func (r *Runner) Run(_ context.Context, spec platform.ExecSpec) (platform.ExecResult, error) {
 	r.mu.Lock()
 	r.calls = append(r.calls, append([]string(nil), spec.Argv...))
+	r.envs = append(r.envs, append([]string(nil), spec.Env...))
 	respond := r.respond
 	r.mu.Unlock()
 	if spec.OnStart != nil {
 		spec.OnStart(4242)
 	}
 	return respond(spec.Argv)
+}
+
+// Envs returns the environment of every call so far, in call order.
+func (r *Runner) Envs() [][]string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([][]string(nil), r.envs...)
 }
 
 // Calls returns every argv run so far.

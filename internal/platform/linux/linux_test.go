@@ -3,6 +3,7 @@ package linux_test
 import (
 	"context"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"slices"
@@ -114,7 +115,7 @@ func TestRunStartsTransientScope(t *testing.T) {
 	if err != nil || res.ExitCode != 7 {
 		t.Fatalf("Run = %+v, %v", res, err)
 	}
-	want := []string{"systemd-run", "--scope", "--quiet", "--collect", "--unit=" + scope, "--", "apt-get", "install"}
+	want := []string{"/usr/bin/systemd-run", "--scope", "--quiet", "--collect", "--unit=" + scope, "--", "apt-get", "install"}
 	if got := r.Calls()[0]; !slices.Equal(got, want) {
 		t.Fatalf("argv = %q, want %q", got, want)
 	}
@@ -225,5 +226,89 @@ func TestActiveFailsClosed(t *testing.T) {
 	}
 	if err := (&linux.Containment{}).Empty(context.Background(), "ssh.service", platform.EmptyOptions{}); !errors.Is(err, platform.ErrInvalidContainmentName) {
 		t.Errorf("foreign unit name err = %v", err)
+	}
+}
+
+// TestSupervisorIgnoresHostilePath is finding 2: a systemctl planted first
+// on PATH is never run; the adapter runs its fixed absolute path.
+func TestSupervisorIgnoresHostilePath(t *testing.T) {
+	hostile := t.TempDir()
+	marker := filepath.Join(hostile, "ran")
+	script := "#!/bin/sh\ntouch " + marker + "\necho ActiveState=inactive\necho LoadState=not-found\n"
+	for _, name := range []string{"systemctl", "systemd-run", "sh"} {
+		if err := os.WriteFile(filepath.Join(hostile, name), []byte(script), 0o700); err != nil { //nolint:gosec // test executable
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", hostile)
+	c := &linux.Containment{Runner: platform.OSCommandRunner{}}
+	_ = c.Empty(context.Background(), scope, platform.EmptyOptions{})
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("a supervisor binary was found through PATH")
+	}
+}
+
+// TestSupervisorGetsMinimalEnvironment is finding 2: systemd-run gets a
+// fixed minimal environment and the tool's variables only through
+// --setenv; a user manager is found at /run/user/<uid>, never through the
+// caller's XDG_RUNTIME_DIR.
+func TestSupervisorGetsMinimalEnvironment(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	r := platformtest.NewRunner(func([]string) (platform.ExecResult, error) { return platform.ExecResult{}, nil })
+	c := &linux.Containment{Runner: r, Inspector: &linux.ProcessInspector{ProcRoot: procFixture(t, "b", map[int]string{4242: "9"})}}
+	spec := platform.LaunchSpec{Name: scope, Scope: contract.ScopeRoot, Argv: []string{"/usr/bin/true"}, Env: []string{"WSKIT_TOKEN=s3cret", "PATH=/usr/bin"}}
+	if _, err := c.Run(context.Background(), spec, nil); err != nil {
+		t.Fatal(err)
+	}
+	argv, env := r.Calls()[0], r.Envs()[0]
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "WSKIT_TOKEN=") || strings.HasPrefix(kv, "XDG_RUNTIME_DIR=") {
+			t.Fatalf("supervisor environment %q holds %s", env, kv)
+		}
+	}
+	if !slices.Contains(argv, "--setenv=WSKIT_TOKEN=s3cret") {
+		t.Fatalf("argv %q does not pass the tool variable with --setenv", argv)
+	}
+}
+
+// TestUserManagerFoundOnlyInRunUser: the user bus is taken from
+// RunUserRoot/<uid>, owned by that uid; a folder owned by someone else, or
+// writable by others, is not a user manager.
+func TestUserManagerFoundOnlyInRunUser(t *testing.T) {
+	root, err := os.MkdirTemp("", "ru") // short: a socket path has a length limit
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	uid := os.Getuid()
+	dir := filepath.Join(root, strconv.Itoa(uid))
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("unix", filepath.Join(dir, "bus"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	r := platformtest.NewRunner(func([]string) (platform.ExecResult, error) { return platform.ExecResult{}, nil })
+	run := func(c *linux.Containment) error {
+		_, err := c.Run(context.Background(), platform.LaunchSpec{Name: scope, Scope: contract.ScopeUser, Argv: []string{"/usr/bin/true"}}, nil)
+		return err
+	}
+	if err := run(&linux.Containment{Runner: r, Inspector: &linux.ProcessInspector{ProcRoot: procFixture(t, "b", nil)}, UID: uid, RunUserRoot: root}); err != nil {
+		t.Fatalf("own runtime folder refused: %v", err)
+	}
+	env := r.Envs()[0]
+	if !slices.Contains(env, "XDG_RUNTIME_DIR="+dir) || !slices.Contains(env, "DBUS_SESSION_BUS_ADDRESS=unix:path="+filepath.Join(dir, "bus")) {
+		t.Fatalf("supervisor env = %q", env)
+	}
+	if err := run(&linux.Containment{Runner: r, UID: uid + 1, RunUserRoot: root}); !errors.Is(err, platform.ErrNoUserManager) {
+		t.Fatalf("another uid's folder: err = %v", err)
+	}
+	if err := os.Chmod(dir, 0o777); err != nil { //nolint:gosec // deliberately unsafe folder under test
+		t.Fatal(err)
+	}
+	if err := run(&linux.Containment{Runner: r, UID: uid, RunUserRoot: root}); !errors.Is(err, platform.ErrNoUserManager) {
+		t.Fatalf("folder writable by others: err = %v", err)
 	}
 }

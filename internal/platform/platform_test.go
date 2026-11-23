@@ -184,3 +184,19 @@ func TestValidateRunID(t *testing.T) {
 }
 
 func contractRunID(s string) contract.RunID { return contract.RunID(s) }
+
+func TestCheckTrustedBinary(t *testing.T) {
+	own := filepath.Join(t.TempDir(), "tool")
+	if err := os.WriteFile(own, []byte("#!/bin/sh\n"), 0o700); err != nil { //nolint:gosec // test executable
+		t.Fatal(err)
+	}
+	tests := []struct {
+		path string
+		ok   bool
+	}{{"/bin/sh", true}, {"sh", false}, {own, false}, {"/bin/no-such-tool", false}}
+	for _, tc := range tests {
+		if err := platform.CheckTrustedBinary(tc.path); (err == nil) != tc.ok || (err != nil && !errors.Is(err, platform.ErrUntrustedBinary)) {
+			t.Errorf("CheckTrustedBinary(%q) = %v, want ok=%v", tc.path, err, tc.ok)
+		}
+	}
+}

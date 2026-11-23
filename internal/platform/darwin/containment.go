@@ -20,7 +20,9 @@ import (
 )
 
 const (
-	launchctlBin  = "launchctl"
+	// launchctlBin is run by absolute path; nothing is looked up in PATH.
+	launchctlBin  = "/bin/launchctl"
+	shellBin      = "/bin/sh"
 	labelPrefix   = "dev.agent-workstation-kit.run."
 	domainSystem  = "system"
 	domainGUIPref = "gui/"
@@ -35,6 +37,10 @@ const (
 // ErrInvalidEnv reports an environment entry without a name. It is a
 // sentinel for errors.Is and is never reassigned.
 var ErrInvalidEnv = errors.New("environment entry has no name")
+
+// launchctlEnv is the whole environment launchctl gets. The tool's own
+// variables are in the job definition, never in launchctl's environment.
+func launchctlEnv() []string { return []string{"PATH=/usr/bin:/bin:/usr/sbin:/sbin", "LANG=C"} }
 
 // Patterns compiled once and never changed.
 var (
@@ -106,7 +112,7 @@ func (c *Containment) Run(ctx context.Context, spec platform.LaunchSpec, onAck f
 	}
 	sel := platform.ScopeSelector{User: spec.Scope != contract.ScopeRoot}
 	target := c.target(spec.Name, sel)
-	res, err := c.Runner.Run(ctx, platform.ExecSpec{Argv: []string{launchctlBin, "bootstrap", c.domain(sel), files.plist}})
+	res, err := c.Runner.Run(ctx, platform.ExecSpec{Argv: []string{launchctlBin, "bootstrap", c.domain(sel), files.plist}, Env: launchctlEnv()})
 	if err != nil {
 		return contract.CommandResult{}, fmt.Errorf("launchctl bootstrap %s: %w", target, err)
 	}
@@ -171,7 +177,7 @@ func (c *Containment) Active(ctx context.Context, name string, sel platform.Scop
 // Signal sends sig to the job's process through launchd.
 func (c *Containment) Signal(ctx context.Context, name string, sel platform.ScopeSelector, sig syscall.Signal) error {
 	argv := []string{launchctlBin, "kill", strconv.Itoa(int(sig)), c.target(name, sel)}
-	if _, err := c.Runner.Run(ctx, platform.ExecSpec{Argv: argv}); err != nil {
+	if _, err := c.Runner.Run(ctx, platform.ExecSpec{Argv: argv, Env: launchctlEnv()}); err != nil {
 		return fmt.Errorf("launchctl kill %s: %w", name, err)
 	}
 	return nil
@@ -187,7 +193,7 @@ type jobState struct {
 // print reads the job's state with launchctl print. A job that is not loaded
 // reads as ended.
 func (c *Containment) print(ctx context.Context, target string) (jobState, error) {
-	res, err := c.Runner.Run(ctx, platform.ExecSpec{Argv: []string{launchctlBin, "print", target}})
+	res, err := c.Runner.Run(ctx, platform.ExecSpec{Argv: []string{launchctlBin, "print", target}, Env: launchctlEnv()})
 	if err != nil {
 		return jobState{}, fmt.Errorf("launchctl print %s: %w", target, err)
 	}
@@ -264,7 +270,7 @@ func (c *Containment) sleep(ctx context.Context) error {
 // unload removes an ended job's definition and files. It is best effort: a
 // leftover definition of an ended job holds no process.
 func (c *Containment) unload(ctx context.Context, target string, f jobFiles) {
-	_, _ = c.Runner.Run(context.WithoutCancel(ctx), platform.ExecSpec{Argv: []string{launchctlBin, "bootout", target}})
+	_, _ = c.Runner.Run(context.WithoutCancel(ctx), platform.ExecSpec{Argv: []string{launchctlBin, "bootout", target}, Env: launchctlEnv()})
 	_ = os.Remove(f.plist)
 	_ = os.Remove(f.out)
 }
