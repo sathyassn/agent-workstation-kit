@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/sathyassn/agent-workstation-kit/schema/json/describe.schema.json",
+  "title": "Unit Description",
+  "description": "What a unit declares before anything runs: the only paths, state keys and environment it may touch.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "unit",
+    "scope",
+    "depends_on",
+    "capabilities",
+    "owned_paths",
+    "owned_state_keys",
+    "irreversible",
+    "declared_env"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "unit": {
+      "$ref": "#/$defs/unit_id"
+    },
+    "scope": {
+      "type": "string",
+      "enum": [
+        "root",
+        "user"
+      ]
+    },
+    "depends_on": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/unit_id"
+      }
+    },
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "owned_paths": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "owned_state_keys": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "irreversible": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "declared_env": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "$defs": {
+    "unit_id": {
+      "type": "string",
+      "enum": [
+        "baseline",
+        "packages-user",
+        "packages",
+        "machine-identity",
+        "accounts",
+        "agentctl",
+        "workloads",
+        "firewall",
+        "ssh",
+        "mesh-vpn",
+        "remote-desktop",
+        "vpn",
+        "shell",
+        "git-identity",
+        "runtimes",
+        "tools",
+        "agent-settings",
+        "mcp",
+        "browser-tunnel",
+        "workspace",
+        "resource-limits",
+        "indexing",
+        "snapshots",
+        "doctor",
+        "audit-agent"
+      ]
+    }
+  }
+}

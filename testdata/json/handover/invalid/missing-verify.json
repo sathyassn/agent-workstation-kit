@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "machine": "acme-ws-001",
+  "account": "admin-01",
+  "step": "Apply root packages",
+  "command": {
+    "argv": [
+      "sudo",
+      "/opt/agent-workstation-kit/bin/wskit",
+      "setup",
+      "--stage",
+      "packages",
+      "--apply"
+    ],
+    "display": "sudo /opt/agent-workstation-kit/bin/wskit setup --stage packages --apply"
+  },
+  "why": "Needs root.",
+  "undo": null,
+  "probe": null,
+  "status": "open"
+}

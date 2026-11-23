@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "seq": 0,
+  "time": "2026-11-23T12:20:00Z",
+  "run_id": "run-lab-ws-01-20261123T122000Z",
+  "unit": "shell",
+  "step": "plan",
+  "kind": "step-start",
+  "text": "starting plan for shell",
+  "data": {}
+}

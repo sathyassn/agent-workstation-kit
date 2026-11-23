@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "unit": "ssh",
+  "step": "explode",
+  "error_class": "apply",
+  "message": "unexpected step",
+  "suggested": "Inspect the log.",
+  "log": "/var/log/agent-workstation-kit/run-lab-ws-01-ssh.jsonl",
+  "backup": null
+}

@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "machine": "ws-01",
+  "account": "admin-01",
+  "step": "Verify FileVault encryption on portable workstation",
+  "command": {
+    "argv": [
+      "fdesetup",
+      "status"
+    ],
+    "display": "Enable FileVault in System Settings and confirm with fdesetup status"
+  },
+  "why": "Disk encryption is mandatory on portable workstations.",
+  "verify": {
+    "argv": [
+      "fdesetup",
+      "status"
+    ]
+  },
+  "undo": null,
+  "probe": {
+    "argv": [
+      "fdesetup",
+      "status"
+    ]
+  },
+  "status": "done"
+}

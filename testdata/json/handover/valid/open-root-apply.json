@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "machine": "acme-ws-001",
+  "account": "admin-01",
+  "step": "Apply the root packages stage from the staged binary",
+  "command": {
+    "argv": [
+      "sudo",
+      "/opt/agent-workstation-kit/bin/wskit",
+      "setup",
+      "--stage",
+      "packages",
+      "--apply"
+    ],
+    "display": "sudo /opt/agent-workstation-kit/bin/wskit setup --stage packages --apply --approve-plan SHORT-DIGEST"
+  },
+  "why": "Installing system packages requires root privileges and explicit plan approval.",
+  "verify": {
+    "argv": [
+      "wskit",
+      "status",
+      "--json"
+    ]
+  },
+  "undo": "Run sudo /opt/agent-workstation-kit/bin/wskit revert --to baseline --apply",
+  "probe": {
+    "argv": [
+      "wskit",
+      "next",
+      "--json"
+    ],
+    "interval_seconds": 15
+  },
+  "status": "open"
+}

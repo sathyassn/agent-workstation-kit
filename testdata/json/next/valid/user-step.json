@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "run_id": "run-acme-ws-001-20261123T120000Z",
+  "stage": "agent",
+  "unit": "shell",
+  "owner": "agent-01",
+  "root": false,
+  "gate": null,
+  "preview_argv": [
+    "wskit",
+    "shell",
+    "apply",
+    "--plan-file",
+    "/var/lib/agent-workstation-kit/plans/ws-01.json"
+  ],
+  "apply_argv": [
+    "wskit",
+    "shell",
+    "apply",
+    "--plan-file",
+    "/var/lib/agent-workstation-kit/plans/ws-01.json",
+    "--apply"
+  ],
+  "handover": null,
+  "probe": null,
+  "log_path": "/var/log/agent-workstation-kit/run-acme-ws-001-shell.jsonl",
+  "blocked_by": [],
+  "outcome": null
+}

@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "code": 4,
+  "class": "recovery",
+  "message": "an armed dead-man timer guards the remote stage; run wskit disarm --apply from another session",
+  "rule": null
+}

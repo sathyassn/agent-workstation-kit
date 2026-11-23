@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "code": 5,
+  "class": "refused",
+  "message": "root execution must run from the staged root-owned binary under /opt/agent-workstation-kit",
+  "rule": "root-staged-binary-only"
+}

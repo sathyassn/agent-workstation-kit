@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "unit": "ssh",
+  "scope": "root",
+  "depends_on": [
+    "accounts",
+    "firewall",
+    "mesh-vpn"
+  ],
+  "capabilities": [
+    "systemd",
+    "sshd"
+  ],
+  "owned_paths": [
+    "/etc/ssh/sshd_config.d/50-agent-workstation-kit.conf"
+  ],
+  "owned_state_keys": [
+    "sshd.allow_users",
+    "sshd.password_auth"
+  ],
+  "irreversible": [],
+  "declared_env": [
+    "WSKIT_SSH_MODE"
+  ]
+}

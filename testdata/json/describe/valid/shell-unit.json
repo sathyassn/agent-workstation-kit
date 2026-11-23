@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "unit": "shell",
+  "scope": "user",
+  "depends_on": [
+    "accounts"
+  ],
+  "capabilities": [
+    "zsh"
+  ],
+  "owned_paths": [
+    "/srv/lab/agent-01/.zshrc"
+  ],
+  "owned_state_keys": [],
+  "irreversible": [],
+  "declared_env": []
+}

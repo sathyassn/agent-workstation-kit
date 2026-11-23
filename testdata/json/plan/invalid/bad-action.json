@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "id": "plan-lab-ws-01-ssh-004",
+  "unit": "ssh",
+  "digest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "changes": [
+    {
+      "target": "/etc/ssh/sshd_config.d/50-agent-workstation-kit.conf",
+      "action": "delete",
+      "risk": "low"
+    }
+  ],
+  "non_defaults": [],
+  "blocked_by": [],
+  "cannot_undo": [],
+  "outcome": null
+}

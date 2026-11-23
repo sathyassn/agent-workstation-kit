@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "unit": "firewall",
+  "applied": true,
+  "drift": [],
+  "last_receipt": {
+    "run_id": "run-acme-ws-001-20261123T121500Z",
+    "unit": "firewall",
+    "plan_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+    "changes": [
+      {
+        "target": "/etc/ufw/user.rules",
+        "action": "replace",
+        "before": "2222222222222222222222222222222222222222222222222222222222222222",
+        "after": "3333333333333333333333333333333333333333333333333333333333333333",
+        "risk": "high",
+        "backup": "backup-acme-ws-001-firewall-001"
+      }
+    ],
+    "time": "2026-11-23T12:15:30Z",
+    "outcome": "verified"
+  }
+}

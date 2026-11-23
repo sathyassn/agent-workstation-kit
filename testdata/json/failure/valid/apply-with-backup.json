@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "unit": "ssh",
+  "step": "verify",
+  "error_class": "verify",
+  "message": "sshd -t rejected the generated drop-in file",
+  "suggested": "Inspect the log, fix the profile setting and re-run wskit ssh apply.",
+  "log": "/var/log/agent-workstation-kit/run-acme-ws-001-ssh.jsonl",
+  "backup": "backup-acme-ws-001-ssh-001"
+}

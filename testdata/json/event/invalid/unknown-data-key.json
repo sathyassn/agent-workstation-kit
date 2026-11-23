@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "seq": 1,
+  "time": "2026-11-23T12:20:00Z",
+  "run_id": "run-lab-ws-01-20261123T122000Z",
+  "unit": "shell",
+  "step": "apply",
+  "kind": "change",
+  "text": "wrote file",
+  "data": {
+    "free_text_key": "not allowed"
+  }
+}
