@@ -84,10 +84,8 @@ type (
 	BlockID string
 	// BackupRef points to a backup taken before a change.
 	BackupRef string
-	// FormFactor is the machine's form factor, such as "portable".
-	FormFactor string
-	// Topology is how the machine is reached, such as "local-only".
-	Topology string
+	// CheckName names a read-only check a unit can ask for.
+	CheckName string
 )
 
 // State providers named in SPC-001.
@@ -142,6 +140,19 @@ const (
 	ActionNone    ChangeAction = "none"
 )
 
+// AllChangeActions returns every ChangeAction in a stable order.
+func AllChangeActions() []ChangeAction {
+	return []ChangeAction{ActionCreate, ActionReplace, ActionRemove, ActionSet, ActionNone}
+}
+
+// Valid reports whether a is a known ChangeAction.
+func (a ChangeAction) Valid() bool { return contains(AllChangeActions(), a) }
+
+// UnmarshalText decodes a ChangeAction and rejects unknown values.
+func (a *ChangeAction) UnmarshalText(b []byte) error {
+	return decodeEnum(b, a, ChangeAction.Valid, "change action")
+}
+
 // Risk grades a change for the preview.
 type Risk string
 
@@ -151,6 +162,15 @@ const (
 	RiskMedium Risk = "medium"
 	RiskHigh   Risk = "high"
 )
+
+// AllRisks returns every Risk in a stable order.
+func AllRisks() []Risk { return []Risk{RiskLow, RiskMedium, RiskHigh} }
+
+// Valid reports whether r is a known Risk.
+func (r Risk) Valid() bool { return contains(AllRisks(), r) }
+
+// UnmarshalText decodes a Risk and rejects unknown values.
+func (r *Risk) UnmarshalText(b []byte) error { return decodeEnum(b, r, Risk.Valid, "risk") }
 
 // Change is one planned change to one target.
 type Change struct {
@@ -271,16 +291,17 @@ type UserGroupState struct {
 }
 
 // CheckSpec names a read-only check a unit asks the transaction to run.
+// DeclarativeTx has typed operations only, so a check is a name the engine
+// resolves, never a command line.
 type CheckSpec struct {
-	Name string   `json:"name"`
-	Argv []string `json:"argv"`
+	Name CheckName `json:"name"`
 }
 
 // CheckResult is the result of one check.
 type CheckResult struct {
-	Name   string `json:"name"`
-	OK     bool   `json:"ok"`
-	Detail string `json:"detail"`
+	Name   CheckName `json:"name"`
+	OK     bool      `json:"ok"`
+	Detail string    `json:"detail"`
 }
 
 // Event is one line of a run's event stream.

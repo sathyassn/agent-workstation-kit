@@ -1,5 +1,11 @@
 package contract
 
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+)
+
 // The enums below are named in SPC-001 "Interfaces and formats". They are
 // written by hand until the schema generator (TSK-011) produces them from
 // schema/; their values and names are the contract either way.
@@ -76,6 +82,7 @@ const (
 	EventHandover  EventKind = "handover"
 	EventFailure   EventKind = "failure"
 	EventCoalesced EventKind = "coalesced"
+	EventProgress  EventKind = "progress"
 )
 
 // AllEventKinds returns every EventKind in a stable order.
@@ -83,6 +90,7 @@ func AllEventKinds() []EventKind {
 	return []EventKind{
 		EventStepStart, EventStepEnd, EventChange, EventBackup, EventCommand,
 		EventOutput, EventWarning, EventHandover, EventFailure, EventCoalesced,
+		EventProgress,
 	}
 }
 
@@ -176,4 +184,102 @@ func contains[T comparable](values []T, v T) bool {
 		}
 	}
 	return false
+}
+
+// FormFactor is the machine's form factor (SPC-001 "Presets, form factor,
+// topology and platform").
+type FormFactor string
+
+// Form factors.
+const (
+	FormFactorPortable FormFactor = "portable"
+	FormFactorFixed    FormFactor = "fixed"
+)
+
+// AllFormFactors returns every FormFactor in a stable order.
+func AllFormFactors() []FormFactor { return []FormFactor{FormFactorPortable, FormFactorFixed} }
+
+// Valid reports whether f is a known FormFactor.
+func (f FormFactor) Valid() bool { return contains(AllFormFactors(), f) }
+
+// String returns the form factor as written in config and JSON.
+func (f FormFactor) String() string { return string(f) }
+
+// Topology is the account topology: whether the person and the agent use
+// separate accounts or a single one.
+type Topology string
+
+// Account topologies.
+const (
+	TopologySeparate Topology = "separate"
+	TopologySingle   Topology = "single"
+)
+
+// AllTopologies returns every Topology in a stable order.
+func AllTopologies() []Topology { return []Topology{TopologySeparate, TopologySingle} }
+
+// Valid reports whether t is a known Topology.
+func (t Topology) Valid() bool { return contains(AllTopologies(), t) }
+
+// String returns the topology as written in config and JSON.
+func (t Topology) String() string { return string(t) }
+
+// Decoding rejects unknown enum values, so a value read from JSON or config
+// is always one the code knows. UnmarshalText also covers map keys.
+
+// UnmarshalText decodes a Verb and rejects unknown values.
+func (v *Verb) UnmarshalText(b []byte) error { return decodeEnum(b, v, Verb.Valid, "verb") }
+
+// UnmarshalText decodes an Outcome and rejects unknown values.
+func (o *Outcome) UnmarshalText(b []byte) error {
+	return decodeEnum(b, o, Outcome.Valid, "outcome")
+}
+
+// UnmarshalText decodes an EventKind and rejects unknown values.
+func (k *EventKind) UnmarshalText(b []byte) error {
+	return decodeEnum(b, k, EventKind.Valid, "event kind")
+}
+
+// UnmarshalText decodes a StepID and rejects unknown values.
+func (s *StepID) UnmarshalText(b []byte) error { return decodeEnum(b, s, StepID.Valid, "step") }
+
+// UnmarshalText decodes a DataKey and rejects unknown values.
+func (k *DataKey) UnmarshalText(b []byte) error {
+	return decodeEnum(b, k, DataKey.Valid, "data key")
+}
+
+// UnmarshalText decodes a FormFactor and rejects unknown values.
+func (f *FormFactor) UnmarshalText(b []byte) error {
+	return decodeEnum(b, f, FormFactor.Valid, "form factor")
+}
+
+// UnmarshalText decodes a Topology and rejects unknown values.
+func (t *Topology) UnmarshalText(b []byte) error {
+	return decodeEnum(b, t, Topology.Valid, "topology")
+}
+
+// UnmarshalJSON decodes an ExitCode and rejects unknown values.
+func (c *ExitCode) UnmarshalJSON(b []byte) error {
+	var n int
+	if err := json.Unmarshal(b, &n); err != nil {
+		return fmt.Errorf("exit code: %w", err)
+	}
+	if !ExitCode(n).Valid() {
+		return fmt.Errorf("%w: exit code %d", ErrUnknownValue, n)
+	}
+	*c = ExitCode(n)
+	return nil
+}
+
+// ErrUnknownValue is returned when decoding a value an enum does not define.
+// It is a sentinel for errors.Is and must never be reassigned.
+var ErrUnknownValue = errors.New("unknown enum value")
+
+func decodeEnum[T ~string](b []byte, dst *T, valid func(T) bool, name string) error {
+	v := T(b)
+	if !valid(v) {
+		return fmt.Errorf("%w: %s %q", ErrUnknownValue, name, string(b))
+	}
+	*dst = v
+	return nil
 }

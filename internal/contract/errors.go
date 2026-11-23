@@ -29,6 +29,7 @@ func (k TargetKind) String() string { return string(k) }
 
 // ErrUndeclaredTarget is the sentinel error for mutations or command
 // environment variables outside a unit's Description.
+// It is a sentinel for errors.Is and must never be reassigned.
 var ErrUndeclaredTarget = errors.New("target not declared in unit description")
 
 // UndeclaredTargetError reports that a unit attempted to mutate a path or
