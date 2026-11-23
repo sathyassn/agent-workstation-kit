@@ -151,8 +151,7 @@ func (e *Engine) writeJSON(path string, v any) error {
 
 // readJSON decodes path strictly. It reports false for a missing file.
 func readJSON(path string, v any) (bool, error) {
-	// #nosec G304 -- paths are inside the journal folder.
-	data, err := os.ReadFile(path)
+	data, err := readFileAt(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return false, nil
 	}

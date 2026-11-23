@@ -71,10 +71,13 @@ func TestRemoveBlock(t *testing.T) {
 // TestLockOrderHostThenJournal: the host lock is never requested while the
 // journal lock is held (SPC-001 "Locks").
 func TestLockOrderHostThenJournal(t *testing.T) {
-	dir := t.TempDir()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	e := &Engine{opts: Options{JournalDir: dir, HostLock: filepath.Join(dir, "host.lock"), LockPoll: time.Millisecond}}
 	l := &locks{e: e}
-	err := l.withJournal(context.Background(), func() error { return l.takeHost(context.Background()) })
+	err = l.withJournal(context.Background(), func() error { return l.takeHost(context.Background()) })
 	if !errors.Is(err, ErrLockOrder) {
 		t.Fatalf("host under journal: err = %v, want ErrLockOrder", err)
 	}
@@ -89,7 +92,11 @@ func TestLockOrderHostThenJournal(t *testing.T) {
 
 // TestLockWaitHonoursContext: a blocked lock wait ends with its context.
 func TestLockWaitHonoursContext(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "host.lock")
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "host.lock")
 	held, err := acquireLock(context.Background(), path, time.Millisecond)
 	if err != nil {
 		t.Fatal(err)

@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
-	"os"
 	"runtime"
 	"strconv"
 	"sync"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/sathyassn/agent-workstation-kit/internal/contract"
 	"github.com/sathyassn/agent-workstation-kit/internal/platform"
@@ -161,21 +163,30 @@ func (t *tx) editBlock(ctx context.Context, path string, edit func(string) (stri
 	if err != nil {
 		return err
 	}
-	real := t.e.real(path)
+	p, err := openParent(t.e.real(path))
+	if err != nil {
+		return err
+	}
+	defer p.close()
 	spec := fileSpec{perm: newFileMode}
 	var cur []byte
-	info, err := os.Lstat(real)
+	st, err := p.lstat()
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 	case err != nil:
-		return fmt.Errorf("stat %q: %w", path, err)
-	case !info.Mode().IsRegular():
+		return err
+	case st.Mode&unix.S_IFMT != unix.S_IFREG:
 		// Editing through a link would replace the link with a file.
 		return fmt.Errorf("%w: %q is not a regular file", ErrUnsupportedTarget, path)
 	default:
-		spec.perm = info.Mode() & modeBits
-		// #nosec G304 -- a declared path under the engine's root.
-		if cur, err = os.ReadFile(real); err != nil {
+		spec.perm = unixMode(st)
+		f, err := p.open()
+		if err != nil {
+			return err
+		}
+		cur, err = io.ReadAll(f)
+		_ = f.Close()
+		if err != nil {
 			return fmt.Errorf("read %q: %w", path, err)
 		}
 	}
@@ -187,7 +198,7 @@ func (t *tx) editBlock(ctx context.Context, path string, edit func(string) (stri
 		return nil
 	}
 	spec.data = []byte(next)
-	if err := t.e.atomicWrite(real, spec); err != nil {
+	if err := t.e.atomicWriteAt(p, spec); err != nil {
 		return err
 	}
 	t.record(en, contract.ActionReplace, digest(spec.data))
@@ -202,18 +213,25 @@ func (t *tx) Remove(ctx context.Context, path string) error {
 	if err != nil {
 		return err
 	}
-	real := t.e.real(path)
-	info, err := os.Lstat(real)
+	p, err := openParent(t.e.real(path))
+	if err != nil {
+		return err
+	}
+	defer p.close()
+	st, err := p.lstat()
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("stat %q: %w", path, err)
+		return err
 	}
-	if info.IsDir() {
+	if st.Mode&unix.S_IFMT == unix.S_IFDIR {
 		return fmt.Errorf("%w: %q is a folder", ErrUnsupportedTarget, path)
 	}
-	if err := removeDurable(real); err != nil {
+	if err := unix.Unlinkat(p.fd(), p.name, 0); err != nil {
+		return fmt.Errorf("remove %q: %w", path, err)
+	}
+	if err := t.e.syncDir(p); err != nil {
 		return err
 	}
 	t.record(en, contract.ActionRemove, "")

@@ -3,12 +3,13 @@ package engine
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
-	"path/filepath"
 	"strings"
-	"syscall"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/sathyassn/agent-workstation-kit/internal/contract"
 )
@@ -30,21 +31,29 @@ type fileSpec struct {
 
 // atomicWrite replaces path with spec: it writes a temporary file in the same
 // folder, fsyncs it, renames it over path and fsyncs the folder. A kill at
-// any moment leaves either the old file or the new one at path.
+// any moment leaves either the old file or the new one at path. The folder
+// is opened without following links (fsroot.go).
 func (e *Engine) atomicWrite(path string, spec fileSpec) error {
-	dir, base := filepath.Split(path)
-	tmp, err := createTemp(dir, base)
+	p, err := openParent(path)
 	if err != nil {
 		return err
 	}
-	name := tmp.Name()
+	defer p.close()
+	return e.atomicWriteAt(p, spec)
+}
+
+func (e *Engine) atomicWriteAt(p parent, spec fileSpec) error {
+	tmpName, tmp, err := createTemp(p)
+	if err != nil {
+		return err
+	}
 	fail := func(err error) error {
 		_ = tmp.Close()
-		_ = os.Remove(name)
+		_ = unix.Unlinkat(p.fd(), tmpName, 0)
 		return err
 	}
 	if _, err := tmp.Write(spec.data); err != nil {
-		return fail(fmt.Errorf("write %q: %w", name, err))
+		return fail(fmt.Errorf("write %q: %w", tmp.Name(), err))
 	}
 	// chown before chmod: chown clears the setuid and setgid bits.
 	if spec.owner != nil {
@@ -53,84 +62,89 @@ func (e *Engine) atomicWrite(path string, spec fileSpec) error {
 		}
 	}
 	if err := tmp.Chmod(spec.perm & modeBits); err != nil {
-		return fail(fmt.Errorf("chmod %q: %w", name, err))
+		return fail(fmt.Errorf("chmod %q: %w", tmp.Name(), err))
 	}
 	if err := tmp.Sync(); err != nil {
-		return fail(fmt.Errorf("fsync %q: %w", name, err))
+		return fail(fmt.Errorf("fsync %q: %w", tmp.Name(), err))
 	}
 	if err := tmp.Close(); err != nil {
-		_ = os.Remove(name)
-		return fmt.Errorf("close %q: %w", name, err)
+		_ = unix.Unlinkat(p.fd(), tmpName, 0)
+		return fmt.Errorf("close %q: %w", tmp.Name(), err)
 	}
 	e.fault(PointAtomicTemp)
-	if err := os.Rename(name, path); err != nil {
-		_ = os.Remove(name)
-		return fmt.Errorf("rename %q: %w", path, err)
+	if err := unix.Renameat(p.fd(), tmpName, p.fd(), p.name); err != nil {
+		_ = unix.Unlinkat(p.fd(), tmpName, 0)
+		return fmt.Errorf("rename %q: %w", p.path(), err)
 	}
+	e.trace(traceEntry, p.dir.Name(), p.name)
 	e.fault(PointAtomicRenamed)
-	return syncDir(dir)
+	return e.syncDir(p)
 }
 
-// createTemp creates an exclusive temporary file next to base. O_EXCL and a
-// random name mean it never follows or reuses an existing file.
-func createTemp(dir, base string) (*os.File, error) {
+// syncDir fsyncs p's folder and notes it for the durability model in tests.
+func (e *Engine) syncDir(p parent) error {
+	if err := p.sync(); err != nil {
+		return err
+	}
+	e.trace(traceSync, p.dir.Name(), "")
+	return nil
+}
+
+// createTemp creates an exclusive temporary file next to p's name. O_EXCL,
+// O_NOFOLLOW and a random name mean it never follows or reuses a file.
+func createTemp(p parent) (string, *os.File, error) {
 	var b [8]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		return nil, fmt.Errorf("random temp name: %w", err)
+		return "", nil, fmt.Errorf("random temp name: %w", err)
 	}
-	name := filepath.Join(dir, "."+base+tempMarker+hex.EncodeToString(b[:]))
-	// #nosec G304 -- the name is the target's folder plus a random suffix.
-	f, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o600)
+	name := "." + p.name + tempMarker + hex.EncodeToString(b[:])
+	fd, err := unix.Openat(p.fd(), name, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
 	if err != nil {
-		return nil, fmt.Errorf("create temp for %q: %w", base, err)
+		return "", nil, fmt.Errorf("create temp for %q: %w", p.path(), err)
 	}
-	return f, nil
+	return name, os.NewFile(uintptr(fd), p.dir.Name()+"/"+name), nil
 }
 
-// removeTemps removes temporary files a kill left next to path.
+// removeTemps removes temporary files a kill left next to path. A missing
+// folder has none.
 func removeTemps(path string) error {
-	dir, base := filepath.Split(path)
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("list %q: %w", dir, err)
+	p, err := openParent(path)
+	if errors.Is(err, unix.ENOENT) {
+		return nil
 	}
-	prefix := "." + base + tempMarker
-	for _, ent := range entries {
-		if strings.HasPrefix(ent.Name(), prefix) {
-			if err := os.Remove(filepath.Join(dir, ent.Name())); err != nil && !os.IsNotExist(err) {
-				return fmt.Errorf("remove stale temp: %w", err)
+	if err != nil {
+		return err
+	}
+	defer p.close()
+	names, err := listDir(p.dir)
+	if err != nil {
+		return err
+	}
+	prefix := "." + p.name + tempMarker
+	for _, n := range names {
+		if strings.HasPrefix(n, prefix) {
+			if err := unix.Unlinkat(p.fd(), n, 0); err != nil && !errors.Is(err, unix.ENOENT) {
+				return fmt.Errorf("remove stale temp %q: %w", n, err)
 			}
 		}
 	}
 	return nil
 }
 
-// removeDurable removes path and fsyncs its folder. A missing path is not
-// an error.
-func removeDurable(path string) error {
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove %q: %w", path, err)
-	}
-	return syncDir(filepath.Dir(path))
-}
-
-func syncDir(dir string) error {
-	if dir == "" {
-		dir = "."
-	}
-	// #nosec G304 -- dir is a target's or the journal's own folder.
-	d, err := os.Open(dir)
+// listDir lists an open folder's names through a duplicate descriptor, so
+// the caller's descriptor keeps its position and stays open.
+func listDir(dir *os.File) ([]string, error) {
+	fd, err := unix.Openat(int(dir.Fd()), ".", dirFlags, 0)
 	if err != nil {
-		return fmt.Errorf("open folder %q: %w", dir, err)
+		return nil, fmt.Errorf("reopen folder %q: %w", dir.Name(), err)
 	}
+	d := os.NewFile(uintptr(fd), dir.Name())
 	defer func() { _ = d.Close() }()
-	if err := d.Sync(); err != nil {
-		return fmt.Errorf("fsync folder %q: %w", dir, err)
+	names, err := d.Readdirnames(-1)
+	if err != nil {
+		return nil, fmt.Errorf("list folder %q: %w", dir.Name(), err)
 	}
-	return nil
+	return names, nil
 }
 
 func chownFile(f *os.File, o contract.Owner) error {
@@ -138,11 +152,24 @@ func chownFile(f *os.File, o contract.Owner) error {
 	if err != nil {
 		return fmt.Errorf("stat %q: %w", f.Name(), err)
 	}
-	if st, ok := info.Sys().(*syscall.Stat_t); ok && int(st.Uid) == o.UID && int(st.Gid) == o.GID {
+	if st, ok := info.Sys().(*unix.Stat_t); ok && int(st.Uid) == o.UID && int(st.Gid) == o.GID {
 		return nil
 	}
 	if err := f.Chown(o.UID, o.GID); err != nil {
 		return fmt.Errorf("%w: %d:%d on %q: %w", ErrOwnerChange, o.UID, o.GID, f.Name(), err)
 	}
 	return nil
+}
+
+// Trace events for the durability model in tests: a folder entry was added
+// or replaced, or a folder was fsynced.
+const (
+	traceEntry = "entry"
+	traceSync  = "sync"
+)
+
+func (e *Engine) trace(op, dir, name string) {
+	if e.traceFn != nil {
+		e.traceFn(op, dir, name)
+	}
 }

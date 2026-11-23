@@ -6,12 +6,14 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
-	"syscall"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/sathyassn/agent-workstation-kit/internal/contract"
 )
@@ -90,22 +92,27 @@ func (e *Engine) backup(ctx context.Context, runID contract.RunID, desc contract
 }
 
 func (e *Engine) backupOne(dir, name, path string) (ManifestEntry, error) {
-	real := e.real(path)
-	info, err := os.Lstat(real)
+	p, err := openParent(e.real(path))
+	if err != nil {
+		return ManifestEntry{}, err
+	}
+	defer p.close()
+	st, err := p.lstat()
 	if errors.Is(err, fs.ErrNotExist) {
 		return ManifestEntry{Path: path, Kind: KindAbsent}, nil
 	}
 	if err != nil {
-		return ManifestEntry{}, fmt.Errorf("stat %q: %w", path, err)
+		return ManifestEntry{}, err
 	}
-	en := ManifestEntry{Path: path, Mode: info.Mode() & modeBits}
-	if st, ok := info.Sys().(*syscall.Stat_t); ok {
-		en.UID, en.GID = int(st.Uid), int(st.Gid)
-	}
-	switch {
-	case info.Mode().IsRegular():
-		// #nosec G304 -- a declared path under the engine's root.
-		data, err := os.ReadFile(real)
+	en := ManifestEntry{Path: path, Mode: unixMode(st), UID: int(st.Uid), GID: int(st.Gid)}
+	switch st.Mode & unix.S_IFMT {
+	case unix.S_IFREG:
+		f, err := p.open()
+		if err != nil {
+			return ManifestEntry{}, err
+		}
+		data, err := io.ReadAll(f)
+		_ = f.Close()
 		if err != nil {
 			return ManifestEntry{}, fmt.Errorf("read %q: %w", path, err)
 		}
@@ -113,16 +120,31 @@ func (e *Engine) backupOne(dir, name, path string) (ManifestEntry, error) {
 		if err := e.atomicWrite(filepath.Join(dir, name), fileSpec{data: data, perm: 0o600}); err != nil {
 			return ManifestEntry{}, err
 		}
-	case info.Mode()&fs.ModeSymlink != 0:
-		link, err := os.Readlink(real)
+	case unix.S_IFLNK:
+		link, err := p.readlink()
 		if err != nil {
-			return ManifestEntry{}, fmt.Errorf("read link %q: %w", path, err)
+			return ManifestEntry{}, err
 		}
 		en.Kind, en.Link = KindSymlink, link
 	default:
-		return ManifestEntry{}, fmt.Errorf("%w: %q is %v", ErrUnsupportedTarget, path, info.Mode().Type())
+		return ManifestEntry{}, fmt.Errorf("%w: %q has file type %o", ErrUnsupportedTarget, path, st.Mode&unix.S_IFMT)
 	}
 	return en, nil
+}
+
+// unixMode converts a raw stat mode to the bits a backup keeps.
+func unixMode(st unix.Stat_t) fs.FileMode {
+	m := fs.FileMode(st.Mode) & fs.ModePerm
+	if st.Mode&unix.S_ISUID != 0 {
+		m |= fs.ModeSetuid
+	}
+	if st.Mode&unix.S_ISGID != 0 {
+		m |= fs.ModeSetgid
+	}
+	if st.Mode&unix.S_ISVTX != 0 {
+		m |= fs.ModeSticky
+	}
+	return m
 }
 
 func (e *Engine) readManifest(runID contract.RunID) (*Manifest, error) {
@@ -159,40 +181,48 @@ func (e *Engine) restoreOne(dir string, en ManifestEntry) error {
 	if err := removeTemps(real); err != nil {
 		return err
 	}
+	p, err := openParent(real)
+	if err != nil {
+		return err
+	}
+	defer p.close()
 	switch en.Kind {
 	case KindAbsent:
-		info, err := os.Lstat(real)
+		st, err := p.lstat()
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil
 		}
 		if err != nil {
-			return fmt.Errorf("stat %q: %w", en.Path, err)
+			return err
 		}
-		if info.IsDir() {
+		if st.Mode&unix.S_IFMT == unix.S_IFDIR {
 			return fmt.Errorf("%w: %q became a folder", ErrUnsupportedTarget, en.Path)
 		}
-		return removeDurable(real)
+		if err := unix.Unlinkat(p.fd(), p.name, 0); err != nil && !errors.Is(err, unix.ENOENT) {
+			return fmt.Errorf("remove %q: %w", en.Path, err)
+		}
+		return e.syncDir(p)
 	case KindFile:
-		// #nosec G304 -- a file in the run's own backup folder.
-		data, err := os.ReadFile(filepath.Join(dir, en.Data))
+		data, err := readFileAt(filepath.Join(dir, en.Data))
 		if err != nil {
 			return fmt.Errorf("read backup of %q: %w", en.Path, err)
 		}
 		if digest(data) != en.Digest {
 			return fmt.Errorf("%w: %q", ErrBackupMismatch, en.Path)
 		}
-		return e.atomicWrite(real, fileSpec{data: data, perm: en.Mode, owner: &contract.Owner{UID: en.UID, GID: en.GID}})
+		return e.atomicWriteAt(p, fileSpec{data: data, perm: en.Mode, owner: &contract.Owner{UID: en.UID, GID: en.GID}})
 	case KindSymlink:
-		if cur, err := os.Readlink(real); err == nil && cur == en.Link {
+		if cur, err := p.readlink(); err == nil && cur == en.Link {
 			return nil
 		}
-		if err := removeDurable(real); err != nil {
-			return err
+		if err := unix.Unlinkat(p.fd(), p.name, 0); err != nil && !errors.Is(err, unix.ENOENT) {
+			return fmt.Errorf("remove %q: %w", en.Path, err)
 		}
-		if err := os.Symlink(en.Link, real); err != nil {
+		if err := unix.Symlinkat(en.Link, p.fd(), p.name); err != nil {
 			return fmt.Errorf("restore link %q: %w", en.Path, err)
 		}
-		return syncDir(filepath.Dir(real))
+		e.trace(traceEntry, p.dir.Name(), p.name)
+		return e.syncDir(p)
 	default:
 		return fmt.Errorf("%w: entry kind %q", ErrCorruptRecord, en.Kind)
 	}

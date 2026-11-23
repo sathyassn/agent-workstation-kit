@@ -81,6 +81,9 @@ type Options struct {
 // Engine runs unit transactions against one journal.
 type Engine struct {
 	opts Options
+	// traceFn, set only by tests, sees every folder entry and folder fsync
+	// for the durability model.
+	traceFn func(op, dir, name string)
 }
 
 // New checks opts and fills in defaults.
@@ -102,6 +105,22 @@ func New(opts Options) (*Engine, error) {
 	}
 	if err := platform.CheckPrivateDir(opts.JournalDir); err != nil {
 		return nil, fmt.Errorf("journal folder: %w", err)
+	}
+	// Resolve the configured paths once; every later operation walks these
+	// canonical paths without following links.
+	var err error
+	if opts.JournalDir, err = canonical(opts.JournalDir); err != nil {
+		return nil, err
+	}
+	lockDir, err := canonical(filepath.Dir(opts.HostLock))
+	if err != nil {
+		return nil, err
+	}
+	opts.HostLock = filepath.Join(lockDir, filepath.Base(opts.HostLock))
+	if opts.Root != "" {
+		if opts.Root, err = canonical(opts.Root); err != nil {
+			return nil, err
+		}
 	}
 	setDefault(&opts.Grace, DefaultGrace)
 	setDefault(&opts.KillWait, DefaultKillWait)
