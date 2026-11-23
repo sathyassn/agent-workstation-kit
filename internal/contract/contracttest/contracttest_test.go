@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -219,6 +220,9 @@ type contractOnlyStateProvider struct {
 func (p *contractOnlyStateProvider) Name() contract.StateProviderName { return p.inner.Name() }
 func (p *contractOnlyStateProvider) Read(ctx context.Context, key contract.StateKey) (contract.State, error) {
 	return p.inner.Read(ctx, key)
+}
+func (p *contractOnlyStateProvider) Write(ctx context.Context, key contract.StateKey, want contract.State) error {
+	return p.inner.Write(ctx, key, want)
 }
 func (p *contractOnlyStateProvider) Snapshot(ctx context.Context) (contract.Snapshot, error) {
 	return p.inner.Snapshot(ctx)
@@ -506,6 +510,12 @@ func (p *brokenNoRestoreProvider) Restore(_ context.Context, _ contract.Snapshot
 	return nil
 }
 
+type brokenNoWriteProvider struct{ *FakeStateProvider }
+
+func (p *brokenNoWriteProvider) Write(_ context.Context, _ contract.StateKey, _ contract.State) error {
+	return nil
+}
+
 type brokenAcceptWrongProvider struct{ *FakeStateProvider }
 
 func (p *brokenAcceptWrongProvider) Restore(ctx context.Context, s contract.Snapshot) error {
@@ -717,6 +727,18 @@ func TestContractChecksCatchBrokenStateProviders(t *testing.T) {
 			wantErr: "state after Restore",
 		},
 		{
+			name: "write does not change state",
+			make: func() (contract.StateProvider, func(context.Context) error) {
+				base := NewFakeStateProvider(contract.ProviderHostname, map[contract.StateKey]contract.State{
+					declaredState: {Value: "lab-ws-01"},
+				})
+				return &brokenNoWriteProvider{base}, func(ctx context.Context) error {
+					return base.Write(ctx, declaredState, contract.State{Value: "changed"})
+				}
+			},
+			wantErr: "state after Write",
+		},
+		{
 			name: "restore accepts wrong provider snapshot",
 			make: func() (contract.StateProvider, func(context.Context) error) {
 				base := NewFakeStateProvider(contract.ProviderHostname, map[contract.StateKey]contract.State{
@@ -787,4 +809,261 @@ func TestContractChecksCatchBrokenUnits(t *testing.T) {
 			}
 		})
 	}
+}
+
+// brokenSetStateTx runs SetState with one step of the required sequence
+// wrong, so each case proves checkTx notices that step.
+type brokenSetStateTx struct {
+	*FakeTx
+	writeBeforeSnapshot bool
+	emptyBackup         bool
+	noRestore           bool
+	receiptOnFailure    bool
+	callBeforeRefuse    bool
+	bogusBackupRef      bool
+	backupAfterWrite    bool
+}
+
+func (b *brokenSetStateTx) SetState(ctx context.Context, p contract.StateProvider, key contract.StateKey, want contract.State) error {
+	if b.callBeforeRefuse {
+		if _, err := p.Snapshot(ctx); err != nil {
+			return err
+		}
+	}
+	b.mu.Lock()
+	allowed := b.ownedStates[key]
+	b.mu.Unlock()
+	if !allowed {
+		return &contract.UndeclaredTargetError{Kind: contract.TargetStateKey, Target: string(key)}
+	}
+
+	var snap contract.Snapshot
+	var err error
+	if !b.writeBeforeSnapshot {
+		if snap, err = p.Snapshot(ctx); err != nil {
+			return err
+		}
+	}
+	writeErr := p.Write(ctx, key, want)
+	if b.writeBeforeSnapshot {
+		if snap, err = p.Snapshot(ctx); err != nil {
+			return err
+		}
+	}
+	if writeErr != nil && !b.noRestore {
+		if err := p.Restore(ctx, snap); err != nil {
+			return errors.Join(writeErr, err)
+		}
+	}
+	if writeErr != nil && !b.receiptOnFailure {
+		return writeErr
+	}
+
+	if b.backupAfterWrite {
+		if snap, err = p.Snapshot(ctx); err != nil {
+			return err
+		}
+	}
+	b.mu.Lock()
+	backup := b.recordBackupLocked(snap.Data)
+	if b.emptyBackup {
+		backup = ""
+	}
+	if b.bogusBackupRef {
+		backup = "backup-9999"
+	}
+	b.changes = append(b.changes, contract.AppliedChange{
+		Change: contract.Change{
+			Target: string(p.Name()) + ":" + string(key),
+			Action: contract.ActionSet,
+			After:  digestBytes([]byte(want.Value)),
+			Risk:   contract.RiskMedium,
+		},
+		Backup: backup,
+	})
+	b.mu.Unlock()
+	return writeErr
+}
+
+func TestContractChecksCatchBrokenSetStateSequence(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		broken  brokenSetStateTx
+		wantErr string
+	}{
+		{name: "writes before snapshot", broken: brokenSetStateTx{writeBeforeSnapshot: true}, wantErr: "Snapshot before Write"},
+		{name: "records an empty backup", broken: brokenSetStateTx{emptyBackup: true}, wantErr: "recorded no backup reference"},
+		{name: "does not restore after a failed write", broken: brokenSetStateTx{noRestore: true}, wantErr: "restored pre-Write value"},
+		{name: "records a receipt for a failed write", broken: brokenSetStateTx{receiptOnFailure: true}, wantErr: "receipt row for a failed Write"},
+		{name: "calls the provider before refusing", broken: brokenSetStateTx{callBeforeRefuse: true}, wantErr: "want no provider call"},
+		{name: "restores with the cancelled caller context", broken: brokenSetStateTx{}, wantErr: "must not use the cancelled context"},
+		{name: "names a backup the transaction does not hold", broken: brokenSetStateTx{bogusBackupRef: true}, wantErr: "does not hold"},
+		{name: "backs up the value after the write", broken: brokenSetStateTx{backupAfterWrite: true}, wantErr: "want the pre-Write value"},
+		{name: "holds no lock across snapshot, write and receipt", broken: brokenSetStateTx{}, wantErr: "must hold one lock"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rep := &fakeReporter{}
+			checkTx(rep, func(d contract.Description) contract.Tx {
+				b := tc.broken
+				b.FakeTx = NewFakeTx(d, nil)
+				return &b
+			})
+			if !rep.hasErrorContaining(tc.wantErr) {
+				t.Fatalf("expected failure containing %q, got %v", tc.wantErr, rep.errors)
+			}
+		})
+	}
+}
+
+// failingRestoreProvider writes and then fails, and also fails to restore.
+type failingRestoreProvider struct{ *FakeStateProvider }
+
+var errInjectedRestore = errors.New("injected restore failure")
+
+func (p *failingRestoreProvider) Write(ctx context.Context, key contract.StateKey, want contract.State) error {
+	if err := p.FakeStateProvider.Write(ctx, key, want); err != nil {
+		return err
+	}
+	return errInjectedWrite
+}
+
+func (p *failingRestoreProvider) Restore(_ context.Context, _ contract.Snapshot) error {
+	return errInjectedRestore
+}
+
+func TestFakeTxSetStateReportsRestoreFailure(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	tx := NewFakeTx(standardTestDescription(), nil)
+	p := &failingRestoreProvider{NewFakeStateProvider(contract.ProviderHostname, map[contract.StateKey]contract.State{
+		declaredState: {Value: "lab-ws-01"},
+	})}
+
+	err := tx.SetState(ctx, p, declaredState, contract.State{Value: "acme-ws-001"})
+	for _, want := range []error{errInjectedWrite, ErrStateRestoreFailed, errInjectedRestore} {
+		if !errors.Is(err, want) {
+			t.Errorf("SetState error %v does not wrap %v", err, want)
+		}
+	}
+	if n := len(tx.Changes()); n != 0 {
+		t.Errorf("SetState recorded %d receipt rows for a failed Write, want 0", n)
+	}
+}
+
+// perCallLockTx does everything FakeTx.SetState does, but locks provider
+// calls one at a time instead of across the whole sequence, so two calls
+// can interleave Snapshot A, Snapshot B, Write A, Write B. With
+// snapshotOnly it locks only around Snapshot; otherwise it gives Snapshot
+// and Write each their own lock.
+type perCallLockTx struct {
+	*FakeTx
+	snapshotOnly bool
+	snapMu       sync.Mutex
+	writeMu      sync.Mutex
+}
+
+func (b *perCallLockTx) lockedSnapshot(fn func() error) error {
+	b.snapMu.Lock()
+	defer b.snapMu.Unlock()
+	return fn()
+}
+
+func (b *perCallLockTx) lockedWrite(fn func() error) error {
+	if b.snapshotOnly {
+		return fn()
+	}
+	b.writeMu.Lock()
+	defer b.writeMu.Unlock()
+	return fn()
+}
+
+func (b *perCallLockTx) SetState(ctx context.Context, p contract.StateProvider, key contract.StateKey, want contract.State) error {
+	b.mu.Lock()
+	allowed := b.ownedStates[key]
+	b.mu.Unlock()
+	if !allowed {
+		return &contract.UndeclaredTargetError{Kind: contract.TargetStateKey, Target: string(key)}
+	}
+
+	var snap contract.Snapshot
+	if err := b.lockedSnapshot(func() error {
+		var err error
+		snap, err = p.Snapshot(ctx)
+		return err
+	}); err != nil {
+		return err
+	}
+	if err := b.lockedWrite(func() error { return p.Write(ctx, key, want) }); err != nil {
+		restoreCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), stateRestoreTimeout)
+		defer cancel()
+		if restoreErr := p.Restore(restoreCtx, snap); restoreErr != nil {
+			return errors.Join(err, restoreErr)
+		}
+		return err
+	}
+
+	b.mu.Lock()
+	backup := b.recordBackupLocked(snap.Data)
+	b.changes = append(b.changes, contract.AppliedChange{
+		Change: contract.Change{
+			Target: string(p.Name()) + ":" + string(key),
+			Action: contract.ActionSet,
+			After:  digestBytes([]byte(want.Value)),
+			Risk:   contract.RiskMedium,
+		},
+		Backup: backup,
+	})
+	b.mu.Unlock()
+	return nil
+}
+
+func TestSerializedCheckRejectsPerCallLock(t *testing.T) {
+	t.Parallel()
+
+	t.Run("whole-sequence lock passes", func(t *testing.T) {
+		t.Parallel()
+		rep := &fakeReporter{}
+		tx := NewFakeTx(standardTestDescription(), nil)
+		checkSetStateSerialized(context.Background(), rep, tx, tx)
+		if len(rep.errors) != 0 {
+			t.Fatalf("FakeTx failed the serialised check: %v", rep.errors)
+		}
+	})
+
+	for _, tc := range []struct {
+		name         string
+		snapshotOnly bool
+	}{
+		{name: "lock around Snapshot only fails", snapshotOnly: true},
+		{name: "separate Snapshot and Write locks fail", snapshotOnly: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rep := &fakeReporter{}
+			tx := &perCallLockTx{FakeTx: NewFakeTx(standardTestDescription(), nil), snapshotOnly: tc.snapshotOnly}
+			checkSetStateSerialized(context.Background(), rep, tx, tx)
+			if !rep.hasErrorContaining("must hold one lock") {
+				t.Fatalf("per-call lock passed the serialised check: %v", rep.errors)
+			}
+			if !rep.hasErrorContaining("want the value just before its own write") {
+				t.Fatalf("per-call lock backups passed the pre-image check: %v", rep.errors)
+			}
+		})
+	}
+
+	t.Run("per-call lock fails the full Tx check", func(t *testing.T) {
+		t.Parallel()
+		rep := &fakeReporter{}
+		checkTx(rep, func(d contract.Description) contract.Tx {
+			return &perCallLockTx{FakeTx: NewFakeTx(d, nil), snapshotOnly: true}
+		})
+		if !rep.hasErrorContaining("must hold one lock") {
+			t.Fatalf("expected the serialisation failure, got %v", rep.errors)
+		}
+	})
 }

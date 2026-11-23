@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -189,19 +191,100 @@ func standardTestDescription() contract.Description {
 	}
 }
 
-type contractStateProvider struct {
+// recordingStateProvider wraps the fake provider for checkTx. It records
+// each contract call in order, and can make
+// Write change the key and then fail, so the check can see whether a Tx
+// snapshots before writing and restores after a failed write.
+type recordingStateProvider struct {
 	inner *FakeStateProvider
+
+	mu        sync.Mutex
+	calls     []string
+	failWrite bool
+	// cancelWrite, when set, makes Write change the key, cancel the
+	// caller's context and return the cancellation error.
+	cancelWrite context.CancelFunc
 }
 
-func (p *contractStateProvider) Name() contract.StateProviderName { return p.inner.Name() }
-func (p *contractStateProvider) Read(ctx context.Context, key contract.StateKey) (contract.State, error) {
+var errInjectedWrite = errors.New("injected write failure")
+
+func (p *recordingStateProvider) record(call string) {
+	p.mu.Lock()
+	p.calls = append(p.calls, call)
+	p.mu.Unlock()
+}
+
+// reset clears the call log and returns what it held.
+func (p *recordingStateProvider) reset() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	calls := p.calls
+	p.calls = nil
+	return calls
+}
+
+func (p *recordingStateProvider) setFailWrite(fail bool) {
+	p.mu.Lock()
+	p.failWrite = fail
+	p.mu.Unlock()
+}
+
+func (p *recordingStateProvider) setCancelWrite(cancel context.CancelFunc) {
+	p.mu.Lock()
+	p.cancelWrite = cancel
+	p.mu.Unlock()
+}
+
+func (p *recordingStateProvider) Name() contract.StateProviderName { return p.inner.Name() }
+func (p *recordingStateProvider) Read(ctx context.Context, key contract.StateKey) (contract.State, error) {
+	p.record(callRead)
 	return p.inner.Read(ctx, key)
 }
-func (p *contractStateProvider) Snapshot(ctx context.Context) (contract.Snapshot, error) {
+func (p *recordingStateProvider) Write(ctx context.Context, key contract.StateKey, want contract.State) error {
+	p.record(callWrite)
+	if err := p.inner.Write(ctx, key, want); err != nil {
+		return err
+	}
+	p.mu.Lock()
+	fail, cancel := p.failWrite, p.cancelWrite
+	p.mu.Unlock()
+	if cancel != nil {
+		cancel()
+		return fmt.Errorf("write %q: %w", key, ctx.Err())
+	}
+	if fail {
+		return errInjectedWrite
+	}
+	return nil
+}
+func (p *recordingStateProvider) Snapshot(ctx context.Context) (contract.Snapshot, error) {
+	p.record(callSnapshot)
 	return p.inner.Snapshot(ctx)
 }
-func (p *contractStateProvider) Restore(ctx context.Context, s contract.Snapshot) error {
+func (p *recordingStateProvider) Restore(ctx context.Context, s contract.Snapshot) error {
+	p.record(callRestore)
 	return p.inner.Restore(ctx, s)
+}
+
+const (
+	// initialHostname is the provider value the SetState checks start from.
+	initialHostname = "lab-ws-01"
+	// halfWrittenValue is what an injected failing Write leaves behind.
+	halfWrittenValue = "half-written"
+
+	callRead     = "Read"
+	callWrite    = "Write"
+	callSnapshot = "Snapshot"
+	callRestore  = "Restore"
+)
+
+func indexOf(calls []string, call string) int {
+	for i, c := range calls {
+		if c == call {
+			return i
+		}
+	}
+	return -1
 }
 
 func checkDeclarativeTx(r reporter, newTx func(contract.Description) contract.DeclarativeTx) {
@@ -286,19 +369,23 @@ func checkTx(r reporter, newTx func(contract.Description) contract.Tx) {
 		return
 	}
 
-	rawProvider := NewFakeStateProvider(contract.ProviderHostname, map[contract.StateKey]contract.State{
-		declaredState: {Value: "lab-ws-01"},
-	})
-	provider := &contractStateProvider{inner: rawProvider}
+	initialState := contract.State{Value: initialHostname}
+	provider := &recordingStateProvider{inner: NewFakeStateProvider(contract.ProviderHostname, map[contract.StateKey]contract.State{
+		declaredState: initialState,
+	})}
 
 	beforeProvSnap, err := provider.Snapshot(ctx)
 	if err != nil {
 		r.Errorf("StateProvider.Snapshot before refused SetState failed: %v", err)
 		return
 	}
+	provider.reset()
 	assertRefusedUnchanged(r, "SetState", inspector, contract.TargetStateKey, string(undeclaredState), func() error {
 		return tx.SetState(ctx, provider, undeclaredState, contract.State{Value: "bad"})
 	})
+	if calls := provider.reset(); len(calls) != 0 {
+		r.Errorf("SetState on undeclared key called the provider %v before refusing; want no provider call", calls)
+	}
 	afterProvSnap, err := provider.Snapshot(ctx)
 	if err != nil {
 		r.Errorf("StateProvider.Snapshot after refused SetState failed: %v", err)
@@ -318,19 +405,294 @@ func checkTx(r reporter, newTx func(contract.Description) contract.Tx) {
 		r.Errorf("Run mutated backing state despite returning refusal error")
 	}
 
+	checkSetStateWriteFailure(ctx, r, tx, inspector, provider, initialState)
+
+	provider.reset()
 	beforeCount := len(inspector.Changes())
 	wantState := contract.State{Value: "acme-ws-001"}
 	if err := tx.SetState(ctx, provider, declaredState, wantState); err != nil {
 		r.Errorf("SetState on declared key failed: %v", err)
 	}
-	if len(inspector.Changes()) <= beforeCount {
+	calls := provider.reset()
+	changes := inspector.Changes()
+	if len(changes) <= beforeCount {
 		r.Errorf("SetState on declared key %q was not recorded for the receipt", declaredState)
+	} else {
+		assertRecordedChange(r, "SetState", changes[beforeCount:], stateTarget(provider, declaredState), true)
+		checkSnapshotBeforeWrite(ctx, r, inspector, provider, calls, changes[beforeCount:], initialState)
+	}
+
+	// The restore check above put the key back; write it again so the
+	// read-back below sees the Tx's own effect.
+	if err := tx.SetState(ctx, provider, declaredState, wantState); err != nil {
+		r.Errorf("SetState on declared key failed: %v", err)
 	}
 	gotState, err := provider.Read(ctx, declaredState)
 	if err != nil {
 		r.Errorf("StateProvider.Read(%q) after SetState failed: %v", declaredState, err)
 	} else if gotState != wantState {
 		r.Errorf("StateProvider.Read(%q) after SetState = %+v, want %+v", declaredState, gotState, wantState)
+	}
+
+	checkSetStateSerialized(ctx, r, tx, inspector)
+}
+
+func stateTarget(p contract.StateProvider, key contract.StateKey) string {
+	return string(p.Name()) + ":" + string(key)
+}
+
+// checkSnapshotBeforeWrite checks that SetState took a Snapshot before its
+// Write, and that restoring the backup its receipt row names gives back the
+// pre-Write value.
+func checkSnapshotBeforeWrite(
+	ctx context.Context,
+	r reporter,
+	inspector TxInspector,
+	provider *recordingStateProvider,
+	calls []string,
+	changes []contract.AppliedChange,
+	initial contract.State,
+) {
+	r.Helper()
+
+	snapAt, writeAt := indexOf(calls, callSnapshot), indexOf(calls, callWrite)
+	if writeAt < 0 {
+		r.Errorf("SetState on declared key never called StateProvider.Write (calls %v)", calls)
+		return
+	}
+	if snapAt < 0 || snapAt > writeAt {
+		r.Errorf("SetState must call StateProvider.Snapshot before Write (calls %v)", calls)
+		return
+	}
+	got, err := restoreRecordedBackup(ctx, inspector, provider, changes, stateTarget(provider, declaredState))
+	if err != nil {
+		r.Errorf("SetState receipt backup: %v", err)
+		return
+	}
+	if got != initial {
+		r.Errorf("state after Restore of the SetState receipt backup = %+v, want the pre-Write value %+v", got, initial)
+	}
+	provider.reset()
+}
+
+// restoreRecordedBackup restores the backup named by the receipt row for
+// target and reads the declared key back.
+func restoreRecordedBackup(
+	ctx context.Context,
+	inspector TxInspector,
+	provider contract.StateProvider,
+	changes []contract.AppliedChange,
+	target string,
+) (contract.State, error) {
+	for _, ch := range changes {
+		if ch.Target != target {
+			continue
+		}
+		data, ok := inspector.Backup(ch.Backup)
+		if !ok {
+			return contract.State{}, fmt.Errorf("receipt row names backup %q, which the transaction does not hold", ch.Backup)
+		}
+		if len(data) == 0 {
+			return contract.State{}, fmt.Errorf("receipt row names backup %q, which is empty", ch.Backup)
+		}
+		if err := provider.Restore(ctx, contract.Snapshot{Provider: provider.Name(), Data: data}); err != nil {
+			return contract.State{}, fmt.Errorf("restore of backup %q: %w", ch.Backup, err)
+		}
+		got, err := provider.Read(ctx, declaredState)
+		if err != nil {
+			return contract.State{}, fmt.Errorf("read after restoring backup %q: %w", ch.Backup, err)
+		}
+		return got, nil
+	}
+	return contract.State{}, fmt.Errorf("no receipt row for %q", target)
+}
+
+// checkSetStateWriteFailure makes Write change the key and then fail. The Tx
+// must return an error, leave the provider at its pre-Write value and add no
+// receipt row.
+func checkSetStateWriteFailure(
+	ctx context.Context,
+	r reporter,
+	tx contract.Tx,
+	inspector TxInspector,
+	provider *recordingStateProvider,
+	initial contract.State,
+) {
+	r.Helper()
+
+	provider.setFailWrite(true)
+	defer provider.setFailWrite(false)
+
+	beforeCount := len(inspector.Changes())
+	err := tx.SetState(ctx, provider, declaredState, contract.State{Value: halfWrittenValue})
+	if !errors.Is(err, errInjectedWrite) {
+		r.Errorf("SetState after a failed Write returned %v, want an error wrapping the Write error", err)
+	}
+	got, readErr := provider.Read(ctx, declaredState)
+	if readErr != nil || got != initial {
+		r.Errorf("state after a failed SetState Write = %+v (err %v), want the restored pre-Write value %+v", got, readErr, initial)
+	}
+	if len(inspector.Changes()) != beforeCount {
+		r.Errorf("SetState recorded a receipt row for a failed Write")
+	}
+	provider.reset()
+
+	// A Write that changes the key and then fails because the caller's
+	// context was cancelled must still be restored.
+	cancelCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	provider.setCancelWrite(cancel)
+	defer provider.setCancelWrite(nil)
+	err = tx.SetState(cancelCtx, provider, declaredState, contract.State{Value: halfWrittenValue})
+	if !errors.Is(err, context.Canceled) {
+		r.Errorf("SetState after a cancelled Write returned %v, want an error wrapping context.Canceled", err)
+	}
+	got, readErr = provider.Read(ctx, declaredState)
+	if readErr != nil || got != initial {
+		r.Errorf("state after a cancelled SetState Write = %+v (err %v), want the restored pre-Write value %+v; the restore must not use the cancelled context", got, readErr, initial)
+	}
+	if len(inspector.Changes()) != beforeCount {
+		r.Errorf("SetState recorded a receipt row for a cancelled Write")
+	}
+	provider.reset()
+}
+
+// gatedStateProvider pauses the first SetState after its Snapshot has
+// returned and before its Write takes effect, until the check releases it,
+// and reports when a second Snapshot starts. A Tx that holds one lock
+// across snapshot, write and receipt keeps the second call out of Snapshot
+// for as long as the first is paused; a Tx that locks each provider call on
+// its own lets the second Snapshot run at once.
+type gatedStateProvider struct {
+	*FakeStateProvider
+
+	mu        sync.Mutex
+	snapshots int
+	writes    int
+	paused    chan struct{}
+	second    chan struct{}
+	release   chan struct{}
+}
+
+func newGatedStateProvider(initial contract.State) *gatedStateProvider {
+	return &gatedStateProvider{
+		FakeStateProvider: NewFakeStateProvider(contract.ProviderHostname, map[contract.StateKey]contract.State{
+			declaredState: initial,
+		}),
+		paused:  make(chan struct{}, 1),
+		second:  make(chan struct{}, 1),
+		release: make(chan struct{}),
+	}
+}
+
+func (p *gatedStateProvider) Snapshot(ctx context.Context) (contract.Snapshot, error) {
+	p.mu.Lock()
+	p.snapshots++
+	n := p.snapshots
+	p.mu.Unlock()
+	if n > 1 {
+		select {
+		case p.second <- struct{}{}:
+		default:
+		}
+	}
+	return p.FakeStateProvider.Snapshot(ctx)
+}
+
+func (p *gatedStateProvider) Write(ctx context.Context, key contract.StateKey, want contract.State) error {
+	p.mu.Lock()
+	p.writes++
+	n := p.writes
+	p.mu.Unlock()
+	if n == 1 {
+		p.paused <- struct{}{}
+		<-p.release
+	}
+	return p.FakeStateProvider.Write(ctx, key, want)
+}
+
+const (
+	serialGateTimeout = 5 * time.Second
+	// serialProbeWait is how long the check waits, with the first call
+	// paused, for a second Snapshot that a per-call lock would allow at
+	// once. A correct Tx always uses the whole wait.
+	serialProbeWait = time.Second
+)
+
+// checkSetStateSerialized runs two SetState calls on one key with the first
+// paused between its Snapshot and its Write. The second must not reach its
+// Snapshot while the first is paused, and each receipt's backup must be the
+// value just before its own write.
+//
+// Limit: the provider can pause only inside one of its own calls. A Tx that
+// wraps every provider call in one shared mutex holds that mutex during the
+// pause, so this check cannot tell it apart from a lock across the whole
+// sequence. It catches a Tx with no lock, a lock around Snapshot only, and
+// separate locks per call. Catching the shared per-call mutex would need a
+// hook inside the Tx between calls, which the contract does not have.
+func checkSetStateSerialized(ctx context.Context, r reporter, tx contract.Tx, inspector TxInspector) {
+	r.Helper()
+
+	initial := contract.State{Value: initialHostname}
+	p := newGatedStateProvider(initial)
+	released := false
+	releaseOnce := func() {
+		if !released {
+			released = true
+			close(p.release)
+		}
+	}
+	defer releaseOnce()
+
+	before := len(inspector.Changes())
+	errs := make(chan error, 2)
+	go func() { errs <- tx.SetState(ctx, p, declaredState, contract.State{Value: "value-a"}) }()
+	select {
+	case <-p.paused:
+	case <-time.After(serialGateTimeout):
+		r.Errorf("SetState never reached StateProvider.Write")
+		return
+	}
+	go func() { errs <- tx.SetState(ctx, p, declaredState, contract.State{Value: "value-b"}) }()
+	select {
+	case <-p.second:
+		r.Errorf("a second SetState took its Snapshot while the first was paused between its Snapshot and its Write; SetState must hold one lock across snapshot, write and receipt")
+	case <-time.After(serialProbeWait):
+	}
+	releaseOnce()
+	for range 2 {
+		select {
+		case err := <-errs:
+			if err != nil {
+				r.Errorf("concurrent SetState failed: %v", err)
+			}
+		case <-time.After(serialGateTimeout):
+			r.Errorf("concurrent SetState did not finish")
+			return
+		}
+	}
+
+	var rows []contract.AppliedChange
+	for _, ch := range inspector.Changes()[before:] {
+		if ch.Target == stateTarget(p, declaredState) {
+			rows = append(rows, ch)
+		}
+	}
+	if len(rows) != 2 {
+		r.Errorf("two concurrent SetState calls recorded %d receipt rows, want 2", len(rows))
+		return
+	}
+	wantBefore := digestBytes([]byte(initial.Value))
+	for i, row := range rows {
+		got, err := restoreRecordedBackup(ctx, inspector, p, []contract.AppliedChange{row}, row.Target)
+		if err != nil {
+			r.Errorf("concurrent SetState receipt %d backup: %v", i, err)
+			return
+		}
+		if digestBytes([]byte(got.Value)) != wantBefore {
+			r.Errorf("concurrent SetState receipt %d backup holds %q, want the value just before its own write", i, got.Value)
+		}
+		wantBefore = row.After
 	}
 }
 
@@ -436,6 +798,29 @@ func checkStateProvider(
 	}
 	if after != before {
 		r.Errorf("state after Restore = %+v, want %+v", after, before)
+	}
+
+	// Write: read back the written value, and undo it through Restore of a
+	// snapshot taken before the write.
+	beforeWrite, err := p.Snapshot(ctx)
+	if err != nil {
+		r.Errorf("StateProvider.Snapshot before Write failed: %v", err)
+		return
+	}
+	want := contract.State{Value: "contracttest-written-value"}
+	if err := p.Write(ctx, key, want); err != nil {
+		r.Errorf("StateProvider.Write(%q) failed: %v", key, err)
+		return
+	}
+	if got, err := p.Read(ctx, key); err != nil || got != want {
+		r.Errorf("state after Write = %+v (err %v), want %+v", got, err, want)
+	}
+	if err := p.Restore(ctx, beforeWrite); err != nil {
+		r.Errorf("StateProvider.Restore after Write failed: %v", err)
+		return
+	}
+	if got, err := p.Read(ctx, key); err != nil || got != before {
+		r.Errorf("state after Restore of the pre-Write snapshot = %+v (err %v), want %+v", got, err, before)
 	}
 
 	wrong := contract.Snapshot{
