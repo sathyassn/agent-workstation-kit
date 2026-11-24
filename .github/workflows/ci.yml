@@ -113,13 +113,22 @@ jobs:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Run deterministic public-release scan on Linux (non-authoritative)
-        run: make public-check
+        run: python3 -I -B tests/check_public_release.py --identity-source ci
 
       - name: Run public-scan unit and hardening tests on Linux (non-authoritative)
-        run: make unit-public-scan-check
+        run: |
+          set -euo pipefail
+          set +e
+          out=$(python3 -B -m unittest discover -s tests -t tests -p 'test_public_*.py' -v 2>&1)
+          status=$?
+          set -e
+          printf '%s\n' "$out"
+          test "$status" -eq 0
+          printf '%s\n' "$out" | grep -Eq '^Ran [1-9][0-9]* tests? in '
 
   macos-public-scan:
     # Non-authoritative head-code self-test on macOS; authoritative privacy
@@ -131,10 +140,11 @@ jobs:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Run deterministic public-release scan on macOS (non-authoritative)
-        run: python3 -I -B tests/check_public_release.py
+        run: python3 -I -B tests/check_public_release.py --identity-source ci
 
       - name: Run public-scan unit and hardening tests on macOS
         run: |

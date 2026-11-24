@@ -34,6 +34,7 @@ import codecs
 import datetime
 import functools
 import hashlib
+import importlib.util
 import ipaddress
 import json
 import os
@@ -48,6 +49,28 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+SCRIPT_DIR = Path(__file__).resolve().parent
+
+
+def _load_sibling_module(filename: str, module_name: str):
+    """Load a trusted sibling helper from SCRIPT_DIR (never from --root or sys.path)."""
+    path = SCRIPT_DIR / filename
+    if path.is_symlink():
+        raise RuntimeError(f"helper module {filename} must not be a symlink")
+    st = os.lstat(path)
+    if not stat.S_ISREG(st.st_mode):
+        raise RuntimeError(f"helper module {filename} must be a regular file")
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"could not load helper module {filename}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_identity_mod = _load_sibling_module("public_scan_identity.py", "_public_scan_identity")
+_keyed_mod = _load_sibling_module("public_scan_keyed.py", "_public_scan_keyed")
 SEMVER = re.compile(
     r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"
 )
@@ -81,6 +104,8 @@ REQUIRED = (
     "tests/public_scan_modes.json",
     "tests/public_scan_exemptions.json",
     "tests/public_scan_binary_exceptions.json",
+    "tests/public_scan_identity.py",
+    "tests/public_scan_keyed.py",
 )
 CONDUCT_CONTACT_PLACEHOLDER = "owner must add a monitored private conduct-report"
 DEPENDABOT_COMMIT_POLICY = (
@@ -93,6 +118,7 @@ DEPENDABOT_COMMIT_POLICY = (
 DEFAULT_MODES_PATH = Path("tests/public_scan_modes.json")
 DEFAULT_EXEMPTIONS_PATH = Path("tests/public_scan_exemptions.json")
 DEFAULT_BINARY_EXCEPTIONS_PATH = Path("tests/public_scan_binary_exceptions.json")
+DEFAULT_KEYED_LIST_PATH = _keyed_mod.DEFAULT_KEYED_LIST_PATH
 
 MAX_SCAN_FILE_BYTES = 20 * 1024 * 1024
 MAX_TREE_ENTRIES = 100_000
@@ -101,9 +127,11 @@ MAX_LISTING_BYTES = 64 * 1024 * 1024
 MAX_FINDINGS = 10_000
 MAX_RANGE_COMMITS = 5_000
 MAX_DECODE_PASSES = 4
+WRAP_WINDOW_CHARS = 160
 CACHE_LINE_CHARS = 2048
 CACHE_LINES = 4096
 SCAN_VERIFIED_MARKER = "PUBLIC_SCAN_VERIFIED=1"
+IDENTITY_VERIFIED_MARKER = _identity_mod.IDENTITY_VERIFIED_MARKER
 
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 COMMIT_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
@@ -121,8 +149,15 @@ DETECTOR_IDS = (
     "chat-tracker-id",
     "secret",
 )
+IDENTITY_RULE_ID = _identity_mod.IDENTITY_RULE_ID
+KEYED_LIST_RULE_ID = _keyed_mod.KEYED_LIST_RULE_ID
+ALL_RULE_IDS = (*DETECTOR_IDS, IDENTITY_RULE_ID, KEYED_LIST_RULE_ID)
 VALID_MODES = frozenset({"block", "warn", "off"})
-DEFAULT_MODES: Mapping[str, str] = {rule_id: "block" for rule_id in DETECTOR_IDS}
+DEFAULT_MODES: Mapping[str, str] = {
+    **{rule_id: "block" for rule_id in DETECTOR_IDS},
+    IDENTITY_RULE_ID: "block",
+    KEYED_LIST_RULE_ID: "off",
+}
 
 # --- decoding and folding tables --------------------------------------------
 
@@ -666,7 +701,7 @@ def canonical_octets(groups: str) -> tuple[int, ...] | None:
 
 def fold_value_for_rule(rule_id: str, value: str) -> str:
     """Fold one matched value into the canonical form hashed for exemptions."""
-    if rule_id not in DETECTOR_IDS:
+    if rule_id not in ALL_RULE_IDS:
         raise ScanConfigError("unknown detector rule id")
     normalized = normalize_text(value).strip()
     if not normalized:
@@ -1212,10 +1247,10 @@ def load_modes(path: Path) -> dict[str, str]:
     raw_modes = data["modes"]
     if not isinstance(raw_modes, dict):
         raise ScanConfigError("mode configuration modes must be a JSON object")
-    if set(raw_modes.keys()) != set(DETECTOR_IDS):
+    if set(raw_modes.keys()) != set(ALL_RULE_IDS):
         raise ScanConfigError("mode configuration must declare every detector and no unknown detectors")
     modes: dict[str, str] = {}
-    for rule_id in DETECTOR_IDS:
+    for rule_id in ALL_RULE_IDS:
         mode = raw_modes[rule_id]
         if not isinstance(mode, str) or mode not in VALID_MODES:
             raise ScanConfigError(f"invalid detector mode for rule '{rule_id}'")
@@ -1227,6 +1262,7 @@ def load_exemptions_inventory(
     path: Path,
     *,
     today: datetime.date | None = None,
+    extra_detectors: Sequence[tuple[str, Callable[..., list[str]]]] = (),
 ) -> tuple[tuple[ExemptionRecord, ...], tuple[ExemptionInventoryEntry, ...], list[str]]:
     """Load tracked exemptions, returning (active_records, full_inventory, errors).
 
@@ -1269,7 +1305,7 @@ def load_exemptions_inventory(
         raw_digest = entry.get("digest")
         raw_expires = entry.get("expires")
         safe_path = raw_path if _valid_relative_path(raw_path) else f"<record-{index + 1}>"
-        safe_rule = raw_rule if isinstance(raw_rule, str) and raw_rule in DETECTOR_IDS else "unknown"
+        safe_rule = raw_rule if isinstance(raw_rule, str) and raw_rule in ALL_RULE_IDS else "unknown"
         safe_digest_prefix = (
             raw_digest[:12]
             if isinstance(raw_digest, str) and SHA256_RE.fullmatch(raw_digest)
@@ -1298,7 +1334,7 @@ def load_exemptions_inventory(
         record_error: str | None = None
         if not _valid_relative_path(rel_path):
             record_error = f"exemption record #{index + 1} has an invalid path"
-        elif not isinstance(rule, str) or rule not in DETECTOR_IDS:
+        elif not isinstance(rule, str) or rule not in ALL_RULE_IDS:
             record_error = f"exemption record #{index + 1} has an unknown rule"
         elif not isinstance(digest, str) or not SHA256_RE.fullmatch(digest):
             record_error = f"exemption record #{index + 1} digest must be lowercase 64-hex SHA-256"
@@ -1317,7 +1353,7 @@ def load_exemptions_inventory(
                 record_error = f"exemption record #{index + 1} has an invalid calendar expires date"
             else:
                 if expires_date < current_date:
-                    shown = display_path(rel_path)
+                    shown = display_path(rel_path, extra_detectors=extra_detectors)
                     errors.append(
                         f"exemption record #{index + 1} for {shown} "
                         f"rule '{rule}' digest {digest[:12]} expired on {expires}"
@@ -1805,13 +1841,22 @@ def redacted_path_id(path: str) -> str:
     return f"<redacted-{digest}>"
 
 
-def display_path(path: str) -> str:
-    """Return a safe display path, redacting any path that matches a detector."""
+def display_path(
+    path: str,
+    *,
+    extra_detectors: Sequence[tuple[str, Callable[..., list[str]]]] = (),
+) -> str:
+    """Return a safe display path, redacting any path that matches any detector."""
     try:
         variants = _line_variants(path)
         for detector_fn in DETECTORS.values():
             for variant in variants:
                 if detector_fn(variant):
+                    return redacted_path_id(path)
+        for rule_id, detector_fn in extra_detectors:
+            for variant in variants:
+                hits = detector_fn(variant, path=path) if rule_id == IDENTITY_RULE_ID else detector_fn(variant)
+                if hits:
                     return redacted_path_id(path)
     except Exception:  # noqa: BLE001 - fail safe by redacting path on any error
         return redacted_path_id(path)
@@ -1822,7 +1867,7 @@ def display_path(path: str) -> str:
 
 
 class Scanner:
-    """Scan sources with deterministic detectors, modes, and digest exemptions."""
+    """Scan sources with deterministic detectors, identity check, optional keyed list, modes, and exemptions."""
 
     def __init__(
         self,
@@ -1831,9 +1876,13 @@ class Scanner:
         exemptions: Sequence[ExemptionRecord] = (),
         binary_exceptions: Mapping[str, BinaryException] | None = None,
         detectors: Mapping[str, Callable[[str], list[str]]] | None = None,
+        identity_matcher: object | None = None,
+        keyed_matcher: object | None = None,
+        require_identity: bool = False,
+        require_keyed: bool = False,
     ) -> None:
         self.modes: dict[str, str] = dict(DEFAULT_MODES if modes is None else modes)
-        if set(self.modes.keys()) != set(DETECTOR_IDS):
+        if set(self.modes.keys()) != set(ALL_RULE_IDS):
             raise ScanConfigError("detector modes must cover every detector")
         for rule_id, mode in self.modes.items():
             if mode not in VALID_MODES:
@@ -1842,6 +1891,10 @@ class Scanner:
         self.detectors: Mapping[str, Callable[[str], list[str]]] = (
             DETECTORS if detectors is None else detectors
         )
+        self.identity_matcher = identity_matcher
+        self.keyed_matcher = keyed_matcher
+        self.require_identity = require_identity
+        self.require_keyed = require_keyed
         self.exemptions: tuple[ExemptionRecord, ...] = tuple(exemptions)
         self.exemption_index: dict[tuple[str, str], set[str]] = {}
         for record in self.exemptions:
@@ -1850,13 +1903,13 @@ class Scanner:
         self.binary_exceptions: Mapping[str, BinaryException] = (
             {} if binary_exceptions is None else binary_exceptions
         )
-        self.active_detectors: tuple[tuple[str, str, Callable[[str], list[str]]], ...] = self._resolve_active()
-        # Cache raw content hits per git object_id: (error, hits, overflow)
+        self.active_detectors: tuple[tuple[str, str, Callable[..., list[str]]], ...] = self._resolve_active()
+        # Cache raw content hits per (git object_id, path_ctx): (error, hits, overflow)
         # where hits is list of (line_no, rule_id, folded_value).
         self.object_findings: dict[str, tuple[str | None, list[tuple[int, str, str]], bool]] = {}
 
-    def _resolve_active(self) -> tuple[tuple[str, str, Callable[[str], list[str]]], ...]:
-        active: list[tuple[str, str, Callable[[str], list[str]]]] = []
+    def _resolve_active(self) -> tuple[tuple[str, str, Callable[..., list[str]]], ...]:
+        active: list[tuple[str, str, Callable[..., list[str]]]] = []
         for rule_id in DETECTOR_IDS:
             mode = self.modes[rule_id]
             if mode == "off":
@@ -1865,6 +1918,27 @@ class Scanner:
             if fn is None or not callable(fn):
                 raise ScanConfigError(f"detector '{rule_id}' is missing or skipped; failing closed")
             active.append((rule_id, mode, fn))
+
+        ident_mode = self.modes[IDENTITY_RULE_ID]
+        if ident_mode != "off":
+            ident_fn = getattr(self.identity_matcher, "detect", None) if self.identity_matcher is not None else None
+            if callable(ident_fn):
+                active.append((IDENTITY_RULE_ID, ident_mode, ident_fn))
+            elif self.require_identity:
+                raise ScanConfigError(
+                    f"detector '{IDENTITY_RULE_ID}' is missing or skipped; failing closed"
+                )
+
+        keyed_mode = self.modes[KEYED_LIST_RULE_ID]
+        if keyed_mode != "off":
+            keyed_fn = getattr(self.keyed_matcher, "detect", None) if self.keyed_matcher is not None else None
+            if callable(keyed_fn):
+                active.append((KEYED_LIST_RULE_ID, keyed_mode, keyed_fn))
+            elif self.require_keyed:
+                raise ScanConfigError(
+                    f"detector '{KEYED_LIST_RULE_ID}' is missing or skipped; failing closed"
+                )
+
         return tuple(active)
 
     def _text_variants(self, text: str) -> tuple[str, ...]:
@@ -1899,13 +1973,18 @@ class Scanner:
     def _run_detector_checked(
         self,
         rule_id: str,
-        detector_fn: Callable[[str], list[str]],
+        detector_fn: Callable[..., list[str]],
         variants: tuple[str, ...],
+        *,
+        path: str = "",
     ) -> tuple[list[str], str | None]:
         hits: list[str] = []
         try:
             for variant in variants:
-                result = detector_fn(variant)
+                if rule_id == IDENTITY_RULE_ID:
+                    result = detector_fn(variant, path=path)
+                else:
+                    result = detector_fn(variant)
                 if not isinstance(result, list):
                     raise TypeError("detector did not return a list")
                 hits.extend(result)
@@ -1913,7 +1992,12 @@ class Scanner:
             return [], f"detector '{rule_id}' failed ({type(exc).__name__}); failing closed"
         return hits, None
 
-    def _run_detectors_on_line(self, line: str) -> tuple[list[tuple[str, str]], list[str]]:
+    def _run_detectors_on_line(
+        self,
+        line: str,
+        *,
+        path: str = "",
+    ) -> tuple[list[tuple[str, str]], list[str]]:
         """Run every enabled detector on one line, returning (hits, errors)."""
         try:
             variants = _line_variants(line)
@@ -1923,7 +2007,7 @@ class Scanner:
         errors: list[str] = []
         executed: set[str] = set()
         for rule_id, _mode, detector_fn in self.active_detectors:
-            det_hits, err = self._run_detector_checked(rule_id, detector_fn, variants)
+            det_hits, err = self._run_detector_checked(rule_id, detector_fn, variants, path=path)
             if err is not None:
                 errors.append(err)
                 continue
@@ -1943,17 +2027,27 @@ class Scanner:
         digests = self.exemption_index.get((relative, rule_id))
         if not digests:
             return False
-        value_digest = hashlib.sha256(folded_value.encode("utf-8")).hexdigest()
+        if rule_id == KEYED_LIST_RULE_ID:
+            # Keyed-list detector returns the keyed HMAC-SHA256 hex digest directly.
+            value_digest = folded_value
+        else:
+            value_digest = hashlib.sha256(folded_value.encode("utf-8")).hexdigest()
         if value_digest in digests:
             self.applied_exemptions.add((relative, rule_id, value_digest))
             return True
         return False
 
-    def _scan_text_raw(self, text: str) -> tuple[str | None, list[tuple[int, str, str]], bool]:
-        """Collect raw (line_no, rule_id, folded_value) hits for text.
+    def _scan_text_raw(
+        self,
+        text: str,
+        *,
+        path: str = "",
+    ) -> tuple[str | None, list[tuple[int, str, str, bool]], bool]:
+        """Collect raw (line_no, rule_id, folded_value, is_wrapped) hits for text.
 
         Runs each active detector once over the full file first; only detectors
-        that report hits resolve exact line numbers line-by-line.
+        that report hits resolve exact line numbers line-by-line (and across
+        adjacent wrapped lines for identity and keyed-list).
         """
         unified = text.replace("\r\n", "\n").replace("\r", "\n")
         if not unified:
@@ -1962,10 +2056,10 @@ class Scanner:
             file_variants = self._text_variants(unified)
         except ScanConfigError as exc:
             return f"decode failed ({exc}); failing closed", [], False
-        triggered: list[tuple[str, Callable[[str], list[str]]]] = []
+        triggered: list[tuple[str, Callable[..., list[str]]]] = []
         executed: set[str] = set()
         for rule_id, _mode, detector_fn in self.active_detectors:
-            det_hits, err = self._run_detector_checked(rule_id, detector_fn, file_variants)
+            det_hits, err = self._run_detector_checked(rule_id, detector_fn, file_variants, path=path)
             if err is not None:
                 return err, [], False
             executed.add(rule_id)
@@ -1980,9 +2074,15 @@ class Scanner:
         if not triggered:
             return None, [], False
 
-        raw_hits: list[tuple[int, str, str]] = []
+        raw_hits: list[tuple[int, str, str, bool]] = []
         lines = unified.split("\n")
         phone_triggered = any(rule_id == "phone" for rule_id, _ in triggered)
+        wrap_triggered = [
+            (rule_id, fn)
+            for rule_id, fn in triggered
+            if rule_id in (IDENTITY_RULE_ID, KEYED_LIST_RULE_ID)
+        ]
+        per_line_hits: dict[tuple[int, str], set[str]] = {}
         yaml_phone_indent: int | None = None
         for number, line in enumerate(lines, start=1):
             if not line:
@@ -1992,16 +2092,18 @@ class Scanner:
             except ScanConfigError as exc:
                 return f"decode failed ({exc}); failing closed", [], False
             for rule_id, detector_fn in triggered:
-                det_hits, err = self._run_detector_checked(rule_id, detector_fn, line_variants)
+                det_hits, err = self._run_detector_checked(rule_id, detector_fn, line_variants, path=path)
                 if err is not None:
                     return err, [], False
                 seen_values: set[str] = set()
                 for value in det_hits:
                     if value not in seen_values:
                         seen_values.add(value)
-                        raw_hits.append((number, rule_id, value))
+                        raw_hits.append((number, rule_id, value, False))
                         if len(raw_hits) > MAX_FINDINGS:
                             return None, raw_hits[:MAX_FINDINGS], True
+                if wrap_triggered and rule_id in (IDENTITY_RULE_ID, KEYED_LIST_RULE_ID):
+                    per_line_hits[(number, rule_id)] = seen_values
                 if rule_id == "phone" and yaml_phone_indent is not None:
                     stripped = line.lstrip(" \t")
                     indent = len(line) - len(stripped)
@@ -2018,7 +2120,7 @@ class Scanner:
                                 folded = _normalize_phone_candidate(vm.group(1))
                                 if folded is not None and folded not in seen_values:
                                     seen_values.add(folded)
-                                    raw_hits.append((number, "phone", folded))
+                                    raw_hits.append((number, "phone", folded, False))
                                     if len(raw_hits) > MAX_FINDINGS:
                                         return None, raw_hits[:MAX_FINDINGS], True
                         elif indent <= yaml_phone_indent:
@@ -2036,9 +2138,44 @@ class Scanner:
                             break
                     if found_yaml_key:
                         break
+
+        # Linear-time wrapped cross-line pass for multi-word/hyphenated identities
+        # and keyed terms split across adjacent lines (bounded by WRAP_WINDOW_CHARS).
+        if wrap_triggered and len(lines) > 1:
+            for idx in range(len(lines) - 1):
+                cur_line = lines[idx]
+                nxt_line = lines[idx + 1]
+                if not cur_line or not nxt_line:
+                    continue
+                number = idx + 1
+                pair_text = cur_line[-WRAP_WINDOW_CHARS:] + "\n" + nxt_line[:WRAP_WINDOW_CHARS]
+                try:
+                    pair_variants = _line_variants(pair_text)
+                except ScanConfigError as exc:
+                    return f"decode failed ({exc}); failing closed", [], False
+                for rule_id, detector_fn in wrap_triggered:
+                    det_hits, err = self._run_detector_checked(rule_id, detector_fn, pair_variants, path=path)
+                    if err is not None:
+                        return err, [], False
+                    already = per_line_hits.get((number, rule_id), set()) | per_line_hits.get(
+                        (number + 1, rule_id), set()
+                    )
+                    seen_pair: set[str] = set()
+                    for value in det_hits:
+                        if value not in already and value not in seen_pair:
+                            seen_pair.add(value)
+                            raw_hits.append((number, rule_id, value, True))
+                            if len(raw_hits) > MAX_FINDINGS:
+                                return None, raw_hits[:MAX_FINDINGS], True
+
         return None, raw_hits, False
 
-    def scan_source(self, source: SourceFile) -> tuple[list[str], list[str]]:
+    def scan_source(
+        self,
+        source: SourceFile,
+        *,
+        identity_scope: object | None = None,
+    ) -> tuple[list[str], list[str]]:
         """Scan one source file, returning (failures, warnings) with redacted output."""
         failures: list[str] = []
         warnings: list[str] = []
@@ -2047,13 +2184,24 @@ class Scanner:
         path_hits, path_errors = self._run_detectors_on_line(source.path)
         unexempt_path_hits: list[tuple[str, str]] = []
         for rule_id, value in path_hits:
+            if (
+                rule_id == IDENTITY_RULE_ID
+                and identity_scope is not None
+                and not identity_scope.includes_path(source.path)
+            ):
+                continue
             if not self._is_exempt(source.path, rule_id, value):
                 unexempt_path_hits.append((rule_id, value))
 
+        extra_for_path: list[tuple[str, Callable[..., list[str]]]] = [
+            (rule_id, fn)
+            for rule_id, _mode, fn in self.active_detectors
+            if rule_id in (IDENTITY_RULE_ID, KEYED_LIST_RULE_ID)
+        ]
         shown = (
             redacted_path_id(source.path)
             if (path_hits or path_errors)
-            else display_path(source.path)
+            else display_path(source.path, extra_detectors=extra_for_path)
         )
 
         for err in path_errors:
@@ -2079,16 +2227,22 @@ class Scanner:
                 )
             return failures, warnings
 
-        cached = self.object_findings.get(source.object_id) if source.object_id else None
+        path_ctx = (
+            source.path
+            if source.path in (".github/CODEOWNERS", "tests/public_scan_exemptions.json")
+            else ""
+        )
+        cache_key = f"{source.object_id}:{path_ctx}" if source.object_id else None
+        cached = self.object_findings.get(cache_key) if cache_key else None
         if cached is None:
             try:
                 text = decode_content(source.content)
             except ScanConfigError as exc:
                 cached = (str(exc), [], False)
             else:
-                cached = self._scan_text_raw(text)
-            if source.object_id:
-                self.object_findings[source.object_id] = cached
+                cached = self._scan_text_raw(text, path=source.path)
+            if cache_key:
+                self.object_findings[cache_key] = cached
 
         error, raw_hits, overflow = cached
         if error is not None:
@@ -2103,7 +2257,15 @@ class Scanner:
         # does not spam duplicate messages while every exempt digest is tracked.
         emitted_block: set[tuple[int, str]] = set()
         emitted_warn: set[tuple[int, str]] = set()
-        for line_no, rule_id, value in raw_hits:
+        for line_no, rule_id, value, is_wrapped in raw_hits:
+            if (
+                rule_id == IDENTITY_RULE_ID
+                and identity_scope is not None
+                and not identity_scope.includes_line(
+                    source.path, line_no, wrapped_next_line=is_wrapped
+                )
+            ):
+                continue
             if self._is_exempt(source.path, rule_id, value):
                 continue
             key = (line_no, rule_id)
@@ -2125,6 +2287,10 @@ def scan_sources(
     exemptions: Sequence[ExemptionRecord] = (),
     binary_exceptions: Mapping[str, BinaryException] | None = None,
     detectors: Mapping[str, Callable[[str], list[str]]] | None = None,
+    identity_matcher: object | None = None,
+    keyed_matcher: object | None = None,
+    require_identity: bool = False,
+    require_keyed: bool = False,
 ) -> ScanResult:
     """Scan sources; an empty source list or exceeded finding cap fails closed."""
     scanner = Scanner(
@@ -2132,6 +2298,10 @@ def scan_sources(
         exemptions=exemptions,
         binary_exceptions=binary_exceptions,
         detectors=detectors,
+        identity_matcher=identity_matcher,
+        keyed_matcher=keyed_matcher,
+        require_identity=require_identity,
+        require_keyed=require_keyed,
     )
     failures: list[str] = []
     warnings: list[str] = []
@@ -2174,6 +2344,10 @@ def scan_tracked_files(
     exemptions: Sequence[ExemptionRecord] = (),
     binary_exceptions: Mapping[str, BinaryException] | None = None,
     detectors: Mapping[str, Callable[[str], list[str]]] | None = None,
+    identity_matcher: object | None = None,
+    keyed_matcher: object | None = None,
+    require_identity: bool = False,
+    require_keyed: bool = False,
 ) -> ScanResult:
     """Scan every tracked worktree file; fail closed on gaps."""
     if not tracked:
@@ -2188,6 +2362,10 @@ def scan_tracked_files(
         exemptions=exemptions,
         binary_exceptions=binary_exceptions,
         detectors=detectors,
+        identity_matcher=identity_matcher,
+        keyed_matcher=keyed_matcher,
+        require_identity=require_identity,
+        require_keyed=require_keyed,
     )
 
 
@@ -2198,6 +2376,7 @@ def tracked_path_failures(
     tracked: Iterable[str] | None,
     *,
     root: Path | None = None,
+    extra_detectors: Sequence[tuple[str, Callable[..., list[str]]]] = (),
 ) -> list[str]:
     """Fail closed on empty listings or tracked private, generated, or retired paths."""
     failures: list[str] = []
@@ -2212,10 +2391,12 @@ def tracked_path_failures(
             or name.startswith("artifacts/")
             or name.startswith(".secrets/")
         ):
-            failures.append(f"private/generated path is tracked: {display_path(name)}")
+            shown = display_path(name, extra_detectors=extra_detectors)
+            failures.append(f"private/generated path is tracked: {shown}")
         if name.startswith("skills/setup-agent-dev-machine/"):
             if root is None or (root / name).exists():
-                failures.append(f"retired skill path is tracked: {display_path(name)}")
+                shown = display_path(name, extra_detectors=extra_detectors)
+                failures.append(f"retired skill path is tracked: {shown}")
     return failures
 
 
@@ -2224,6 +2405,7 @@ def deterministic_failures(
     *,
     require_license: bool,
     tracked: Iterable[str] | None,
+    extra_detectors: Sequence[tuple[str, Callable[..., list[str]]]] = (),
 ) -> list[str]:
     """Evaluate repository metadata without performing network operations."""
     failures: list[str] = []
@@ -2293,7 +2475,7 @@ def deterministic_failures(
         if any(fragment not in dependabot_text for fragment in DEPENDABOT_COMMIT_POLICY):
             failures.append("Dependabot must emit conventional build(scope) commit subjects")
 
-    failures.extend(tracked_path_failures(tracked, root=root))
+    failures.extend(tracked_path_failures(tracked, root=root, extra_detectors=extra_detectors))
     return failures
 
 
@@ -2303,7 +2485,11 @@ def deterministic_failures(
 def _print_non_default_modes(modes: Mapping[str, str] | None) -> None:
     if not modes:
         return
-    non_default = [(rule_id, modes[rule_id]) for rule_id in DETECTOR_IDS if modes.get(rule_id) != "block"]
+    non_default = [
+        (rule_id, modes[rule_id])
+        for rule_id in ALL_RULE_IDS
+        if modes.get(rule_id) != DEFAULT_MODES[rule_id]
+    ]
     if non_default:
         print("Non-default detector modes:")
         for rule_id, mode in non_default:
@@ -2313,6 +2499,8 @@ def _print_non_default_modes(modes: Mapping[str, str] | None) -> None:
 def _print_exemptions(
     exemptions: Sequence[ExemptionRecord | ExemptionInventoryEntry],
     applied: frozenset[tuple[str, str, str]],
+    *,
+    extra_detectors: Sequence[tuple[str, Callable[..., list[str]]]] = (),
 ) -> None:
     if not exemptions:
         print("Configured exemptions: none")
@@ -2324,13 +2512,13 @@ def _print_exemptions(
                 status = "applied" if item.record.key in applied else "unused"
             else:
                 status = item.status
-            shown = display_path(item.path)
+            shown = display_path(item.path, extra_detectors=extra_detectors)
             print(
                 f"- [{status}] {shown} rule={item.rule} digest={item.digest_prefix} expires={item.expires}"
             )
         else:
             status = "applied" if item.key in applied else "unused"
-            shown = display_path(item.path)
+            shown = display_path(item.path, extra_detectors=extra_detectors)
             print(
                 f"- [{status}] {shown} rule={item.rule} digest={item.digest[:12]} expires={item.expires}"
             )
@@ -2345,9 +2533,14 @@ def _report(
     applied_exemptions: frozenset[tuple[str, str, str]],
     passed_message: str,
     emit_verified_marker: bool = False,
+    emit_identity_verified_marker: bool = False,
+    notes: Sequence[str] = (),
+    extra_detectors: Sequence[tuple[str, Callable[..., list[str]]]] = (),
 ) -> int:
+    for note in notes:
+        print(note)
     _print_non_default_modes(modes)
-    _print_exemptions(exemptions, applied_exemptions)
+    _print_exemptions(exemptions, applied_exemptions, extra_detectors=extra_detectors)
     if warnings:
         print("Public-safety scan warnings:")
         for warning in warnings:
@@ -2359,21 +2552,52 @@ def _report(
         return 1
     if emit_verified_marker:
         print(SCAN_VERIFIED_MARKER)
+    if emit_identity_verified_marker:
+        print(IDENTITY_VERIFIED_MARKER)
     print(passed_message)
     return 0
 
 
-def _run_exemption_digest(rule_id: str) -> int:
-    if rule_id not in DETECTOR_IDS:
-        print("Unsupported rule id; expected one of: " + ", ".join(DETECTOR_IDS))
+def _run_exemption_digest(
+    rule_id: str,
+    *,
+    root: Path = ROOT,
+    keyed_list_key_file: Path | None = None,
+) -> int:
+    if rule_id not in ALL_RULE_IDS:
+        print("Unsupported rule id; expected one of: " + ", ".join(ALL_RULE_IDS))
         return 1
+    key_bytes: bytes | None = None
+    if rule_id == KEYED_LIST_RULE_ID:
+        tracked, _ = tracked_files(root)
+        try:
+            key_bytes = _keyed_mod.resolve_keyed_list_key(
+                root,
+                tracked=tracked,
+                key_file=keyed_list_key_file,
+                error_cls=ScanConfigError,
+            )
+        except ScanConfigError as exc:
+            print(f"Cannot compute exemption digest: {exc}")
+            return 1
     digests: list[str] = []
     for raw_line in sys.stdin:
         stripped = raw_line.strip()
         if not stripped:
             continue
         try:
-            digests.append(compute_exemption_digest(rule_id, stripped))
+            if rule_id == KEYED_LIST_RULE_ID:
+                assert key_bytes is not None
+                digests.append(
+                    _keyed_mod.compute_keyed_digest(
+                        key_bytes,
+                        stripped,
+                        normalize_fn=normalize_text,
+                        error_cls=ScanConfigError,
+                    )
+                )
+            else:
+                digests.append(compute_exemption_digest(rule_id, stripped))
         except ScanConfigError as exc:
             print(f"Cannot compute exemption digest: {exc}")
             return 1
@@ -2399,6 +2623,54 @@ def _tag_message_bytes(root: Path, tag_oid: str) -> bytes:
     return body if sep else b""
 
 
+def _collect_identity_profile(
+    root: Path,
+    *,
+    source: str,
+    commits: Sequence[str] = (),
+    base: str | None = None,
+    head: str | None = None,
+    require_complete_history: bool = False,
+):
+    """Collect either local workstation identity or CI commit author/committer identities."""
+    if source == "ci":
+        target_commits = list(commits)
+        if not target_commits:
+            head_sha = _git(root, ["rev-parse", "HEAD"]).decode("ascii", "replace").strip()
+            if not COMMIT_RE.fullmatch(head_sha):
+                raise _identity_mod.IdentityCollectionError(
+                    "CI identity check could not resolve HEAD commit SHA; failing closed"
+                )
+            target_commits = [head_sha]
+        return _identity_mod.collect_ci_commit_identity(
+            root,
+            target_commits,
+            normalize_fn=normalize_text,
+            base=base,
+            head=head,
+            require_complete_history=require_complete_history,
+        )
+    if source == "local":
+        return _identity_mod.collect_local_identity(root, normalize_fn=normalize_text)
+    raise _identity_mod.IdentityCollectionError("unsupported identity source")
+
+
+def _build_extra_detectors(
+    identity_matcher: object | None,
+    keyed_matcher: object | None,
+) -> tuple[tuple[str, Callable[..., list[str]]], ...]:
+    extra: list[tuple[str, Callable[..., list[str]]]] = []
+    if identity_matcher is not None:
+        fn = getattr(identity_matcher, "detect", None)
+        if callable(fn):
+            extra.append((IDENTITY_RULE_ID, fn))
+    if keyed_matcher is not None:
+        fn = getattr(keyed_matcher, "detect", None)
+        if callable(fn):
+            extra.append((KEYED_LIST_RULE_ID, fn))
+    return tuple(extra)
+
+
 def _scan_commit_trees(
     root: Path,
     commits: Sequence[str],
@@ -2408,6 +2680,12 @@ def _scan_commit_trees(
     binary_exceptions: Mapping[str, BinaryException],
     scan_commit_messages: bool = False,
     tag_objects: Sequence[str] = (),
+    identity_matcher: object | None = None,
+    keyed_matcher: object | None = None,
+    require_identity: bool = False,
+    require_keyed: bool = False,
+    scope_identity_to_commit_diff: bool = False,
+    extra_detectors: Sequence[tuple[str, Callable[..., list[str]]]] = (),
 ) -> tuple[list[str], list[str], frozenset[tuple[str, str, str]]]:
     """Scan commits (trees and optionally commit messages) plus annotated tag messages."""
     failures: list[str] = []
@@ -2418,12 +2696,28 @@ def _scan_commit_trees(
         return [f"commit list has more than {MAX_RANGE_COMMITS} commits; refusing to scan"], warnings, frozenset()
 
     scanner = (
-        Scanner(modes=modes, exemptions=exemptions, binary_exceptions=binary_exceptions)
+        Scanner(
+            modes=modes,
+            exemptions=exemptions,
+            binary_exceptions=binary_exceptions,
+            identity_matcher=identity_matcher,
+            keyed_matcher=keyed_matcher,
+            require_identity=require_identity,
+            require_keyed=require_keyed,
+        )
         if modes is not None
         else None
     )
+    keyed_rel_path = DEFAULT_KEYED_LIST_PATH.as_posix()
     multi = len(commits) > 1
     for commit in commits:
+        commit_scope = None
+        if scope_identity_to_commit_diff and identity_matcher is not None:
+            try:
+                commit_scope = _identity_mod.commit_added_scope(root, commit)
+            except _identity_mod.IdentityCollectionError as exc:
+                failures.append(f"identity diff scoping failed: {exc}")
+                continue
         if scan_commit_messages and scanner is not None:
             try:
                 msg_bytes = _commit_message_bytes(root, commit)
@@ -2440,7 +2734,7 @@ def _scan_commit_trees(
         except ScanConfigError as exc:
             failures.append(f"tree listing failed: {exc}")
             continue
-        path_issues = tracked_path_failures(tree_paths)
+        path_issues = tracked_path_failures(tree_paths, extra_detectors=extra_detectors)
         if multi:
             failures.extend(f"{item} (commit {commit[:12]})" for item in path_issues)
         else:
@@ -2451,7 +2745,19 @@ def _scan_commit_trees(
         try:
             for source in sources:
                 count += 1
-                src_failures, src_warnings = scanner.scan_source(source)
+                # Always validate tests/public_scan_keyed_list.json format when present in tree,
+                # even while keyed-list mode is 'off', so plaintext/malformed entries fail closed.
+                if source.path == keyed_rel_path and source.content is not None:
+                    try:
+                        _keyed_mod.validate_keyed_list_bytes(
+                            source.content,
+                            require_nonempty=False,
+                            error_cls=ScanConfigError,
+                        )
+                    except ScanConfigError as exc:
+                        msg = str(exc)
+                        failures.append(f"{msg} (commit {commit[:12]})" if multi else msg)
+                src_failures, src_warnings = scanner.scan_source(source, identity_scope=commit_scope)
                 if multi:
                     failures.extend(f"{item} (commit {commit[:12]})" for item in src_failures)
                     warnings.extend(f"{item} (commit {commit[:12]})" for item in src_warnings)
@@ -2490,8 +2796,13 @@ def _scan_commit_trees(
 
 
 def _run(args: argparse.Namespace) -> int:
+    root = args.root.resolve()
     if args.exemption_digest is not None:
-        return _run_exemption_digest(args.exemption_digest)
+        return _run_exemption_digest(
+            args.exemption_digest,
+            root=root,
+            keyed_list_key_file=args.keyed_list_key_file,
+        )
 
     selected_modes = sum(
         1 for opt in (args.tree is not None, args.range is not None, args.commits is not None) if opt
@@ -2501,7 +2812,6 @@ def _run(args: argparse.Namespace) -> int:
         print("- specify at most one of --tree, --range, or --commits")
         return 1
 
-    root = args.root.resolve()
     modes_path = args.modes_file if args.modes_file is not None else root / DEFAULT_MODES_PATH
     exemptions_path = (
         args.exemptions_file if args.exemptions_file is not None else root / DEFAULT_EXEMPTIONS_PATH
@@ -2514,6 +2824,7 @@ def _run(args: argparse.Namespace) -> int:
 
     failures: list[str] = []
     warnings: list[str] = []
+    notes: list[str] = []
     modes: dict[str, str] | None = None
     exemptions: tuple[ExemptionRecord, ...] = ()
     exemption_inventory: tuple[ExemptionInventoryEntry, ...] = ()
@@ -2526,39 +2837,137 @@ def _run(args: argparse.Namespace) -> int:
         failures.append(str(exc))
 
     try:
-        exemptions, exemption_inventory, exemption_errors = load_exemptions_inventory(exemptions_path)
-    except ScanConfigError as exc:
-        failures.append(str(exc))
-    else:
-        failures.extend(exemption_errors)
-
-    try:
         binary_exceptions = load_binary_exceptions(binary_path)
     except ScanConfigError as exc:
         failures.append(str(exc))
 
-    if args.tree is not None or args.range is not None or args.commits is not None or args.tag_objects is not None:
+    is_object_mode = (
+        args.tree is not None
+        or args.range is not None
+        or args.commits is not None
+        or args.tag_objects is not None
+    )
+    if args.identity_source == "auto":
+        effective_identity_source = "ci" if (args.range is not None or args.tree is not None) else "local"
+    else:
+        effective_identity_source = args.identity_source
+
+    def resolve_keyed_matcher(tracked_for_key: Sequence[str] | None) -> object | None:
+        keyed_list_path = (
+            args.keyed_list_file if args.keyed_list_file is not None else root / DEFAULT_KEYED_LIST_PATH
+        )
+        keyed_active = modes is not None and modes[KEYED_LIST_RULE_ID] != "off"
+        if not keyed_active:
+            # Always validate keyed-list format whenever the file exists on disk or is explicitly given,
+            # even when keyed-list mode is 'off', so plaintext/malformed entries never escape validation.
+            if args.keyed_list_file is not None or keyed_list_path.exists() or keyed_list_path.is_symlink():
+                try:
+                    _keyed_mod.load_keyed_list(
+                        keyed_list_path,
+                        require_nonempty=False,
+                        error_cls=ScanConfigError,
+                    )
+                except ScanConfigError as exc:
+                    failures.append(str(exc))
+            return None
+        try:
+            digests = _keyed_mod.load_keyed_list(
+                keyed_list_path,
+                require_nonempty=True,
+                error_cls=ScanConfigError,
+            )
+            key_bytes = _keyed_mod.resolve_keyed_list_key(
+                root,
+                tracked=tracked_for_key,
+                key_file=args.keyed_list_key_file,
+                error_cls=ScanConfigError,
+            )
+        except ScanConfigError as exc:
+            failures.append(str(exc))
+            return None
+        return _keyed_mod.KeyedListMatcher(key_bytes, digests, normalize_fn=normalize_text)
+
+    if is_object_mode:
         commits_to_scan: list[str] = []
         tag_objects_to_scan: list[str] = list(args.tag_objects or ())
         scan_messages = args.range is not None or args.commits is not None
+        range_base: str | None = None
+        range_head: str | None = None
         if args.tree is not None:
             commits_to_scan = [args.tree]
         elif args.range is not None:
+            range_base, range_head = args.range[0], args.range[1]
             try:
-                commits_to_scan = range_commits(root, args.range[0], args.range[1])
+                commits_to_scan = range_commits(root, range_base, range_head)
             except ScanConfigError as exc:
                 failures.append(f"commit range failed: {exc}")
         elif args.commits is not None:
             commits_to_scan = list(args.commits)
+
+        identity_matcher: object | None = None
+        identity_verified = False
+        if modes is not None and modes[IDENTITY_RULE_ID] != "off":
+            if effective_identity_source == "ci" and args.range is not None and not commits_to_scan:
+                identity_verified = False
+            else:
+                try:
+                    profile = _collect_identity_profile(
+                        root,
+                        source=effective_identity_source,
+                        commits=commits_to_scan,
+                        base=range_base,
+                        head=range_head,
+                        require_complete_history=(args.range is not None),
+                    )
+                except (ScanConfigError, _identity_mod.IdentityCollectionError) as exc:
+                    failures.append(f"identity check failed: {exc}")
+                else:
+                    notes.extend(profile.notes)
+                    identity_matcher = _identity_mod.IdentityMatcher(profile.tokens)
+                    identity_verified = modes[IDENTITY_RULE_ID] == "block"
+
+        tracked_for_key, _ = tracked_files(root)
+        keyed_matcher = resolve_keyed_matcher(tracked_for_key)
+        extra_detectors = _build_extra_detectors(identity_matcher, keyed_matcher)
+
+        try:
+            exemptions, exemption_inventory, exemption_errors = load_exemptions_inventory(
+                exemptions_path,
+                extra_detectors=extra_detectors,
+            )
+        except ScanConfigError as exc:
+            failures.append(str(exc))
+        else:
+            failures.extend(exemption_errors)
+
         if commits_to_scan or tag_objects_to_scan:
+            scan_modes = modes
+            if scan_modes is not None:
+                effective_modes = dict(scan_modes)
+                req_ident = effective_modes[IDENTITY_RULE_ID] != "off" and identity_matcher is not None
+                req_keyed = effective_modes[KEYED_LIST_RULE_ID] != "off" and keyed_matcher is not None
+                if effective_modes[IDENTITY_RULE_ID] != "off" and identity_matcher is None:
+                    effective_modes[IDENTITY_RULE_ID] = "off"
+                if effective_modes[KEYED_LIST_RULE_ID] != "off" and keyed_matcher is None:
+                    effective_modes[KEYED_LIST_RULE_ID] = "off"
+            else:
+                effective_modes = None
+                req_ident = False
+                req_keyed = False
             tree_failures, tree_warnings, applied_exemptions = _scan_commit_trees(
                 root,
                 commits_to_scan,
-                modes=modes,
+                modes=effective_modes,
                 exemptions=exemptions,
                 binary_exceptions=binary_exceptions,
                 scan_commit_messages=scan_messages,
                 tag_objects=tag_objects_to_scan,
+                identity_matcher=identity_matcher,
+                keyed_matcher=keyed_matcher,
+                require_identity=req_ident,
+                require_keyed=req_keyed,
+                scope_identity_to_commit_diff=(effective_identity_source == "ci" and args.range is not None),
+                extra_detectors=extra_detectors,
             )
             failures.extend(tree_failures)
             warnings.extend(tree_warnings)
@@ -2575,14 +2984,49 @@ def _run(args: argparse.Namespace) -> int:
             applied_exemptions=applied_exemptions,
             passed_message=label,
             emit_verified_marker=True,
+            emit_identity_verified_marker=bool(
+                identity_verified and modes is not None and modes[IDENTITY_RULE_ID] == "block"
+            ),
+            notes=notes,
+            extra_detectors=extra_detectors,
         )
 
     tracked, git_error = tracked_files(root)
+
+    identity_matcher = None
+    identity_verified = False
+    if modes is not None and modes[IDENTITY_RULE_ID] != "off":
+        try:
+            profile = _collect_identity_profile(
+                root,
+                source=effective_identity_source,
+            )
+        except (ScanConfigError, _identity_mod.IdentityCollectionError) as exc:
+            failures.append(f"identity check failed: {exc}")
+        else:
+            notes.extend(profile.notes)
+            identity_matcher = _identity_mod.IdentityMatcher(profile.tokens)
+            identity_verified = modes[IDENTITY_RULE_ID] == "block"
+
+    keyed_matcher = resolve_keyed_matcher(tracked)
+    extra_detectors = _build_extra_detectors(identity_matcher, keyed_matcher)
+
+    try:
+        exemptions, exemption_inventory, exemption_errors = load_exemptions_inventory(
+            exemptions_path,
+            extra_detectors=extra_detectors,
+        )
+    except ScanConfigError as exc:
+        failures.append(str(exc))
+    else:
+        failures.extend(exemption_errors)
+
     failures.extend(
         deterministic_failures(
             root,
             require_license=not args.allow_missing_license,
             tracked=tracked,
+            extra_detectors=extra_detectors,
         )
     )
     if git_error:
@@ -2590,13 +3034,24 @@ def _run(args: argparse.Namespace) -> int:
         failures.append(f"tracked file listing failed: {git_error}")
 
     if modes is not None and tracked:
+        effective_modes = dict(modes)
+        req_ident = effective_modes[IDENTITY_RULE_ID] != "off" and identity_matcher is not None
+        req_keyed = effective_modes[KEYED_LIST_RULE_ID] != "off" and keyed_matcher is not None
+        if effective_modes[IDENTITY_RULE_ID] != "off" and identity_matcher is None:
+            effective_modes[IDENTITY_RULE_ID] = "off"
+        if effective_modes[KEYED_LIST_RULE_ID] != "off" and keyed_matcher is None:
+            effective_modes[KEYED_LIST_RULE_ID] = "off"
         try:
             result = scan_tracked_files(
                 root,
                 tracked,
-                modes=modes,
+                modes=effective_modes,
                 exemptions=exemptions,
                 binary_exceptions=binary_exceptions,
+                identity_matcher=identity_matcher,
+                keyed_matcher=keyed_matcher,
+                require_identity=req_ident,
+                require_keyed=req_keyed,
             )
         except ScanConfigError as exc:
             failures.append(f"worktree scan failed: {exc}")
@@ -2618,6 +3073,11 @@ def _run(args: argparse.Namespace) -> int:
         applied_exemptions=applied_exemptions,
         passed_message=passed_message,
         emit_verified_marker=True,
+        emit_identity_verified_marker=bool(
+            identity_verified and modes is not None and modes[IDENTITY_RULE_ID] == "block"
+        ),
+        notes=notes,
+        extra_detectors=extra_detectors,
     )
 
 
@@ -2662,6 +3122,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="scan each named annotated tag object's message",
     )
     parser.add_argument(
+        "--identity-source",
+        choices=("auto", "local", "ci"),
+        default="auto",
+        help="identity check source: local workstation, CI commit author/committer history, or auto (ci for --range/--tree, local otherwise)",
+    )
+    parser.add_argument(
         "--modes-file",
         type=Path,
         default=None,
@@ -2680,10 +3146,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="override hash-bound binary exceptions file path",
     )
     parser.add_argument(
+        "--keyed-list-file",
+        type=Path,
+        default=None,
+        help="override optional keyed HMAC digest list file path",
+    )
+    parser.add_argument(
+        "--keyed-list-key-file",
+        type=Path,
+        default=None,
+        help="override untracked 64-hex HMAC key file path for the optional keyed list",
+    )
+    parser.add_argument(
         "--exemption-digest",
         default=None,
         metavar="RULE_ID",
-        help="compute unkeyed SHA-256 exemption digests for one value per line from stdin",
+        help="compute exemption digests (SHA-256, or keyed HMAC for keyed-list) for one value per line from stdin",
     )
     args = parser.parse_args(argv)
     try:

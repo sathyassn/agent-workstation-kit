@@ -1,6 +1,7 @@
 SHELL := /bin/sh
 PYTHON ?= python3
 BASH_BIN ?= bash
+IDENTITY_SOURCE ?= $(if $(filter true,$(GITHUB_ACTIONS)),ci,local)
 
 .PHONY: bash-check check ci-check git-discipline-check go-check public-check public-draft-check repo-check repo-ci-check repo-non-privacy-check skill-check shell-check unit-check unit-non-privacy-check unit-public-scan-check python-check
 
@@ -15,10 +16,10 @@ repo-ci-check: REQUIRE_SHELLCHECK=1
 repo-ci-check: bash-check shell-check python-check unit-non-privacy-check skill-check repo-non-privacy-check git-discipline-check
 
 public-check:
-	@$(PYTHON) tests/check_public_release.py
+	@$(PYTHON) tests/check_public_release.py --identity-source $(IDENTITY_SOURCE)
 
 public-draft-check:
-	@$(PYTHON) tests/check_public_release.py --allow-missing-license
+	@$(PYTHON) tests/check_public_release.py --allow-missing-license --identity-source $(IDENTITY_SOURCE)
 
 go-check:
 	go test ./...

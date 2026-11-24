@@ -455,6 +455,9 @@ class CodeownersCoverageTests(unittest.TestCase):
             codeowners.write_text("/.github/ @owner\n", encoding="utf-8")
             issues = check_repository.codeowners_issues(root)
             self.assertTrue(any("tests/check_public_release.py" in i for i in issues), issues)
+            self.assertTrue(any("tests/public_scan_identity.py" in i for i in issues), issues)
+            self.assertTrue(any("tests/public_scan_keyed.py" in i for i in issues), issues)
+            self.assertTrue(any("tests/public_scan_keyed_list.json" in i for i in issues), issues)
             self.assertTrue(any("tests/public_scan_modes.json" in i for i in issues), issues)
             self.assertTrue(any("tests/public_scan_exemptions.json" in i for i in issues), issues)
             self.assertTrue(any("tests/public_scan_binary_exceptions.json" in i for i in issues), issues)
@@ -463,6 +466,9 @@ class CodeownersCoverageTests(unittest.TestCase):
             codeowners.write_text(
                 "/.github/ @owner\n"
                 "/tests/check_public_release.py @owner\n"
+                "/tests/public_scan_identity.py @owner\n"
+                "/tests/public_scan_keyed.py @owner\n"
+                "/tests/public_scan_keyed_list.json @owner\n"
                 "/tests/public_scan_modes.json @owner\n"
                 "/tests/public_scan_exemptions.json @owner\n"
                 "/tests/public_scan_binary_exceptions.json @owner\n"
@@ -471,6 +477,22 @@ class CodeownersCoverageTests(unittest.TestCase):
             )
             issues = check_repository.codeowners_issues(root)
             self.assertTrue(any(".github/CODEOWNERS" in i for i in issues), issues)
+
+            # Unowned override on identity helper fails.
+            codeowners.write_text(
+                "/.github/ @owner\n"
+                "/tests/check_public_release.py @owner\n"
+                "/tests/public_scan_identity.py @owner\n"
+                "/tests/public_scan_keyed.py @owner\n"
+                "/tests/public_scan_keyed_list.json @owner\n"
+                "/tests/public_scan_modes.json @owner\n"
+                "/tests/public_scan_exemptions.json @owner\n"
+                "/tests/public_scan_binary_exceptions.json @owner\n"
+                "/tests/public_scan_identity.py\n",
+                encoding="utf-8",
+            )
+            issues = check_repository.codeowners_issues(root)
+            self.assertTrue(any("tests/public_scan_identity.py" in i for i in issues), issues)
 
 
 if __name__ == "__main__":

@@ -42,7 +42,56 @@ def join(*parts: str) -> str:
     return "".join(parts)
 
 
-def git(root: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+def _install_fake_identity_bin(base: Path, *, host: str = "fixture-node-01") -> dict[str, str]:
+    """Create stubbed scutil, hostnamectl, and tailscale binaries so journey tests never depend on host state."""
+    import stat
+
+    fake_bin = base / "fake-identity-bin"
+    fake_bin.mkdir(parents=True, exist_ok=True)
+    ts_payload = json.dumps(
+        {
+            "BackendState": "Running",
+            "MagicDNSSuffix": join("tail", "91ab", ".ts", ".net"),
+            "CurrentTailnet": {
+                "Name": join("tail", "91ab", ".ts", ".net"),
+                "MagicDNSSuffix": join("tail", "91ab", ".ts", ".net"),
+            },
+            "Self": {
+                "HostName": host,
+                "DNSName": f"{host}." + join("tail", "91ab", ".ts", ".net."),
+            },
+        }
+    )
+    scripts = {
+        "scutil": (
+            "#!/bin/sh\n"
+            f'if [ "$1" = "--get" ] && [ "$2" = "ComputerName" ]; then echo "{host}"; exit 0; fi\n'
+            f'if [ "$1" = "--get" ] && [ "$2" = "LocalHostName" ]; then echo "{host}"; exit 0; fi\n'
+            'if [ "$1" = "--get" ] && [ "$2" = "HostName" ]; then echo "HostName: not set" >&2; exit 1; fi\n'
+            "exit 1\n"
+        ),
+        "hostnamectl": (
+            "#!/bin/sh\n"
+            f'echo "   Static hostname: {host}"\n'
+        ),
+        "tailscale": (
+            "#!/bin/sh\n"
+            f"printf '%s\\n' '{ts_payload}'\n"
+        ),
+    }
+    for name, body in scripts.items():
+        path = fake_bin / name
+        path.write_text(body, encoding="utf-8")
+        path.chmod(path.stat().st_mode | stat.S_IXUSR)
+    return {"PATH": f"{fake_bin}:{os.environ.get('PATH', '/usr/bin:/bin')}"}
+
+
+def git(
+    root: Path,
+    *args: str,
+    check: bool = True,
+    extra_env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     env = {
         **os.environ,
         "GIT_AUTHOR_NAME": "Test Contributor",
@@ -50,6 +99,8 @@ def git(root: Path, *args: str, check: bool = True) -> subprocess.CompletedProce
         "GIT_COMMITTER_NAME": "Test Contributor",
         "GIT_COMMITTER_EMAIL": "contributor@example.invalid",
     }
+    if extra_env:
+        env.update(extra_env)
     return subprocess.run(
         ["git", *args],
         cwd=root,
@@ -583,6 +634,8 @@ class TrustedBaseRevisionSimulationTests(unittest.TestCase):
         git(root, "init", "-q", "-b", "main")
         (root / "README.md").write_text("clean base\n", encoding="utf-8")
         shutil.copyfile(ROOT / "tests/check_public_release.py", root / "tests/check_public_release.py")
+        shutil.copyfile(ROOT / "tests/public_scan_identity.py", root / "tests/public_scan_identity.py")
+        shutil.copyfile(ROOT / "tests/public_scan_keyed.py", root / "tests/public_scan_keyed.py")
         write_scan_configs(root)
         git(root, "add", "-A")
         git(root, "commit", "-q", "-m", "chore: base")
@@ -664,7 +717,8 @@ class TrustedBaseRevisionSimulationTests(unittest.TestCase):
     def test_public_scan_workflow_uses_trusted_base_both_oses_and_no_secret(self) -> None:
         workflow = (ROOT / ".github/workflows/public-scan.yml").read_text(encoding="utf-8")
         self.assertIn("pull_request_target:", workflow)
-        self.assertIn("ref: ${{ github.sha }}", workflow)
+        self.assertIn("github.event.pull_request.base.sha", workflow)
+        self.assertIn("github.event.before", workflow)
         self.assertIn("--tree", workflow)
         self.assertIn("ubuntu-24.04", workflow)
         self.assertIn("macos-latest", workflow)
@@ -701,8 +755,11 @@ class TimingSelfScanAndJourneyTests(unittest.TestCase):
         # Scanner and both test suites must pass self-scan with zero exemptions.
         self_files = [
             "tests/check_public_release.py",
+            "tests/public_scan_identity.py",
+            "tests/public_scan_keyed.py",
             "tests/test_public_release.py",
             "tests/test_public_scan_hardening.py",
+            "tests/test_public_identity_and_keyed.py",
             "tests/public_scan_modes.json",
             "tests/public_scan_exemptions.json",
             "tests/public_scan_binary_exceptions.json",
@@ -759,7 +816,11 @@ class TimingSelfScanAndJourneyTests(unittest.TestCase):
             shutil.copyfile(ROOT / "scripts/check_git_discipline.py", repo / "scripts/check_git_discipline.py")
             (repo / "tests").mkdir()
             shutil.copyfile(ROOT / "tests/check_public_release.py", repo / "tests/check_public_release.py")
+            shutil.copyfile(ROOT / "tests/public_scan_identity.py", repo / "tests/public_scan_identity.py")
+            shutil.copyfile(ROOT / "tests/public_scan_keyed.py", repo / "tests/public_scan_keyed.py")
             write_scan_configs(repo)
+            git(repo, "config", "user.name", "Test Contributor")
+            git(repo, "config", "user.email", "contributor@example.invalid")
             # Minimal repo metadata for check_public_release.py --allow-missing-license.
             for req in scan.REQUIRED:
                 target = repo / req
@@ -784,6 +845,7 @@ class TimingSelfScanAndJourneyTests(unittest.TestCase):
             git(repo, "remote", "add", "origin", str(remote))
             git(repo, "push", "-q", "origin", "main")
             git(repo, "config", "core.hooksPath", ".codeflow/git-hooks")
+            hook_env = _install_fake_identity_bin(base)
 
             # Contributor branches and adds a real-looking email and private IP.
             git(repo, "checkout", "-q", "-b", "feat/contributor-notes")
@@ -792,7 +854,7 @@ class TimingSelfScanAndJourneyTests(unittest.TestCase):
             git(repo, "add", "docs/contributor-notes.md")
             git(repo, "commit", "-q", "-m", "docs: add contributor notes")
 
-            push_fail = git(repo, "push", "origin", "feat/contributor-notes", check=False)
+            push_fail = git(repo, "push", "origin", "feat/contributor-notes", check=False, extra_env=hook_env)
             transcript_fail = push_fail.stdout + push_fail.stderr
             self.assertNotEqual(0, push_fail.returncode, transcript_fail)
             self.assertIn("docs/contributor-notes.md:1: matched rule 'email'", transcript_fail)
@@ -809,7 +871,7 @@ class TimingSelfScanAndJourneyTests(unittest.TestCase):
             git(repo, "add", "docs/contributor-notes.md")
             git(repo, "commit", "-q", "-m", "docs: use documentation placeholders")
 
-            push_dirty_history = git(repo, "push", "origin", "feat/contributor-notes", check=False)
+            push_dirty_history = git(repo, "push", "origin", "feat/contributor-notes", check=False, extra_env=hook_env)
             transcript_dirty = push_dirty_history.stdout + push_dirty_history.stderr
             self.assertNotEqual(0, push_dirty_history.returncode, transcript_dirty)
             self.assertIn("docs/contributor-notes.md:1: matched rule 'email'", transcript_dirty)
@@ -820,7 +882,7 @@ class TimingSelfScanAndJourneyTests(unittest.TestCase):
             git(repo, "reset", "--soft", "main")
             git(repo, "commit", "-q", "-m", "docs: add clean contributor notes")
 
-            push_ok = git(repo, "push", "origin", "feat/contributor-notes", check=False)
+            push_ok = git(repo, "push", "origin", "feat/contributor-notes", check=False, extra_env=hook_env)
             transcript_ok = push_ok.stdout + push_ok.stderr
             self.assertEqual(0, push_ok.returncode, transcript_ok)
             self.assertIn("Deterministic public-release draft checks passed", transcript_ok)
@@ -1094,7 +1156,11 @@ class Round2ReviewRegressionTests(unittest.TestCase):
         shutil.copyfile(ROOT / "scripts/check_git_discipline.py", repo / "scripts/check_git_discipline.py")
         (repo / "tests").mkdir()
         shutil.copyfile(ROOT / "tests/check_public_release.py", repo / "tests/check_public_release.py")
+        shutil.copyfile(ROOT / "tests/public_scan_identity.py", repo / "tests/public_scan_identity.py")
+        shutil.copyfile(ROOT / "tests/public_scan_keyed.py", repo / "tests/public_scan_keyed.py")
         write_scan_configs(repo)
+        git(repo, "config", "user.name", "Test Contributor")
+        git(repo, "config", "user.email", "contributor@example.invalid")
         for req in scan.REQUIRED:
             target = repo / req
             if not target.exists():
@@ -1140,7 +1206,8 @@ class Round2ReviewRegressionTests(unittest.TestCase):
 
             # Enable hooks and push the new branch to the public remote (`origin`).
             git(repo, "config", "core.hooksPath", ".codeflow/git-hooks")
-            res = git(repo, "push", "origin", "feat/from-private", check=False)
+            hook_env = _install_fake_identity_bin(base)
+            res = git(repo, "push", "origin", "feat/from-private", check=False, extra_env=hook_env)
             combined = res.stdout + res.stderr
             self.assertNotEqual(0, res.returncode, combined)
             self.assertIn("notes.txt:1: matched rule 'email'", combined)
@@ -1166,9 +1233,10 @@ class Round2ReviewRegressionTests(unittest.TestCase):
             git(repo, "branch", "-D", "feat/temp-tag")
 
             git(repo, "config", "core.hooksPath", ".codeflow/git-hooks")
+            hook_env = _install_fake_identity_bin(base)
             for tag_name in ("v0.0.1-leak", "v0.0.1-light"):
                 with self.subTest(tag=tag_name):
-                    res = git(repo, "push", "origin", tag_name, check=False)
+                    res = git(repo, "push", "origin", tag_name, check=False, extra_env=hook_env)
                     combined = res.stdout + res.stderr
                     self.assertNotEqual(0, res.returncode, combined)
                     self.assertIn("secret_note.txt:1: matched rule 'email'", combined)
@@ -1366,12 +1434,12 @@ class Round2ReviewRegressionTests(unittest.TestCase):
         self.assertIn("MACOS_VERIFIED", script)
 
         cases = (
-            ("both_verified_passes", {"LINUX_RESULT": "success", "LINUX_VERIFIED": "true", "MACOS_RESULT": "success", "MACOS_VERIFIED": "true"}, 0),
-            ("missing_linux_marker_fails", {"LINUX_RESULT": "success", "LINUX_VERIFIED": "", "MACOS_RESULT": "success", "MACOS_VERIFIED": "true"}, 1),
-            ("missing_macos_marker_fails", {"LINUX_RESULT": "success", "LINUX_VERIFIED": "true", "MACOS_RESULT": "success", "MACOS_VERIFIED": ""}, 1),
-            ("linux_failed_fails", {"LINUX_RESULT": "failure", "LINUX_VERIFIED": "true", "MACOS_RESULT": "success", "MACOS_VERIFIED": "true"}, 1),
-            ("macos_failed_with_marker_fails", {"LINUX_RESULT": "success", "LINUX_VERIFIED": "true", "MACOS_RESULT": "failure", "MACOS_VERIFIED": "true"}, 1),
-            ("macos_skipped_fails", {"LINUX_RESULT": "success", "LINUX_VERIFIED": "true", "MACOS_RESULT": "skipped", "MACOS_VERIFIED": ""}, 1),
+            ("both_verified_passes", {"LINUX_RESULT": "success", "LINUX_VERIFIED": "true", "LINUX_IDENTITY_VERIFIED": "true", "MACOS_RESULT": "success", "MACOS_VERIFIED": "true", "MACOS_IDENTITY_VERIFIED": "true"}, 0),
+            ("missing_linux_marker_fails", {"LINUX_RESULT": "success", "LINUX_VERIFIED": "", "LINUX_IDENTITY_VERIFIED": "true", "MACOS_RESULT": "success", "MACOS_VERIFIED": "true", "MACOS_IDENTITY_VERIFIED": "true"}, 1),
+            ("missing_macos_marker_fails", {"LINUX_RESULT": "success", "LINUX_VERIFIED": "true", "LINUX_IDENTITY_VERIFIED": "true", "MACOS_RESULT": "success", "MACOS_VERIFIED": "", "MACOS_IDENTITY_VERIFIED": "true"}, 1),
+            ("linux_failed_fails", {"LINUX_RESULT": "failure", "LINUX_VERIFIED": "true", "LINUX_IDENTITY_VERIFIED": "true", "MACOS_RESULT": "success", "MACOS_VERIFIED": "true", "MACOS_IDENTITY_VERIFIED": "true"}, 1),
+            ("macos_failed_with_marker_fails", {"LINUX_RESULT": "success", "LINUX_VERIFIED": "true", "LINUX_IDENTITY_VERIFIED": "true", "MACOS_RESULT": "failure", "MACOS_VERIFIED": "true", "MACOS_IDENTITY_VERIFIED": "true"}, 1),
+            ("macos_skipped_fails", {"LINUX_RESULT": "success", "LINUX_VERIFIED": "true", "LINUX_IDENTITY_VERIFIED": "true", "MACOS_RESULT": "skipped", "MACOS_VERIFIED": "", "MACOS_IDENTITY_VERIFIED": ""}, 1),
         )
         for name, env_vars, expected_rc in cases:
             with self.subTest(case=name):
@@ -1439,7 +1507,8 @@ class Round3ReviewRegressionTests(unittest.TestCase):
             # and enable hooks; pushing to origin must NOT trust origin's fetch refs!
             git(repo, "remote", "set-url", "--push", "origin", str(push_remote))
             git(repo, "config", "core.hooksPath", ".codeflow/git-hooks")
-            res = git(repo, "push", "origin", "feat/split-url", check=False)
+            hook_env = _install_fake_identity_bin(base)
+            res = git(repo, "push", "origin", "feat/split-url", check=False, extra_env=hook_env)
             combined = res.stdout + res.stderr
             self.assertNotEqual(0, res.returncode, combined)
             self.assertIn("notes.txt:1: matched rule 'email'", combined)
@@ -1507,7 +1576,8 @@ class Round3ReviewRegressionTests(unittest.TestCase):
             self.assertNotIn(leak_ip, combined_cli)
 
             git(repo, "config", "core.hooksPath", ".codeflow/git-hooks")
-            push_msg = git(repo, "push", "origin", "feat/msg-leak", check=False)
+            hook_env = _install_fake_identity_bin(base)
+            push_msg = git(repo, "push", "origin", "feat/msg-leak", check=False, extra_env=hook_env)
             combined_push = push_msg.stdout + push_msg.stderr
             self.assertNotEqual(0, push_msg.returncode, combined_push)
             self.assertIn("matched rule 'email'", combined_push)
@@ -1518,7 +1588,7 @@ class Round3ReviewRegressionTests(unittest.TestCase):
             # (b) Annotated tag pointing to clean main commit, but tag message leaks -> refused in pre-push.
             git(repo, "checkout", "-q", "main")
             git(repo, "tag", "-a", "v0.0.2-tagmsg", "-m", f"Release notes for {leak_email}")
-            push_tag = git(repo, "push", "origin", "v0.0.2-tagmsg", check=False)
+            push_tag = git(repo, "push", "origin", "v0.0.2-tagmsg", check=False, extra_env=hook_env)
             combined_tag = push_tag.stdout + push_tag.stderr
             self.assertNotEqual(0, push_tag.returncode, combined_tag)
             self.assertIn("matched rule 'email'", combined_tag)
@@ -1543,8 +1613,9 @@ class Round4ReviewRegressionTests(unittest.TestCase):
             git(repo, "tag", "-a", "v0.0.3-inner", "main", "-m", f"Inner release note for {leak_email}")
             git(repo, "tag", "-a", "v0.0.3-outer", "v0.0.3-inner", "-m", "Clean outer release tag")
             git(repo, "config", "core.hooksPath", ".codeflow/git-hooks")
+            hook_env = _install_fake_identity_bin(base)
 
-            res = git(repo, "push", "origin", "v0.0.3-outer", check=False)
+            res = git(repo, "push", "origin", "v0.0.3-outer", check=False, extra_env=hook_env)
             combined = res.stdout + res.stderr
             self.assertNotEqual(0, res.returncode, combined)
             self.assertIn("matched rule 'email'", combined)
@@ -1645,7 +1716,8 @@ class Round4ReviewRegressionTests(unittest.TestCase):
             # multiple remote.origin.url entries exist.
             git(repo, "config", "--add", "remote.origin.url", str(second_remote))
             git(repo, "config", "core.hooksPath", ".codeflow/git-hooks")
-            res = git(repo, "push", "origin", "feat/multi-url", check=False)
+            hook_env = _install_fake_identity_bin(base)
+            res = git(repo, "push", "origin", "feat/multi-url", check=False, extra_env=hook_env)
             combined = res.stdout + res.stderr
             self.assertNotEqual(0, res.returncode, combined)
             self.assertIn("notes.txt:1: matched rule 'email'", combined)
