@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"syscall"
 	"time"
@@ -129,8 +130,13 @@ func (OSCommandRunner) Run(ctx context.Context, spec ExecSpec) (ExecResult, erro
 	}
 
 	var outBuf, errBuf bytes.Buffer
-	cmd.Stdout = teeWriter(&outBuf, spec.Stdout)
-	cmd.Stderr = teeWriter(&errBuf, spec.Stderr)
+	stdoutW, stderrW := spec.Stdout, spec.Stderr
+	if stdoutW != nil && stderrW != nil && sameWriter(stdoutW, stderrW) {
+		shared := NewSyncWriter(stdoutW)
+		stdoutW, stderrW = shared, shared
+	}
+	cmd.Stdout = teeWriter(&outBuf, stdoutW)
+	cmd.Stderr = teeWriter(&errBuf, stderrW)
 
 	if err := cmd.Start(); err != nil {
 		if gateR != nil {
@@ -177,6 +183,70 @@ func teeWriter(buf *bytes.Buffer, w io.Writer) io.Writer {
 		return buf
 	}
 	return io.MultiWriter(buf, w)
+}
+
+func sameWriter(a, b io.Writer) bool {
+	va, vb := reflect.ValueOf(a), reflect.ValueOf(b)
+	if !va.IsValid() || !vb.IsValid() || va.Type() != vb.Type() {
+		return false
+	}
+	if va.Type().Comparable() {
+		return a == b
+	}
+	return false
+}
+
+// SyncWriter serialises Write calls to an underlying io.Writer so concurrent
+// stdout and stderr copy goroutines never race on an unsynchronised writer.
+type SyncWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+// NewSyncWriter wraps w in a SyncWriter. It returns nil when w is nil.
+func NewSyncWriter(w io.Writer) io.Writer {
+	if w == nil {
+		return nil
+	}
+	if _, ok := w.(*SyncWriter); ok {
+		return w
+	}
+	return &SyncWriter{w: w}
+}
+
+// Write forwards p to the underlying writer under a mutex.
+func (s *SyncWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n, err := s.w.Write(p)
+	if err != nil {
+		return n, fmt.Errorf("sync write: %w", err)
+	}
+	return n, nil
+}
+
+// SyncBuffer is a concurrency-safe byte buffer for capturing command output.
+type SyncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+// Write appends p to the buffer under a mutex.
+func (b *SyncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	n, err := b.buf.Write(p)
+	if err != nil {
+		return n, fmt.Errorf("sync buffer write: %w", err)
+	}
+	return n, nil
+}
+
+// String returns the buffered bytes as a string.
+func (b *SyncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 // maxPartialLine bounds the bytes a LineWriter holds while it waits for a
