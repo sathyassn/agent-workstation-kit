@@ -3,7 +3,9 @@ package engine
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,9 +14,9 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
+	"github.com/gowebpki/jcs"
 	"golang.org/x/sys/unix"
 
 	"github.com/sathyassn/agent-workstation-kit/internal/contract"
@@ -128,6 +130,10 @@ type Options struct {
 	// maxPackageDBDirs, set only by tests in this package, overrides the
 	// startup package-DB walk cap (default maxPackageDBWalkDirs).
 	maxPackageDBDirs int
+	// openPackageDBDir, set only by tests in this package, overrides
+	// platform.OpenDirNoFollow during the startup package-DB walk (for example
+	// to inject EMFILE).
+	openPackageDBDir func(string) (*os.File, error)
 	// afterLstat, set only by tests in this package, runs between lstat and
 	// open in backupOne to exercise the TOCTOU window deterministically.
 	afterLstat func(path string)
@@ -141,11 +147,22 @@ type Engine struct {
 	opts     Options
 	provMu   sync.RWMutex
 	pkgDBIDs map[platform.FileID]string
-	seq      atomic.Uint64
+	emitMu   sync.Mutex
+	seq      uint64
 }
 
-func (e *Engine) nextSeq() uint64 {
-	return e.seq.Add(1)
+// deliver assigns the next sequence number and delivers ev to e.opts.Sink
+// atomically under e.emitMu so concurrent emitters cannot deliver events out
+// of sequence order into events.Sink.
+func (e *Engine) deliver(ev contract.Event) contract.Event {
+	e.emitMu.Lock()
+	defer e.emitMu.Unlock()
+	e.seq++
+	ev.Seq = e.seq
+	if e.opts.Sink != nil {
+		e.opts.Sink.Deliver(ev)
+	}
+	return ev
 }
 
 func (e *Engine) lookupProvider(name contract.StateProviderName) (contract.StateProvider, bool) {
@@ -246,7 +263,7 @@ func New(opts Options) (*Engine, error) {
 		walkRoots = append(walkRoots, opts.extraPackageDBPaths...)
 		statOnlyRoots = packageDBPrefixes()
 	}
-	pkgIDs, err := resolvePackageDBIDs(walkRoots, statOnlyRoots, opts.maxPackageDBDirs)
+	pkgIDs, err := resolvePackageDBIDs(walkRoots, statOnlyRoots, opts.maxPackageDBDirs, opts.openPackageDBDir)
 	if err != nil {
 		return nil, err
 	}
@@ -302,8 +319,10 @@ func (e *Engine) empty(ctx context.Context, name string, sup platform.ProcessIde
 
 // Plan runs u.Plan and inspects existing declared target files (read-only) for
 // OS-protected extended attributes that inode replacement cannot preserve (such
-// as macOS com.apple.macl). Any such loss is appended to Plan.CannotUndo and
-// emitted as a StepPlan warning event before the user approves the plan.
+// as macOS com.apple.macl). Any such loss is appended to Plan.CannotUndo, the
+// canonical RFC 8785 SHA-256 plan digest is recomputed over the finalised plan
+// (SPC-001 "Plans and approvals"), and StepPlan warning events are emitted with
+// a valid non-empty RunID before approval.
 func (e *Engine) Plan(ctx context.Context, u contract.Unit, in contract.Inputs) (contract.Plan, error) {
 	desc, err := u.Describe(ctx)
 	if err != nil {
@@ -319,6 +338,13 @@ func (e *Engine) Plan(ctx context.Context, u contract.Unit, in contract.Inputs) 
 	if p.Unit != u.ID() {
 		return contract.Plan{}, fmt.Errorf("%w: unit %q, plan %q", ErrUnitMismatch, u.ID(), p.Unit)
 	}
+	runID := contract.RunID(p.ID)
+	if runID == "" {
+		runID, err = newRunID()
+		if err != nil {
+			return contract.Plan{}, err
+		}
+	}
 	var paths []string
 	paths = append(paths, desc.OwnedPaths...)
 	for _, ch := range p.Changes {
@@ -329,6 +355,11 @@ func (e *Engine) Plan(ctx context.Context, u contract.Unit, in contract.Inputs) 
 	slices.Sort(paths)
 	paths = slices.Compact(paths)
 
+	type droppedWarning struct {
+		path  string
+		attrs []string
+	}
+	var warnings []droppedWarning
 	for _, path := range paths {
 		if err := ctx.Err(); err != nil {
 			return contract.Plan{}, fmt.Errorf("plan %s: %w", u.ID(), err)
@@ -343,21 +374,76 @@ func (e *Engine) Plan(ctx context.Context, u contract.Unit, in contract.Inputs) 
 				p.CannotUndo = append(p.CannotUndo, note)
 			}
 		}
-		if e.opts.Sink != nil {
-			e.opts.Sink.Deliver(contract.Event{
-				Seq:  e.nextSeq(),
-				Time: e.opts.Now().UTC(),
-				Unit: u.ID(),
-				Step: contract.StepPlan,
-				Kind: contract.EventWarning,
-				Text: fmt.Sprintf("replacing %s will drop OS-protected extended attribute %s (cannot be re-set)", path, strings.Join(dropped, ", ")),
+		warnings = append(warnings, droppedWarning{path: path, attrs: dropped})
+	}
+	digest, err := planDigest(p)
+	if err != nil {
+		return contract.Plan{}, fmt.Errorf("plan digest %s: %w", u.ID(), err)
+	}
+	p.Digest = digest
+	if e.opts.Sink != nil {
+		for _, w := range warnings {
+			_ = e.deliver(contract.Event{
+				Time:  e.opts.Now().UTC(),
+				RunID: runID,
+				Unit:  u.ID(),
+				Step:  contract.StepPlan,
+				Kind:  contract.EventWarning,
+				Text:  fmt.Sprintf("replacing %s will drop OS-protected extended attribute %s (cannot be re-set)", w.path, strings.Join(w.attrs, ", ")),
 				Data: map[contract.DataKey]string{
-					contract.DataPath: path,
+					contract.DataPath: w.path,
 				},
 			})
 		}
 	}
 	return p, nil
+}
+
+// planDigest computes the SHA-256 hex digest of p in RFC 8785 canonical JSON
+// without the digest field (SPC-001 "Plans and approvals").
+func planDigest(p contract.Plan) (contract.Digest, error) {
+	changes := p.Changes
+	if changes == nil {
+		changes = []contract.Change{}
+	}
+	nonDefaults := p.NonDefaults
+	if nonDefaults == nil {
+		nonDefaults = []contract.ConfigKey{}
+	}
+	blockedBy := p.BlockedBy
+	if blockedBy == nil {
+		blockedBy = []string{}
+	}
+	cannotUndo := p.CannotUndo
+	if cannotUndo == nil {
+		cannotUndo = []string{}
+	}
+	raw, err := json.Marshal(struct {
+		ID          contract.PlanID      `json:"id"`
+		Unit        contract.UnitID      `json:"unit"`
+		Changes     []contract.Change    `json:"changes"`
+		NonDefaults []contract.ConfigKey `json:"non_defaults"`
+		BlockedBy   []string             `json:"blocked_by"`
+		CannotUndo  []string             `json:"cannot_undo"`
+		Outcome     *contract.Outcome    `json:"outcome"`
+	}{
+		ID:          p.ID,
+		Unit:        p.Unit,
+		Changes:     changes,
+		NonDefaults: nonDefaults,
+		BlockedBy:   blockedBy,
+		CannotUndo:  cannotUndo,
+		Outcome:     p.Outcome,
+	})
+	if err != nil {
+		return "", fmt.Errorf("marshal plan for digest: %w", err)
+	}
+	canon, err := jcs.Transform(raw)
+	if err != nil {
+		return "", fmt.Errorf("canonicalise plan JSON: %w", err)
+	}
+	sum := sha256.Sum256(canon)
+	return contract.Digest(hex.EncodeToString(sum[:])), nil
 }
 
 // inspectTargetDroppedXattrs inspects an existing regular file at path without
@@ -543,8 +629,7 @@ func (e *Engine) emitBackupWarnings(runID contract.RunID, unit contract.UnitID, 
 		if len(en.DroppedXattrs) == 0 {
 			continue
 		}
-		e.opts.Sink.Deliver(contract.Event{
-			Seq:   e.nextSeq(),
+		_ = e.deliver(contract.Event{
 			Time:  e.opts.Now().UTC(),
 			RunID: runID,
 			Unit:  unit,

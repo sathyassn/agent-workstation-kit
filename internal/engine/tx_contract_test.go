@@ -977,7 +977,7 @@ func TestPackageDBScanPreservesLaterRootsWhenFirstHitsCap(t *testing.T) {
 
 	// Direct resolvePackageDBIDs check: root1 hits maxDirs=2, yet root2 is
 	// already recorded AND ErrPackageDBScan is returned (never silent skip).
-	ids, scanErr := resolvePackageDBIDs([]string{root1, root2}, nil, 2)
+	ids, scanErr := resolvePackageDBIDs([]string{root1, root2}, nil, 2, nil)
 	if !errors.Is(scanErr, ErrPackageDBScan) {
 		t.Fatalf("resolvePackageDBIDs err = %v, want ErrPackageDBScan", scanErr)
 	}
@@ -1013,5 +1013,84 @@ func TestPackageDBScanPreservesLaterRootsWhenFirstHitsCap(t *testing.T) {
 	})
 	if !errors.Is(err, ErrPackageDBScan) || ExitCode(err) != contract.ExitRefused {
 		t.Fatalf("New with capped package-DB scan = %v (exit %d), want ErrPackageDBScan (exit 2)", err, ExitCode(err))
+	}
+}
+
+// TestPackageDBScanPermissionDeniedFailsClosed is F1 (part 1): a permission-
+// denied (0o000) subtree inside an existing package-DB root must fail closed
+// with ErrPackageDBScan (exit 2) rather than silently skipping the subtree.
+func TestPackageDBScanPermissionDeniedFailsClosed(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root bypasses 0o000 directory read permissions")
+	}
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkgRoot := filepath.Join(dir, "pkgdb")
+	locked := filepath.Join(pkgRoot, "locked")
+	if err := os.MkdirAll(locked, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) }) //nolint:gosec // restore directory permissions for t.TempDir cleanup
+
+	root := filepath.Join(dir, "root")
+	if err := os.MkdirAll(root, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	table := platformtest.NewProcessTable("boot-pkgdb-eacces")
+	_, err = New(Options{
+		JournalDir:          filepath.Join(dir, "journal"),
+		HostLock:            filepath.Join(dir, "host.lock"),
+		Root:                root,
+		Scope:               contract.ScopeUser,
+		Containment:         platformtest.NewContainment(table),
+		Inspector:           table.Inspector(table.Spawn()),
+		extraPackageDBPaths: []string{pkgRoot},
+	})
+	if !errors.Is(err, ErrPackageDBScan) || ExitCode(err) != contract.ExitRefused {
+		t.Fatalf("New with permission-denied package-DB subtree = %v (exit %d), want ErrPackageDBScan (exit 2)", err, ExitCode(err))
+	}
+}
+
+// TestPackageDBScanEMFILEFailsClosed is F1 (part 2): descriptor exhaustion
+// (EMFILE) while scanning a package-DB root must fail closed with
+// ErrPackageDBScan (exit 2) rather than silently skipping the subtree.
+func TestPackageDBScanEMFILEFailsClosed(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkgRoot := filepath.Join(dir, "pkgdb")
+	sub := filepath.Join(pkgRoot, "sub")
+	if err := os.MkdirAll(sub, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(dir, "root")
+	if err := os.MkdirAll(root, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	injectEMFILE := func(path string) (*os.File, error) {
+		if path == sub {
+			return nil, &os.PathError{Op: "open", Path: path, Err: unix.EMFILE}
+		}
+		return platform.OpenDirNoFollow(path)
+	}
+	table := platformtest.NewProcessTable("boot-pkgdb-emfile")
+	_, err = New(Options{
+		JournalDir:          filepath.Join(dir, "journal"),
+		HostLock:            filepath.Join(dir, "host.lock"),
+		Root:                root,
+		Scope:               contract.ScopeUser,
+		Containment:         platformtest.NewContainment(table),
+		Inspector:           table.Inspector(table.Spawn()),
+		extraPackageDBPaths: []string{pkgRoot},
+		openPackageDBDir:    injectEMFILE,
+	})
+	if !errors.Is(err, ErrPackageDBScan) || ExitCode(err) != contract.ExitRefused {
+		t.Fatalf("New with EMFILE during package-DB scan = %v (exit %d), want ErrPackageDBScan (exit 2)", err, ExitCode(err))
 	}
 }

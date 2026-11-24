@@ -3,6 +3,7 @@ package engine
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -106,25 +107,23 @@ func isPackageDBPathForOS(path, goos string) bool {
 	return false
 }
 
-func isIgnorableScanErr(err error) bool {
-	return errors.Is(err, unix.ENOENT) ||
-		errors.Is(err, unix.ENOTDIR) ||
-		errors.Is(err, unix.EACCES) ||
-		errors.Is(err, unix.EPERM) ||
-		errors.Is(err, ErrPathLink)
-}
+type dirOpener func(string) (*os.File, error)
 
 // resolvePackageDBIDs resolves every existing package-DB root first (both
 // statOnlyRoots and walkRoots) so every root's (dev, ino) is guaranteed
 // recorded before descending into any subdirectories. It then walks each
 // existing walkRoot depth-first without following symlinks, closing each
 // directory handle immediately after reading its entries so at most one
-// directory descriptor stays open at a time. Hitting maxDirs or encountering
-// an unexpected read/fd error (such as EMFILE/ENFILE) fails closed with
-// ErrPackageDBScan while still returning the roots already recorded.
-func resolvePackageDBIDs(walkRoots, statOnlyRoots []string, maxDirs int) (map[platform.FileID]string, error) {
+// directory descriptor stays open at a time. Only ENOENT (a non-existent root
+// or vanished subdirectory) is non-fatal; any permission, read, link, or fd
+// error (such as EACCES, EPERM, EMFILE, ENFILE) or exceeding maxDirs fails
+// closed with ErrPackageDBScan while still returning roots already recorded.
+func resolvePackageDBIDs(walkRoots, statOnlyRoots []string, maxDirs int, openDir dirOpener) (map[platform.FileID]string, error) {
 	if maxDirs <= 0 {
 		maxDirs = maxPackageDBWalkDirs
+	}
+	if openDir == nil {
+		openDir = platform.OpenDirNoFollow
 	}
 	ids := make(map[platform.FileID]string)
 
@@ -132,7 +131,7 @@ func resolvePackageDBIDs(walkRoots, statOnlyRoots []string, maxDirs int) (map[pl
 	for _, r := range statOnlyRoots {
 		var st unix.Stat_t
 		if err := unix.Stat(r, &st); err != nil {
-			if isIgnorableScanErr(err) {
+			if errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ENOTDIR) {
 				continue
 			}
 			return ids, fmt.Errorf("%w: stat root %q: %w", ErrPackageDBScan, r, err)
@@ -151,7 +150,7 @@ func resolvePackageDBIDs(walkRoots, statOnlyRoots []string, maxDirs int) (map[pl
 	for _, r := range walkRoots {
 		var st unix.Stat_t
 		if err := unix.Stat(r, &st); err != nil {
-			if isIgnorableScanErr(err) {
+			if errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ENOTDIR) {
 				continue
 			}
 			return ids, fmt.Errorf("%w: stat root %q: %w", ErrPackageDBScan, r, err)
@@ -169,7 +168,7 @@ func resolvePackageDBIDs(walkRoots, statOnlyRoots []string, maxDirs int) (map[pl
 		seenWalkRoot[id] = true
 		realRoot, err := filepath.EvalSymlinks(r)
 		if err != nil {
-			if isIgnorableScanErr(err) {
+			if errors.Is(err, unix.ENOENT) {
 				continue
 			}
 			return ids, fmt.Errorf("%w: resolve root %q: %w", ErrPackageDBScan, r, err)
@@ -180,20 +179,20 @@ func resolvePackageDBIDs(walkRoots, statOnlyRoots []string, maxDirs int) (map[pl
 	// Phase 2: depth-first walk holding at most one directory fd open at once.
 	visited := 0
 	for _, root := range existingWalkRoots {
-		if err := walkPackageDBRootDFS(root, ids, &visited, maxDirs); err != nil {
+		if err := walkPackageDBRootDFS(root, ids, &visited, maxDirs, openDir); err != nil {
 			return ids, err
 		}
 	}
 	return ids, nil
 }
 
-func walkPackageDBRootDFS(root string, ids map[platform.FileID]string, visited *int, maxDirs int) error {
+func walkPackageDBRootDFS(root string, ids map[platform.FileID]string, visited *int, maxDirs int, openDir dirOpener) error {
 	stack := []string{root}
 	for len(stack) > 0 {
 		curPath := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
 
-		children, err := scanPackageDBDir(curPath, ids, visited, maxDirs)
+		children, err := scanPackageDBDir(curPath, ids, visited, maxDirs, openDir)
 		if err != nil {
 			return err
 		}
@@ -204,11 +203,13 @@ func walkPackageDBRootDFS(root string, ids map[platform.FileID]string, visited *
 
 // scanPackageDBDir opens curPath without following links, reads and stats its
 // entries, closes the directory descriptor immediately before returning, and
-// returns newly discovered child directory paths for the DFS stack.
-func scanPackageDBDir(curPath string, ids map[platform.FileID]string, visited *int, maxDirs int) ([]string, error) {
-	d, err := platform.OpenDirNoFollow(curPath)
+// returns newly discovered child directory paths for the DFS stack. Only ENOENT
+// is non-fatal; any permission, read, or fd error fails closed with
+// ErrPackageDBScan.
+func scanPackageDBDir(curPath string, ids map[platform.FileID]string, visited *int, maxDirs int, openDir dirOpener) ([]string, error) {
+	d, err := openDir(curPath)
 	if err != nil {
-		if isIgnorableScanErr(err) {
+		if errors.Is(err, unix.ENOENT) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("%w: open %q: %w", ErrPackageDBScan, curPath, err)
@@ -217,7 +218,7 @@ func scanPackageDBDir(curPath string, ids map[platform.FileID]string, visited *i
 
 	names, err := d.Readdirnames(-1)
 	if err != nil {
-		if isIgnorableScanErr(err) {
+		if errors.Is(err, unix.ENOENT) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("%w: read %q: %w", ErrPackageDBScan, curPath, err)
@@ -228,7 +229,7 @@ func scanPackageDBDir(curPath string, ids map[platform.FileID]string, visited *i
 	for _, name := range names {
 		var cst unix.Stat_t
 		if err := unix.Fstatat(dirFD, name, &cst, unix.AT_SYMLINK_NOFOLLOW); err != nil {
-			if isIgnorableScanErr(err) {
+			if errors.Is(err, unix.ENOENT) {
 				continue
 			}
 			return nil, fmt.Errorf("%w: stat %q: %w", ErrPackageDBScan, filepath.Join(curPath, name), err)

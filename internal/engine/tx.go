@@ -655,7 +655,6 @@ func (t *tx) toolEnv(keys []string) []string {
 func (t *tx) Emit(ev contract.Event) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	ev.Seq = t.e.nextSeq()
 	if ev.Time.IsZero() {
 		ev.Time = t.e.opts.Now().UTC()
 	}
@@ -663,10 +662,8 @@ func (t *tx) Emit(ev contract.Event) {
 	if ev.Step == "" {
 		ev.Step = contract.StepApply
 	}
+	ev = t.e.deliver(ev)
 	t.events = append(t.events, ev)
-	if t.e.opts.Sink != nil {
-		t.e.opts.Sink.Deliver(ev)
-	}
 }
 
 // RenderTemplate is not provided yet; the path check still runs first.
