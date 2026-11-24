@@ -297,21 +297,28 @@ func (e *Engine) recoverLocked(ctx context.Context, l *locks, self platform.Proc
 	if desc.Unit != rec.Unit || u.ID() != rec.Unit || p.Unit != rec.Unit {
 		return res, fmt.Errorf("%w: resolver returned %q for %q", ErrUnitMismatch, u.ID(), rec.Unit)
 	}
+	// Always re-inspect declared targets for OS-protected dropped attributes
+	// (such as com.apple.macl) across every digest kind. Seeding p.CannotUndo
+	// with plan-time PlanDroppedNotes ensures an already-approved attribute
+	// that vanished after the pre-crash replace does not trigger a false
+	// ErrPlanChanged, while any attribute appearing now that was not in
+	// PlanDroppedNotes always refuses with ErrPlanChanged.
+	candidate := p
+	candidate.CannotUndo = mergePlanDroppedNotes(p.CannotUndo, rec.PlanDroppedNotes)
+	finalised, warnings, err := e.finalisePlan(ctx, desc, candidate)
+	if err != nil {
+		return res, fmt.Errorf("finalise plan %s for reapply: %w", rec.Unit, err)
+	}
+	if hasUnrecordedDroppedXattr(warnings, rec.PlanDroppedNotes) {
+		rec.Status, rec.Claim = StatusIdle, nil
+		return res, errors.Join(
+			fmt.Errorf("%w: %s target gained unapproved OS-protected extended attribute since run %s", ErrPlanChanged, rec.Unit, rec.RunID),
+			l.withJournal(bk, func() error { return e.writeRecord(rec) }))
+	}
 	// Compare digests using the explicit digest kind recorded in the intent
-	// record (never guessing from string shape). For canonical digests, seed
-	// p.CannotUndo with any plan-time dropped-xattr notes so an OS-protected
-	// attribute (such as com.apple.macl) that vanished when the pre-crash
-	// apply replaced the target does not trigger a false ErrPlanChanged after
-	// restore, while genuine plan changes or newly appearing dropped xattrs
-	// still fail closed with ErrPlanChanged.
+	// record (never guessing from string shape).
 	switch rec.PlanDigestKind {
 	case PlanDigestCanonical:
-		candidate := p
-		candidate.CannotUndo = mergePlanDroppedNotes(p.CannotUndo, rec.PlanDroppedNotes)
-		finalised, _, _, err := e.finalisePlan(ctx, desc, candidate)
-		if err != nil {
-			return res, fmt.Errorf("finalise plan %s for reapply: %w", rec.Unit, err)
-		}
 		if finalised.Digest != rec.PlanDigest {
 			rec.Status, rec.Claim = StatusIdle, nil
 			return res, errors.Join(
@@ -327,18 +334,12 @@ func (e *Engine) recoverLocked(ctx context.Context, l *locks, self platform.Proc
 				l.withJournal(bk, func() error { return e.writeRecord(rec) }))
 		}
 	default:
-		// Backward compatibility for records written before plan_digest_kind
-		// existed: accept either a verbatim digest match or a canonical match.
-		candidate := p
-		candidate.CannotUndo = mergePlanDroppedNotes(p.CannotUndo, rec.PlanDroppedNotes)
-		finalised, _, mutated, err := e.finalisePlan(ctx, desc, candidate)
-		if err != nil {
-			return res, fmt.Errorf("finalise plan %s for reapply: %w", rec.Unit, err)
-		}
+		// Backward compatibility for v1 records written before plan_digest_kind
+		// existed: accept either a canonical match or a verbatim digest match.
 		switch {
 		case finalised.Digest == rec.PlanDigest:
 			p = finalised
-		case !mutated && p.Digest != "" && p.Digest == rec.PlanDigest:
+		case p.Digest != "" && p.Digest == rec.PlanDigest:
 		default:
 			rec.Status, rec.Claim = StatusIdle, nil
 			return res, errors.Join(

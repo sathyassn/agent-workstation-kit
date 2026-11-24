@@ -1617,3 +1617,277 @@ func TestDeliverPlainSinkConcurrentProgressMonotonicSeq(t *testing.T) {
 		}
 	})
 }
+
+// TestResumeVerbatimRefusesNewDroppedXattrAfterCrash is K1: even when an
+// interrupted apply used a verbatim Unit.Plan digest, Resume must still
+// inspect target protected/dropped attributes and refuse with ErrPlanChanged
+// if a dropped attribute (such as com.apple.macl) appeared after the crash.
+func TestResumeVerbatimRefusesNewDroppedXattrAfterCrash(t *testing.T) {
+	type crashSentinel struct{}
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(dir, "root")
+	target := "/etc/wskit-verbatim-new-macl.conf"
+	if err := os.MkdirAll(filepath.Join(root, "etc"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, target), []byte("orig\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	table := platformtest.NewProcessTable("boot-verbatim-macl")
+	cont := platformtest.NewContainment(table)
+	journalDir := filepath.Join(dir, "journal")
+	hostLock := filepath.Join(dir, "host.lock")
+	ops := &dynamicDropMetaOps{} // No com.apple.macl at apply start.
+
+	firstID := table.Spawn()
+	firstEng, err := New(Options{
+		JournalDir:  journalDir,
+		HostLock:    hostLock,
+		Root:        root,
+		Scope:       contract.ScopeUser,
+		Containment: cont,
+		Inspector:   table.Inspector(firstID),
+		metaOps:     ops,
+		Fault: func(pt Point) {
+			if pt == PointMutation {
+				panic(crashSentinel{})
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	unit := verbatimDigestUnit{path: target, digest: contract.Digest(strings.Repeat("c", 64))}
+	plan, err := unit.Plan(context.Background(), contract.Inputs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var panicked bool
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				if _, ok := r.(crashSentinel); ok {
+					panicked = true
+					return
+				}
+				panic(r)
+			}
+		}()
+		_ = firstEng.Apply(context.Background(), unit, plan)
+	}()
+	if !panicked {
+		t.Fatal("expected simulated crash during Apply")
+	}
+	table.Kill(firstID)
+
+	// Target gains com.apple.macl between crash and Resume.
+	ops.setDropped([]string{"com.apple.macl"})
+
+	resumer, err := New(Options{
+		JournalDir:  journalDir,
+		HostLock:    hostLock,
+		Root:        root,
+		Scope:       contract.ScopeUser,
+		Containment: cont,
+		Inspector:   table.Inspector(table.Spawn()),
+		metaOps:     ops,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolve := func(ctx context.Context, _ contract.UnitID) (contract.Unit, contract.Plan, error) {
+		p, perr := unit.Plan(ctx, contract.Inputs{})
+		return unit, p, perr
+	}
+	if _, err := resumer.Resume(context.Background(), resolve, ResumeOptions{}); !errors.Is(err, ErrPlanChanged) {
+		t.Fatalf("Resume with newly appearing com.apple.macl in verbatim mode err = %v, want ErrPlanChanged", err)
+	}
+	gotData, err := os.ReadFile(filepath.Join(root, target)) //nolint:gosec // test root path
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(gotData) != "orig\n" {
+		t.Fatalf("target content after refused verbatim reapply = %q, want %q", gotData, "orig\n")
+	}
+}
+
+// TestIntentRecordVersionV2AndV1BackwardCompat is K2: newly written intent
+// records must carry version 2 (because PlanDigestKind and PlanDroppedNotes
+// were added), while existing version 1 records remain readable cleanly.
+func TestIntentRecordVersionV2AndV1BackwardCompat(t *testing.T) {
+	t.Run("newly_written_record_carries_v2", func(t *testing.T) {
+		dir, err := filepath.EvalSymlinks(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		root := filepath.Join(dir, "root")
+		target := "/etc/wskit-rec-v2.conf"
+		if err := os.MkdirAll(filepath.Join(root, "etc"), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, target), []byte("orig\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		journalDir := filepath.Join(dir, "journal")
+		table := platformtest.NewProcessTable("boot-rec-v2")
+		e, err := New(Options{
+			JournalDir:  journalDir,
+			HostLock:    filepath.Join(dir, "host.lock"),
+			Root:        root,
+			Scope:       contract.ScopeUser,
+			Containment: platformtest.NewContainment(table),
+			Inspector:   table.Inspector(table.Spawn()),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		unit := planDropTestUnit{path: target, planID: "plan-v2-1"}
+		plan, err := e.Plan(context.Background(), unit, contract.Inputs{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := e.Apply(context.Background(), unit, plan); err != nil {
+			t.Fatalf("Apply: %v", err)
+		}
+		raw, err := os.ReadFile(filepath.Join(journalDir, "record.json")) //nolint:gosec // test journal file
+		if err != nil {
+			t.Fatal(err)
+		}
+		var rec Record
+		if err := json.Unmarshal(raw, &rec); err != nil {
+			t.Fatal(err)
+		}
+		if rec.Version != 2 {
+			t.Fatalf("newly written record.json Version = %d, want 2", rec.Version)
+		}
+	})
+
+	t.Run("reads_existing_v1_record_and_rejects_v3", func(t *testing.T) {
+		type crashSentinel struct{}
+		dir, err := filepath.EvalSymlinks(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		root := filepath.Join(dir, "root")
+		target := "/etc/wskit-rec-v1.conf"
+		if err := os.MkdirAll(filepath.Join(root, "etc"), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, target), []byte("orig\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		journalDir := filepath.Join(dir, "journal")
+		hostLock := filepath.Join(dir, "host.lock")
+		table := platformtest.NewProcessTable("boot-rec-v1")
+		cont := platformtest.NewContainment(table)
+
+		firstID := table.Spawn()
+		firstEng, err := New(Options{
+			JournalDir:  journalDir,
+			HostLock:    hostLock,
+			Root:        root,
+			Scope:       contract.ScopeUser,
+			Containment: cont,
+			Inspector:   table.Inspector(firstID),
+			Fault: func(pt Point) {
+				if pt == PointMutation {
+					panic(crashSentinel{})
+				}
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		unit := planDropTestUnit{path: target, planID: "plan-v1-1"}
+		plan, err := unit.Plan(context.Background(), contract.Inputs{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var panicked bool
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					if _, ok := r.(crashSentinel); ok {
+						panicked = true
+						return
+					}
+					panic(r)
+				}
+			}()
+			_ = firstEng.Apply(context.Background(), unit, plan)
+		}()
+		if !panicked {
+			t.Fatal("expected simulated crash during Apply")
+		}
+		table.Kill(firstID)
+
+		// Rewrite record.json as a strict legacy v1 document (no v2 fields).
+		recPath := filepath.Join(journalDir, "record.json")
+		raw, err := os.ReadFile(recPath) //nolint:gosec // test journal file
+		if err != nil {
+			t.Fatal(err)
+		}
+		var doc map[string]any
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			t.Fatal(err)
+		}
+		doc["version"] = 1
+		delete(doc, "plan_digest_kind")
+		delete(doc, "plan_dropped_notes")
+		v1Bytes, err := json.Marshal(doc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(recPath, v1Bytes, 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		resumer, err := New(Options{
+			JournalDir:  journalDir,
+			HostLock:    hostLock,
+			Root:        root,
+			Scope:       contract.ScopeUser,
+			Containment: cont,
+			Inspector:   table.Inspector(table.Spawn()),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		resolve := func(ctx context.Context, _ contract.UnitID) (contract.Unit, contract.Plan, error) {
+			p, perr := unit.Plan(ctx, contract.Inputs{})
+			return unit, p, perr
+		}
+		res, err := resumer.Resume(context.Background(), resolve, ResumeOptions{})
+		if err != nil || res.Action != ResumeReapplied {
+			t.Fatalf("Resume from legacy v1 record = %+v, %v; want ResumeReapplied", res, err)
+		}
+		afterRaw, err := os.ReadFile(recPath) //nolint:gosec // test journal file
+		if err != nil {
+			t.Fatal(err)
+		}
+		var afterRec Record
+		if err := json.Unmarshal(afterRaw, &afterRec); err != nil {
+			t.Fatal(err)
+		}
+		if afterRec.Version != 2 {
+			t.Fatalf("record.json Version after Resume = %d, want 2", afterRec.Version)
+		}
+
+		// Unsupported version 3 must still fail closed with ErrCorruptRecord.
+		doc["version"] = 3
+		v3Bytes, err := json.Marshal(doc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(recPath, v3Bytes, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := resumer.Resume(context.Background(), resolve, ResumeOptions{}); !errors.Is(err, ErrCorruptRecord) {
+			t.Fatalf("Resume with unsupported record version 3 err = %v, want ErrCorruptRecord", err)
+		}
+	})
+}

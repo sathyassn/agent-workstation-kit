@@ -17,14 +17,15 @@ import (
 )
 
 const (
-	recordVersion = 1
-	recordFile    = "record.json"
-	journalLock   = "journal.lock"
-	receiptsDir   = "receipts"
-	backupsDir    = "backups"
-	manifestFile  = "manifest.json"
-	privateMode   = 0o700
-	jsonExt       = ".json"
+	recordVersionV1 = 1
+	recordVersion   = 2
+	recordFile      = "record.json"
+	journalLock     = "journal.lock"
+	receiptsDir     = "receipts"
+	backupsDir      = "backups"
+	manifestFile    = "manifest.json"
+	privateMode     = 0o700
+	jsonExt         = ".json"
 )
 
 // Operation names what a record is for (SPC-001 "Intent, recovery and
@@ -143,7 +144,7 @@ func (e *Engine) readRecord() (*Record, error) {
 	if err != nil || !found {
 		return nil, err
 	}
-	if r.Version != recordVersion || r.Op != OpApply || !r.Status.valid() || !r.PlanDigestKind.valid() || platform.ValidateRunID(r.RunID) != nil {
+	if (r.Version != recordVersionV1 && r.Version != recordVersion) || r.Op != OpApply || !r.Status.valid() || !r.PlanDigestKind.valid() || platform.ValidateRunID(r.RunID) != nil {
 		return nil, fmt.Errorf("%w: %q", ErrCorruptRecord, e.recordPath())
 	}
 	return &r, nil

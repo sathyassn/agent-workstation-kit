@@ -382,7 +382,7 @@ func (e *Engine) Plan(ctx context.Context, u contract.Unit, in contract.Inputs) 
 			return contract.Plan{}, err
 		}
 	}
-	p, warnings, _, err := e.finalisePlan(ctx, desc, p)
+	p, warnings, err := e.finalisePlan(ctx, desc, p)
 	if err != nil {
 		return contract.Plan{}, err
 	}
@@ -444,12 +444,26 @@ func mergePlanDroppedNotes(cannotUndo, recorded []string) []string {
 	return append(out, recorded...)
 }
 
+// hasUnrecordedDroppedXattr reports whether target inspection found any
+// OS-protected extended attribute (such as com.apple.macl) that was not
+// already recorded in plan-time PlanDroppedNotes.
+func hasUnrecordedDroppedXattr(warnings []droppedWarning, recorded []string) bool {
+	for _, w := range warnings {
+		for _, attr := range w.attrs {
+			if !slices.Contains(recorded, droppedXattrNote(w.path, attr)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // finalisePlan annotates p.CannotUndo with any OS-protected extended attributes
 // that inode replacement would drop on declared target files and computes the
 // canonical RFC 8785 SHA-256 plan digest (SPC-001 "Plans and approvals"). Both
 // Engine.Plan and Engine.Resume use finalisePlan so plan digests are compared
 // on the exact same canonical basis.
-func (e *Engine) finalisePlan(ctx context.Context, desc contract.Description, p contract.Plan) (contract.Plan, []droppedWarning, bool, error) {
+func (e *Engine) finalisePlan(ctx context.Context, desc contract.Description, p contract.Plan) (contract.Plan, []droppedWarning, error) {
 	var paths []string
 	paths = append(paths, desc.OwnedPaths...)
 	for _, ch := range p.Changes {
@@ -465,10 +479,9 @@ func (e *Engine) finalisePlan(ctx context.Context, desc contract.Description, p 
 	}
 
 	var warnings []droppedWarning
-	mutated := false
 	for _, path := range paths {
 		if err := ctx.Err(); err != nil {
-			return contract.Plan{}, nil, false, fmt.Errorf("plan %s: %w", desc.Unit, err)
+			return contract.Plan{}, nil, fmt.Errorf("plan %s: %w", desc.Unit, err)
 		}
 		dropped := e.inspectTargetDroppedXattrs(path)
 		if len(dropped) == 0 {
@@ -478,17 +491,16 @@ func (e *Engine) finalisePlan(ctx context.Context, desc contract.Description, p 
 			note := droppedXattrNote(path, attr)
 			if !slices.Contains(p.CannotUndo, note) {
 				p.CannotUndo = append(p.CannotUndo, note)
-				mutated = true
 			}
 		}
 		warnings = append(warnings, droppedWarning{path: path, attrs: dropped})
 	}
 	digest, err := planDigest(p)
 	if err != nil {
-		return contract.Plan{}, nil, false, fmt.Errorf("plan digest %s: %w", desc.Unit, err)
+		return contract.Plan{}, nil, fmt.Errorf("plan digest %s: %w", desc.Unit, err)
 	}
 	p.Digest = digest
-	return p, warnings, mutated, nil
+	return p, warnings, nil
 }
 
 // planDigest computes the SHA-256 hex digest of p in RFC 8785 canonical JSON
@@ -639,10 +651,9 @@ func (e *Engine) runApply(ctx context.Context, l *locks, self platform.ProcessId
 	}
 	e.emitBackupWarnings(runID, desc.Unit, m)
 	digestKind := PlanDigestVerbatim
-	var droppedNotes []string
+	droppedNotes := extractDroppedXattrNotes(p.CannotUndo)
 	if canon, derr := planDigest(p); derr == nil && p.Digest == canon {
 		digestKind = PlanDigestCanonical
-		droppedNotes = extractDroppedXattrNotes(p.CannotUndo)
 	}
 	rec := &Record{
 		Status: StatusApplying, RunID: runID, Unit: desc.Unit, PlanID: p.ID,
