@@ -693,26 +693,25 @@ func checkSetStateSerialized(ctx context.Context, r reporter, tx contract.Tx, in
 		r.Errorf("second SetState goroutine did not start")
 		return
 	}
-	// Wait for the second call to enter SetState (via ctx.Err) before running
-	// the full probe wait. A Tx that locks before inspecting ctx will not
-	// signal entered while blocked on the lock, in which case the initial
-	// probe window already bounds the wait after the goroutine has started.
-	probe := time.NewTimer(serialProbeWait)
-	defer probe.Stop()
+	// Wait for the second call to enter SetState (via ctx.Err) first; fail if
+	// entry is never observed within serialGateTimeout. Only after entry is
+	// confirmed do we start the full serialProbeWait window so a missing entry
+	// can never pass silently and a late unlocked call cannot slip past.
+	entryTimer := time.NewTimer(serialGateTimeout)
+	defer entryTimer.Stop()
 	select {
 	case <-p.second:
 		r.Errorf("a second SetState took its Snapshot while the first was paused between its Snapshot and its Write; SetState must hold one lock across snapshot, write and receipt")
 	case <-entered:
-		if !probe.Stop() {
-			<-probe.C
-		}
-		probe.Reset(serialProbeWait)
+		probe := time.NewTimer(serialProbeWait)
+		defer probe.Stop()
 		select {
 		case <-p.second:
 			r.Errorf("a second SetState took its Snapshot while the first was paused between its Snapshot and its Write; SetState must hold one lock across snapshot, write and receipt")
 		case <-probe.C:
 		}
-	case <-probe.C:
+	case <-entryTimer.C:
+		r.Errorf("second SetState did not enter (ctx.Err not observed) within %v", serialGateTimeout)
 	}
 	releaseOnce()
 	for range 2 {
@@ -754,6 +753,7 @@ func checkSetStateSerialized(ctx context.Context, r reporter, tx contract.Tx, in
 func checkEmitOrder(r reporter, tx contract.DeclarativeTx, inspector TxInspector) {
 	r.Helper()
 
+	beforeCount := len(inspector.Events())
 	base := time.Date(2026, 11, 23, 12, 0, 0, 0, time.UTC)
 	for i := uint64(1); i <= emitOrderCount; i++ {
 		tx.Emit(contract.Event{
@@ -767,19 +767,25 @@ func checkEmitOrder(r reporter, tx contract.DeclarativeTx, inspector TxInspector
 		})
 	}
 	events := inspector.Events()
-	if len(events) < emitOrderCount {
-		r.Errorf("Emit recorded %d events, want at least %d", len(events), emitOrderCount)
+	if len(events) < beforeCount+emitOrderCount {
+		r.Errorf("Emit recorded %d events (had %d before), want at least %d", len(events), beforeCount, beforeCount+emitOrderCount)
 		return
+	}
+	for i := range events {
+		if events[i].Seq == 0 {
+			r.Errorf("event[%d].Seq = 0, want positive (Emit must preserve order with strictly increasing sequence numbers)", i)
+			return
+		}
+		if i > 0 && events[i].Seq <= events[i-1].Seq {
+			r.Errorf("event[%d].Seq = %d after %d (Emit must preserve order with strictly increasing sequence numbers without resets)", i, events[i].Seq, events[i-1].Seq)
+			return
+		}
 	}
 	tail := events[len(events)-emitOrderCount:]
 	for i := range emitOrderCount {
 		wantTime := base.Add(time.Duration(i+1) * time.Second)
 		if !tail[i].Time.Equal(wantTime) {
 			r.Errorf("event[%d].Time = %v, want %v (Emit must preserve order)", i, tail[i].Time, wantTime)
-			return
-		}
-		if tail[i].Seq == 0 {
-			r.Errorf("event[%d].Seq = 0, want positive (Emit must preserve order)", i)
 			return
 		}
 		if i > 0 && tail[i].Seq != tail[i-1].Seq+1 {

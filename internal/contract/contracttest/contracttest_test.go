@@ -1180,3 +1180,60 @@ func TestSerializedCheckWaitsForSecondCallEntry(t *testing.T) {
 		}
 	})
 }
+
+// brokenNeverEntersSetStateTx acquires stateMu before calling ctx.Err(), so
+// when a first SetState call holds the lock, a second concurrent call blocks
+// without ever signalling entry through ctx.Err().
+type brokenNeverEntersSetStateTx struct {
+	*FakeTx
+	lockAttempts int
+}
+
+func (b *brokenNeverEntersSetStateTx) SetState(ctx context.Context, p contract.StateProvider, key contract.StateKey, want contract.State) error {
+	b.stateMu.Lock()
+	b.lockAttempts++
+	b.stateMu.Unlock()
+	return b.FakeTx.SetState(ctx, p, key, want)
+}
+
+// brokenResetSeqEmitTx records a prior event with a high sequence number and
+// then lets subsequent Emit calls reset Seq back to 1..N.
+type brokenResetSeqEmitTx struct {
+	*FakeTx
+}
+
+func (b *brokenResetSeqEmitTx) Events() []contract.Event {
+	ev := b.FakeTx.Events()
+	if len(ev) == 0 {
+		return ev
+	}
+	prior := ev[0]
+	prior.Seq = 10
+	return append([]contract.Event{prior}, ev...)
+}
+
+func TestContractChecksCatchMissingSetStateEntryAndSeqReset(t *testing.T) {
+	t.Parallel()
+
+	t.Run("SetState that never signals entry fails TestTx", func(t *testing.T) {
+		t.Parallel()
+		rep := &fakeReporter{}
+		checkTx(rep, func(d contract.Description) contract.Tx {
+			return &brokenNeverEntersSetStateTx{FakeTx: NewFakeTx(d, nil)}
+		})
+		if !rep.hasErrorContaining("did not enter") {
+			t.Fatalf("expected failure for missing SetState entry, got %v", rep.errors)
+		}
+	})
+
+	t.Run("Emit that resets Seq relative to prior events fails TestTx", func(t *testing.T) {
+		t.Parallel()
+		rep := &fakeReporter{}
+		checkTx(rep, func(d contract.Description) contract.Tx {
+			return &brokenResetSeqEmitTx{FakeTx: NewFakeTx(d, nil)}
+		})
+		if !rep.hasErrorContaining("strictly increasing") {
+			t.Fatalf("expected failure for Seq reset, got %v", rep.errors)
+		}
+	})
+}
