@@ -1414,6 +1414,20 @@ hours, while a guard that watched load and available memory stayed green.
   and package caches placed there use memory. The stage sets the policy: a
   disk-backed `/tmp`, or caches pointed at disk. The doctor reports tmpfs
   use.
+- **Learnings batch 4 (2026-11-23).**
+  - Measured reserve: count non-reclaimable use only (anonymous plus
+    kernel memory, never file cache), take the p95 rather than the peak,
+    multiply by 1.5, and keep the role default as floor and ceiling guard;
+    `plan` shows both numbers (TSK-045).
+  - At the limit, slow before killing: MemoryHigh is the working limit,
+    MemoryLow protects the desktop and the agent manager, heavy jobs run in
+    their own job scopes, systemd-oomd targets job scopes first, and every
+    kill is logged and surfaced with the resume command (TSK-045).
+  - Everything agents start stays inside the ceiling: the capped runner,
+    rootless Docker and Podman, and leak-prone desktop helpers under their
+    own per-service ceilings (TSK-044); a login-shell hook and launchers
+    put agent work in the cap whatever terminal or app starts it
+    (`agent-placement`, TSK-046).
 - **The session side** is split at one boundary. The kit's resources unit
   ships the machine-wide controls and a small runner library and wrapper:
   the memory-pressure signal and the admission and stop policy (on macOS,
@@ -1543,6 +1557,11 @@ builds `registry/capabilities.toml` from it.
 | Processes outside the agent-work ceiling | counted per session or scope, with a restart hint | QoS check per agent terminal | no slice on macOS | QoS check (EPC-022 AC-8) |
 | mDNS | `mdns` setting: UFW 5353/udp and avahi `allow-interfaces` on non-mesh LAN interfaces only, `publish-workstation=no` | mDNSResponder stays on; the setting changes Application Firewall stealth mode and Bonjour incoming rules | mDNSResponder cannot be turned off without breaking the system, and macOS cannot limit mDNS to chosen interfaces | `off`: stealth mode and blocked incoming connections for Bonjour-advertising services; `on-interfaces` behaves as `on` and `plan` states the gap (EPC-015 AC-11) |
 | Agent terminal shell | `agent-work-shell`, set in the agent manager by hand-over | the agent-work wrapper, set the same way | the agent manager has no settings CLI on either OS | hand-over, a doctor check, and a recorded request for a CLI (EPC-010 AC-11, EPC-022 AC-9) |
+| Desktop-service ceilings | user-unit drop-ins with MemoryHigh, MemoryMax, CPUQuota and `Restart=on-failure` | none | launchd agents cannot be memory-capped | the doctor's runaway report (EPC-010, EPC-022) |
+| Agent jobs and containers in the ceiling | runner `--slice=agent-work.slice`; `Slice=` drop-ins for rootless Docker and Podman | runner applies the agent QoS | Docker Desktop and OrbStack run their own VMs | their VM memory setting recorded as the cap by a guided step (TSK-044) |
+| Agent placement | login-shell hook into `agent-work.slice`; app launchers; scope move for running sessions | login-shell hook with `taskpolicy -c utility` and `nice 5`; launcher wrapper; `taskpolicy` and `renice` for running processes | no group memory ceiling on macOS | QoS and nice only (TSK-046) |
+| Remote desktop | `physical` mode shares the console session; blanking without the fade effect and lock on disconnect | Screen Sharing and NoMachine share the physical session; curtain mode where available | Wayland blanking does not block local input | stated in `plan` (TSK-048) |
+| Keyring health | one gnome-keyring-daemon per user; login collection unlocked | login keychain unlocked and the default | a virtual remote desktop never unlocks the keyring | `physical` mode by default; the doctor reports it (TSK-047) |
 | Long-uptime swap | swapped-out desktop processes reported with a reboot-window hint | no per-process swap figure | macOS reports no per-process swap | uptime with the memory-pressure history (EPC-022 AC-10) |
 
 Open on macOS, and where each stands:
@@ -1787,6 +1806,10 @@ What revert cannot undo, listed in every revert preview:
     terminal; new agent terminals inside the ceiling; and long uptime with
     swapped-out desktop processes on Linux, or with the memory-pressure
     history on macOS;
+  - from learnings batch 4 (EPC-022 AC-11 and AC-12, TSK-047): runaway
+    processes, more than one desktop, audio stack or keyring daemon per
+    user, keyring health, slow DNS (recognising the Codex #48766 message),
+    and the read-only `reboot-plan`;
   - the earlier doctor items.
 
   `--admin` runs the root-only checks from the staged root and writes their
