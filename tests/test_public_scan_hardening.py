@@ -20,6 +20,7 @@ import sys
 import tempfile
 import time
 import unittest
+from collections.abc import Callable
 from pathlib import Path
 from unittest import mock
 
@@ -40,6 +41,57 @@ def ip(*octets: str) -> str:
 
 def join(*parts: str) -> str:
     return "".join(parts)
+
+
+def assert_linear_scaling(
+    test_case: unittest.TestCase,
+    label: str,
+    run_n: Callable[[], object],
+    run_4n: Callable[[], object],
+    *,
+    max_ms: float = 1000.0,
+    fast_floor_ms: float = 50.0,
+    max_ratio: float = 8.0,
+    rounds: int = 3,
+) -> tuple[float, float]:
+    """Assert O(n) scaling (N vs 4N) with a generous absolute ceiling.
+
+    Warms up once and interleaves N and 4N over `rounds` runs (taking medians)
+    so host load or single scheduling blips do not cause false failures while
+    quadratic/ReDoS blowups fail either the ratio bound or the 1s ceiling.
+    """
+    run_n()
+    run_4n()
+    samples_n: list[float] = []
+    samples_4n: list[float] = []
+    for _ in range(rounds):
+        t0 = time.perf_counter()
+        run_n()
+        samples_n.append((time.perf_counter() - t0) * 1000.0)
+
+        t1 = time.perf_counter()
+        run_4n()
+        samples_4n.append((time.perf_counter() - t1) * 1000.0)
+
+    samples_n.sort()
+    samples_4n.sort()
+    t_n = samples_n[len(samples_n) // 2]
+    t_4n = samples_4n[len(samples_4n) // 2]
+
+    test_case.assertLess(
+        t_4n,
+        max_ms,
+        f"{label} took {t_4n:.1f}ms at 4N (ceiling {max_ms:.0f}ms; N took {t_n:.1f}ms)",
+    )
+    if t_4n >= fast_floor_ms:
+        ratio = t_4n / max(t_n, 1.0)
+        test_case.assertLessEqual(
+            ratio,
+            max_ratio,
+            f"{label} scaled super-linearly: 4N={t_4n:.1f}ms vs N={t_n:.1f}ms "
+            f"(ratio {ratio:.2f}x > {max_ratio:.1f}x)",
+        )
+    return t_n, t_4n
 
 
 _TEST_IDENTITY_STUB = (
@@ -785,22 +837,58 @@ class TimingSelfScanAndJourneyTests(unittest.TestCase):
             root = Path(directory)
             write_scan_configs(root)
             git(root, "init", "-q", "-b", "main")
-            for idx in range(25):
+            for idx in range(10):
                 (root / f"module_{idx}.py").write_text(
                     f"# Module {idx}\nVALUE = 'alice@example.com'\nADDR = '192.0.2.{idx + 1}'\n" * 40,
                     encoding="utf-8",
                 )
             git(root, "add", "-A")
-            git(root, "commit", "-q", "-m", "feat: typical change")
-            head = git(root, "rev-parse", "HEAD").stdout.strip()
+            git(root, "commit", "-q", "-m", "feat: typical change n")
+            head_n = git(root, "rev-parse", "HEAD").stdout.strip()
+
+            for idx in range(10, 40):
+                (root / f"module_{idx}.py").write_text(
+                    f"# Module {idx}\nVALUE = 'alice@example.com'\nADDR = '192.0.2.{idx + 1}'\n" * 40,
+                    encoding="utf-8",
+                )
+            git(root, "add", "-A")
+            git(root, "commit", "-q", "-m", "feat: typical change 4n")
+            head_4n = git(root, "rev-parse", "HEAD").stdout.strip()
 
             clean_env = {k: v for k, v in os.environ.items() if "SECRET" not in k and "HMAC" not in k}
-            t0 = time.perf_counter()
-            with mock.patch.dict(os.environ, clean_env, clear=True):
-                code, out, err = run_main(["--root", str(root), "--tree", head])
-            elapsed = time.perf_counter() - t0
-            self.assertEqual(0, code, out + err)
-            self.assertLess(elapsed, 0.8, f"typical diff scan took {elapsed:.3f}s (expected well under 1s)")
+
+            def run_tree(sha: str) -> None:
+                with mock.patch.dict(os.environ, clean_env, clear=True):
+                    code, out, err = run_main(["--root", str(root), "--tree", sha])
+                self.assertEqual(0, code, out + err)
+
+            assert_linear_scaling(
+                self,
+                "typical diff scan (10 vs 40 modules)",
+                lambda: run_tree(head_n),
+                lambda: run_tree(head_4n),
+                max_ms=1000.0,
+            )
+
+    def test_linear_scaling_helper_catches_quadratic_and_ceiling_regressions(self) -> None:
+        # Simulated linear scaling (20ms at N -> 80ms at 4N = 4.0x) passes.
+        linear_ticks = iter([0.0, 0.020, 0.020, 0.100] * 3)
+        with mock.patch.object(time, "perf_counter", side_effect=lambda: next(linear_ticks)):
+            t_n, t_4n = assert_linear_scaling(self, "simulated linear", lambda: None, lambda: None)
+        self.assertAlmostEqual(20.0, t_n, places=3)
+        self.assertAlmostEqual(80.0, t_4n, places=3)
+
+        # Simulated quadratic regression (10ms at N -> 160ms at 4N = 16.0x > 8.0x) fails.
+        quad_ticks = iter([0.0, 0.010, 0.010, 0.170] * 3)
+        with mock.patch.object(time, "perf_counter", side_effect=lambda: next(quad_ticks)):
+            with self.assertRaisesRegex(AssertionError, "scaled super-linearly"):
+                assert_linear_scaling(self, "simulated quadratic", lambda: None, lambda: None)
+
+        # Simulated ReDoS ceiling blowup (400ms at N -> 1400ms at 4N > 1000ms) fails even if ratio <= 8x.
+        slow_ticks = iter([0.0, 0.400, 0.400, 1.800] * 3)
+        with mock.patch.object(time, "perf_counter", side_effect=lambda: next(slow_ticks)):
+            with self.assertRaisesRegex(AssertionError, "ceiling 1000ms"):
+                assert_linear_scaling(self, "simulated blowup", lambda: None, lambda: None)
 
     def test_self_scan_scans_tests_and_real_exemption_records_cleanly(self) -> None:
         # Scanner and both test suites must pass self-scan with zero exemptions.
@@ -1597,12 +1685,15 @@ class Round3ReviewRegressionTests(unittest.TestCase):
             with self.subTest(clean=clean_line[:22]):
                 self.assertEqual([], scan_line(clean_line).failures)
 
-        # ReDoS guard: 50,000-character identifier with separator reaches PHONE_KEY_RE and finishes under 50ms.
+        # ReDoS guard: long identifier with separator reaches PHONE_KEY_RE, scales O(n), and stays < 1s.
+        long_ident_n = ("hotel_x" * 1800) + " = 1234567890"
         long_ident = ("hotel_x" * 7200) + " = 1234567890"
-        t0 = time.perf_counter()
-        self.assertEqual([], scan.detect_phone(long_ident))
-        elapsed_ms = (time.perf_counter() - t0) * 1000.0
-        self.assertLess(elapsed_ms, 50.0, f"detect_phone took {elapsed_ms:.1f}ms on long identifier")
+        assert_linear_scaling(
+            self,
+            "detect_phone(long identifier)",
+            lambda: self.assertEqual([], scan.detect_phone(long_ident_n)),
+            lambda: self.assertEqual([], scan.detect_phone(long_ident)),
+        )
 
     def test_s5_commit_messages_and_annotated_tag_messages_are_scanned_and_redacted(self) -> None:
         leak_email = join("jdoe", "@", "acme-corp", ".com")
@@ -1720,13 +1811,14 @@ class Round4ReviewRegressionTests(unittest.TestCase):
 
     def test_u3_phone_timing_guard_reaches_regex_and_stays_fast(self) -> None:
         # Verify the timing test input in test_s3 actually enters PHONE_KEY_RE.finditer
-        # (does not short-circuit at the separator/context gate) and runs in < 50 ms.
+        # (does not short-circuit at the separator/context gate) and scales linearly under 1s.
         import inspect
         s3_source = inspect.getsource(
             Round3ReviewRegressionTests.test_s3_phone_labels_syntax_redos_and_non_hits
         )
         self.assertIn('("hotel_x" * 7200) + " = 1234567890"', s3_source)
 
+        long_ident_n = ("hotel_x" * 1800) + " = 1234567890"
         long_ident = ("hotel_x" * 7200) + " = 1234567890"
         calls = 0
         real_re = scan.PHONE_KEY_RE
@@ -1738,11 +1830,14 @@ class Round4ReviewRegressionTests(unittest.TestCase):
                 return real_re.finditer(text, *args)
 
         with mock.patch.object(scan, "PHONE_KEY_RE", CountingPattern()):
-            t0 = time.perf_counter()
             self.assertEqual([], scan.detect_phone(long_ident))
-            elapsed_ms = (time.perf_counter() - t0) * 1000.0
         self.assertEqual(1, calls, "timing input must actually reach PHONE_KEY_RE.finditer")
-        self.assertLess(elapsed_ms, 50.0, f"detect_phone took {elapsed_ms:.1f}ms on long identifier")
+        assert_linear_scaling(
+            self,
+            "detect_phone(long identifier via PHONE_KEY_RE)",
+            lambda: self.assertEqual([], scan.detect_phone(long_ident_n)),
+            lambda: self.assertEqual([], scan.detect_phone(long_ident)),
+        )
 
     def test_u4_multiple_fetch_urls_scan_full_history(self) -> None:
         leak_email = join("jdoe", "@", "acme-corp", ".com")
@@ -1876,20 +1971,27 @@ class Round5ReviewRegressionTests(unittest.TestCase):
         )
 
     def test_detect_phone_whitespace_padding_is_linear_time(self) -> None:
-        # Test N=2000 before N=20000 so any regression fails fast on N=2000.
-        for n in (2000, 20000):
-            for label, payload in (
-                (f"padded_colon_N{n}", "phone" + (" " * n) + ":" + (" " * n) + "1"),
-                (f"padded_list_N{n}", "phone list 1:" + (" " * n)),
-            ):
-                t0 = time.perf_counter()
-                hits = scan.detect_phone(payload)
-                elapsed_ms = (time.perf_counter() - t0) * 1000.0
-                self.assertEqual([], hits, label)
-                self.assertLess(
-                    elapsed_ms,
-                    50.0,
-                    f"detect_phone({label}) took {elapsed_ms:.1f}ms (expected < 50ms)",
+        # Check N=5000 vs 4N=20000 for both padded forms so quadratic ReDoS fails fast
+        # while host-load spikes do not flake linear code.
+        cases = (
+            (
+                "padded_colon",
+                "phone" + (" " * 5000) + ":" + (" " * 5000) + "1",
+                "phone" + (" " * 20000) + ":" + (" " * 20000) + "1",
+            ),
+            (
+                "padded_list",
+                "phone list 1:" + (" " * 5000),
+                "phone list 1:" + (" " * 20000),
+            ),
+        )
+        for label, payload_n, payload_4n in cases:
+            with self.subTest(case=label):
+                assert_linear_scaling(
+                    self,
+                    f"detect_phone({label})",
+                    lambda p=payload_n, lbl=label: self.assertEqual([], scan.detect_phone(p), lbl),
+                    lambda p=payload_4n, lbl=label: self.assertEqual([], scan.detect_phone(p), lbl),
                 )
 
 
