@@ -58,6 +58,12 @@ type Sink interface {
 type StateProvider interface {
 	Name() StateProviderName
 	Read(ctx context.Context, key StateKey) (State, error)
+	// Write sets one key. Tx.SetState is the only caller: it refuses a key
+	// the unit did not declare and takes a Snapshot first, so a Write is
+	// always undoable through Restore. Write need not be atomic: on an
+	// error it may leave the key partly written, because the engine then
+	// restores the snapshot it took before the call.
+	Write(ctx context.Context, key StateKey, want State) error
 	Snapshot(ctx context.Context) (Snapshot, error)
 	Restore(ctx context.Context, s Snapshot) error
 }

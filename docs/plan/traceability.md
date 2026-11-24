@@ -17,7 +17,7 @@ Tasks are listed once their epic is planned; the P1 spec PR adds P1's.
 | Contracts published before code (15) | EPC-003 | TSK-023 | contract tests and schema fixtures |
 | One apply path, staged binary, containment, recovery (3, 5) | EPC-003 | TSK-013, TSK-024 | fault-injection and concurrency tests |
 | Frozen-code fixes (3) | EPC-003 | TSK-010 | regression tests |
-| Agent interface and output modes (4, 2b) | EPC-003, EPC-004 | TSK-009, TSK-012, TSK-014 to TSK-016 | golden and snapshot tests |
+| Agent interface and output modes (4, 2b) | EPC-003, EPC-004 | TSK-009, TSK-012, TSK-014 to TSK-016, TSK-039 (man page) | golden and snapshot tests |
 | Transaction layer, baseline, revert, retention (5) | EPC-005 | TSK-018 to TSK-022 | fixture revert with the match digest |
 | Units, standalone and composed (2a) | EPC-006 to EPC-022 | per epic | standalone apply and revert per unit |
 | Revert everywhere (2c) | every unit epic | per epic | per-unit revert tests; EPC-030 |

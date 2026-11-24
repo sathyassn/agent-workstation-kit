@@ -167,7 +167,7 @@ What the code does today, and the problem each fact causes:
 | S3 `identity` | hostname, `/etc/hosts` block, accounts and groups | computer names; accounts created with a disabled password | root | yes (homes archived, from T4) |
 | G1 `access` | credential readiness: passwords, SSH keys, mesh VPN up, a second tailnet device holding a named user's key. No SSH reachability is required here | credential readiness: passwords, secure tokens, mesh VPN up (system extension approved), Remote Login and Screen Sharing enabled for named users only, a second tailnet device | human; conductor polls the non-root probes, root check once at the end | n/a |
 | S4 `services` | the `agentctl` helper and its sudoers rule (atomic), workloads | none | root | yes |
-| S5 `remote` | `firewall` and `ssh` are one engine transaction under one dead-man arming (no exit 4 between its steps): firewall rules, then the SSH change and the release of the SSH install guard, then the proof. Proof depends on the change: with remote access selected, a new SSH session over the mesh VPN from the second device; otherwise a local console confirmation, with no timer. On a fresh install the mesh-VPN client is installed in S2 and enrolled at G1, and `mesh-vpn` runs before the group, so the proof path exists. `remote-desktop` and `vpn` follow, each waiting for the group's disarm; `next` returns `disarm` before any later root unit. Any other firewall-touching apply is refused while no proof is possible | `firewall` only checks the Application Firewall (pf is left alone); `ssh` limits SSH to named users under a launchd dead-man; `mesh-vpn` settings; `remote-desktop` is `skipped`, because Screen Sharing is enabled by hand-over at G1; the same connectivity proof | root | yes, under the timer |
+| S5 `remote` | `firewall` and `ssh` are one engine transaction under one dead-man arming (no exit 4 between its steps): firewall rules, then the SSH change and the release of the SSH install guard, then the proof. Proof depends on the change: with remote access selected, a new SSH session over the mesh VPN from the second device; otherwise a local console confirmation, with no timer. On a fresh install the mesh-VPN client is installed in S2 and enrolled at G1, and `mesh-vpn` runs before the group, so the proof path exists. `remote-desktop` and `vpn` follow, each waiting for the group's disarm; `next` returns `disarm` before any later root unit. Any other firewall-touching apply is refused while no proof is possible | `firewall` checks the Application Firewall, and changes it only for the `mdns` setting (stealth mode and incoming rules for Bonjour-advertising services, EPC-015 AC-11) under the same approval, recovery and dead-man rules; pf is left alone; `ssh` limits SSH to named users under a launchd dead-man; `mesh-vpn` settings; `remote-desktop` is `skipped`, because Screen Sharing is enabled by hand-over at G1; the same connectivity proof | root | yes, under the timer |
 | G2 `session` | agent desktop or console session; the conductor's CLI signed in there | same, plus privacy prompts; FileVault verified | human; agent-account probe | n/a |
 | S6 `agent` | shell, git identity, runtimes (mise tools), agent CLIs, agent settings, MCP, tunnel hook | same, plus workloads (OrbStack needs the agent's GUI session) | agent account | yes |
 | G3 `sign-ins` | provider sign-ins | same | human; agent-account probe | revoke by hand-over |
@@ -1194,6 +1194,11 @@ revert and restore-only have their own records and recovery (below, and the P1 c
 - **One hand-over object** for every gate, root step, revert and proposed
   change: `machine`, `account`, `step`, `command`, `why`, `verify`, `undo`,
   `probe`. The text form extends `AGENTS.md` section 6 with `Why` and `Undo`.
+- **Hand-over commands (from the pilot hosts, 2026-11-23).** A redirection
+  in a root hand-over runs inside the root shell
+  (`sudo bash -c '... > FILE'`), never after `sudo` in the person's shell.
+  The result goes to a file the supervising agent can read. A staged
+  checksum manifest never lists itself (EPC-023 AC-6).
 - **Switching to an admin account on Linux.** Ubuntu 26.04 ships `sudo-rs`,
   which needs a terminal to authenticate, and util-linux `su -c` runs its
   command without a controlling terminal. So `su - ADMIN -c "sudo ..."` fails
@@ -1532,7 +1537,13 @@ builds `registry/capabilities.toml` from it.
 | Agent sandboxes | Claude Code uses bubblewrap and leaves placeholders; agy Auto needs the AppArmor user-namespace profile | Claude Code uses Seatbelt with no placeholders; agy Auto works as installed | Linux placeholders and AppArmor restriction | the doctor reports only 0-byte read-only files at the exact placeholder names; removal on demand at a person's trigger, never automatic or scheduled, and only when no sandboxed process uses the folder (EPC-009 AC-8); AppArmor profile in the agy entry (EPC-011) |
 | Secrets | `secret-tool` and gnome-keyring | Keychain | agy over SSH uses a file store on both | sign in from the context the agents use; the doctor checks auth there |
 | Codex trust, agent modes, MCP | same per config home; agent-manager homes under `~/.config/orca` | same per config home; agent-manager homes under `~/Library/Application Support/orca` | none | none |
-| Upkeep | at triggers, no timers | at triggers, no timers | none | none |
+| Upkeep | at triggers, no timers; the vendor's own security-update schedule is the only scheduled item | at triggers, no timers; the vendor's own security-update schedule is the only scheduled item | none | none |
+| Audit and doctor logs | full report in `/var/log/agent-workstation-kit/<run-id>/`; summary and `--json` in the public export | full report in `/Library/Logs/agent-workstation-kit/<run-id>/`; summary and `--json` in the public export | none | none (EPC-022 AC-7) |
+| Remote-desktop recognition | NoMachine processes under its service | Screen Sharing or NoMachine | none | none (EPC-022 AC-8) |
+| Processes outside the agent-work ceiling | counted per session or scope, with a restart hint | QoS check per agent terminal | no slice on macOS | QoS check (EPC-022 AC-8) |
+| mDNS | `mdns` setting: UFW 5353/udp and avahi `allow-interfaces` on non-mesh LAN interfaces only, `publish-workstation=no` | mDNSResponder stays on; the setting changes Application Firewall stealth mode and Bonjour incoming rules | mDNSResponder cannot be turned off without breaking the system, and macOS cannot limit mDNS to chosen interfaces | `off`: stealth mode and blocked incoming connections for Bonjour-advertising services; `on-interfaces` behaves as `on` and `plan` states the gap (EPC-015 AC-11) |
+| Agent terminal shell | `agent-work-shell`, set in the agent manager by hand-over | the agent-work wrapper, set the same way | the agent manager has no settings CLI on either OS | hand-over, a doctor check, and a recorded request for a CLI (EPC-010 AC-11, EPC-022 AC-9) |
+| Long-uptime swap | swapped-out desktop processes reported with a reboot-window hint | no per-process swap figure | macOS reports no per-process swap | uptime with the memory-pressure history (EPC-022 AC-10) |
 
 Open on macOS, and where each stands:
 
@@ -1768,6 +1779,14 @@ What revert cannot undo, listed in every revert preview:
     the user-level agent mode, repositories untrusted in a Codex home,
     Claude Code sandbox placeholders, agent CLI auth checked from the
     context the agents use, and `secret-tool` on Linux;
+  - from learnings batch 3 (EPC-022 AC-7 to AC-10): the full report in
+    the root log folder with a summary and `--json` in the public export;
+    checks that follow the declared topology, remote-desktop service,
+    grants and firewall choices; on Linux, processes outside the ceiling
+    counted per session or scope, and on macOS the QoS check per agent
+    terminal; new agent terminals inside the ceiling; and long uptime with
+    swapped-out desktop processes on Linux, or with the memory-pressure
+    history on macOS;
   - the earlier doctor items.
 
   `--admin` runs the root-only checks from the staged root and writes their
@@ -1777,7 +1796,8 @@ What revert cannot undo, listed in every revert preview:
   settings are kept current at triggers only: kit setup and clone steps
   run the Codex trust sync, the doctor reports what has drifted, and the
   installed agent guidance names the triggers. No unit installs a timer
-  for this upkeep (EPC-009).
+  for this upkeep (EPC-009). The only scheduled items are the vendors' own,
+  such as security updates.
 
 ### 10a. Browser sign-in tunnel (first unit, after T1)
 
@@ -2051,6 +2071,10 @@ Settled:
    - S5 on macOS limits SSH to named users (`com.apple.access_ssh` and an
      `sshd_config.d` drop-in) and checks the Application Firewall, under the
      launchd dead-man;
+   - the firewall unit changes the Application Firewall only for the
+     `mdns` setting: stealth mode and incoming rules for
+     Bonjour-advertising services (EPC-015 AC-11), under the same approval,
+     recovery and dead-man rules (amended 2026-11-23);
    - pf is left alone.
 3. **macOS workloads** stay in S6. OrbStack is a per-user GUI app.
 4. **Already-managed hosts** get an `as-found` baseline, captured by the root
