@@ -56,7 +56,10 @@ func (p *HostnameProvider) bin() string {
 	return defaultScutilBin
 }
 
-func (p *HostnameProvider) runner() platform.CommandRunner {
+func (p *HostnameProvider) runner(ctx context.Context) platform.CommandRunner {
+	if r := platform.CommandRunnerFromContext(ctx); r != nil {
+		return r
+	}
 	if p.Runner != nil {
 		return p.Runner
 	}
@@ -108,7 +111,7 @@ func (p *HostnameProvider) readKey(ctx context.Context, key contract.StateKey) (
 	if err != nil {
 		return "", false, err
 	}
-	res, err := p.runner().Run(ctx, platform.ExecSpec{
+	res, err := p.runner(ctx).Run(ctx, platform.ExecSpec{
 		Argv: []string{p.bin(), scutilGetFlag, sk},
 		Env:  launchctlEnv(),
 	})
@@ -153,7 +156,7 @@ func (p *HostnameProvider) writeValue(ctx context.Context, key contract.StateKey
 	if err := validateDarwinHostnameValue(key, val, allowEmpty); err != nil {
 		return err
 	}
-	res, err := p.runner().Run(ctx, platform.ExecSpec{
+	res, err := p.runner(ctx).Run(ctx, platform.ExecSpec{
 		Argv: []string{p.bin(), scutilSetFlag, sk, val},
 		Env:  launchctlEnv(),
 	})

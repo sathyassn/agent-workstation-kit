@@ -60,7 +60,10 @@ func (p *HostnameProvider) bin() string {
 	return defaultHostnamectlBin
 }
 
-func (p *HostnameProvider) runner() platform.CommandRunner {
+func (p *HostnameProvider) runner(ctx context.Context) platform.CommandRunner {
+	if r := platform.CommandRunnerFromContext(ctx); r != nil {
+		return r
+	}
 	if p.Runner != nil {
 		return p.Runner
 	}
@@ -108,7 +111,7 @@ func (p *HostnameProvider) Read(ctx context.Context, key contract.StateKey) (con
 	if err != nil {
 		return contract.State{}, err
 	}
-	res, err := p.runner().Run(ctx, platform.ExecSpec{
+	res, err := p.runner(ctx).Run(ctx, platform.ExecSpec{
 		Argv: []string{p.bin(), flag},
 		Env:  hostnamectlEnv(),
 	})
@@ -138,7 +141,7 @@ func (p *HostnameProvider) writeValue(ctx context.Context, key contract.StateKey
 	if err := validateLinuxHostnameValue(key, val, allowEmpty); err != nil {
 		return err
 	}
-	res, err := p.runner().Run(ctx, platform.ExecSpec{
+	res, err := p.runner(ctx).Run(ctx, platform.ExecSpec{
 		Argv: []string{p.bin(), hostnamectlSetCmd, flag, val},
 		Env:  hostnamectlEnv(),
 	})

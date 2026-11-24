@@ -60,6 +60,28 @@ type CommandRunner interface {
 	Run(ctx context.Context, spec ExecSpec) (ExecResult, error)
 }
 
+type commandRunnerContextKey struct{}
+
+// WithCommandRunner returns a derived context carrying r so a StateProvider
+// invoked inside an engine transaction runs its OS commands inside the
+// engine's recorded containment rather than launching unsupervised children.
+func WithCommandRunner(ctx context.Context, r CommandRunner) context.Context {
+	if r == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, commandRunnerContextKey{}, r)
+}
+
+// CommandRunnerFromContext returns the CommandRunner attached by
+// WithCommandRunner, or nil when none is set.
+func CommandRunnerFromContext(ctx context.Context) CommandRunner {
+	if ctx == nil {
+		return nil
+	}
+	r, _ := ctx.Value(commandRunnerContextKey{}).(CommandRunner)
+	return r
+}
+
 // OSCommandRunner runs processes with os/exec.
 type OSCommandRunner struct{}
 
