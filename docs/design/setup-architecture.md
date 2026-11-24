@@ -359,7 +359,7 @@ This is a user decision (2026-11-21).
   - `validate` checks the schema and that company and machine files agree;
   - `host add|show|record|retire` manages machine records;
   - `check [--host]` is the doctor with fleet inputs;
-  - `privacy-lint` is the keyed identifier scan (section 12), generic;
+  - `privacy-lint` is the public-safety scan (section 12), generic, with the optional keyed list on for a private fleet;
   - `lock show|bump` shows and moves the kit pin, verified against the
     release checksum and signature;
   - `values get|set|explain` reads and writes company values with their
@@ -2039,19 +2039,39 @@ client hid this, because it routes everything.
   - the public-safety scan passes (hardened below);
   - the Go build and test jobs pass on Linux and macOS, and the frozen
     Python's jobs pass while it remains (from T1).
-- **Public-safety scan hardening** (its own security PR, with a
-  cross-lineage review; it does not depend on T1):
-  - personal names and private network names are matched by keyed HMAC, so
-    the rule file neither contains them nor lets them be guessed; the key
-    lives in an untracked local file and a CI secret;
-  - CI fails closed when the key is missing, and when the file listing fails
-    or is empty;
+- **Public-safety scan hardening** (its own security PRs, with a
+  cross-lineage review; it does not depend on T1). Re-scoped by operator
+  decision (2026-11-23, EPC-002): no hand-kept list of names.
+  - Deterministic detectors that need no list block in the pre-push check
+    and in CI: emails, phone numbers, IP and MAC addresses, real home paths,
+    private DNS names, cloud account and project IDs, chat and tracker user
+    IDs, and secrets; they need no secret and run in well under a second;
+  - the contributor's own identity (git identity, account and full name,
+    host and computer names, tailnet names) is read where the check runs,
+    never stored, and blocks; CI checks the commits' git identities;
+  - a person-name warning on changed prose runs locally only, warn-only and
+    time-boxed, and never in CI;
+  - the keyed HMAC list is an optional layer, off by default, for private
+    repositories such as the fleet;
+  - exemptions are tracked records (exact path, rule, a digest of the value
+    and never the value, reason, approver, expiry date), read from the base
+    revision only, invalid once expired, listed on every run without the
+    matched text, and changed only through a reviewed pull request with
+    code-owner review;
+  - every blocking layer fails closed: a failed or empty listing, a crashed
+    or skipped detector, a failed identity source, incomplete CI history or
+    exceeded caps is a failure, never a pass; in CI the base revision
+    supplies the scanner, detectors, mode configuration, exemptions, binary
+    exceptions and identity-check code, and judges the head as data only; a non-default mode is printed on
+    every run;
   - findings print only file, line and rule, never the matched text, so CI
     logs cannot leak what the scan exists to catch;
-  - the rule file and the scanner's own tests are scanned too, allowing only
-    listed synthetic values;
-  - obfuscations are caught: zero-padded octets, glued prefixes, and partial
-    private-range prefixes.
+  - the exemption records and the scanner's own tests are scanned too,
+    allowing only documented synthetic values;
+  - inputs are decoded and folded before detection (escapes, UTF-16, case,
+    confusable characters, zero-padded octets, glued and partial prefixes);
+    a file with NUL bytes is refused unless a hash-bound binary exception
+    names its content hash.
 - **Doc tests.** From T2 on, runbook command blocks run in preview mode
   against fixtures. Each block is marked `preview-tested` or `human-only`.
 - **Each PR's gate:** the engineering standard (`docs/standards/engineering.md`,
