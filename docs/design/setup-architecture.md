@@ -1387,9 +1387,11 @@ hours, while a guard that watched load and available memory stayed green.
   exists, measurement is informational, as TSK-034 ships it in the frozen
   script. Once the doctor has measured the non-agent p95 over time
   (`system.slice`, the desktop session and the agent manager's own app),
-  the fixed part becomes that p95 x 1.5, and the doctor reports a
-  mismatch between the reserve and that need. EPC-010 ports the TSK-034
-  formula to the Go unit.
+  the fixed part is max(role default, that p95 x 1.5) unless set
+  explicitly; the role default is the floor. The doctor reports a reserve
+  below the measured need (only an explicit value can cause it) and notes,
+  without flagging a fault, a reserve far above it. EPC-010 ports the
+  TSK-034 formula to the Go unit.
 - **One ceiling for all agent work, never on a person's desktop.** On Linux,
   the ceiling (`MemoryHigh` and `MemoryMax`, sized above) goes on a
   dedicated agent-work slice, per the topology table in section 2g: under
@@ -1429,7 +1431,9 @@ hours, while a guard that watched load and available memory stayed green.
     off by default (TSK-045).
   - Everything agents start stays inside the ceiling: the capped runner,
     rootless Docker and Podman, and leak-prone desktop helpers under their
-    own per-service ceilings (TSK-044); a login-shell hook and launchers
+    own per-service ceilings (TSK-044); a shell hook for login and
+    interactive non-login shells (a shell started with `--norc` is a stated
+    gap) and launchers
     put agent work in the cap whatever terminal or app starts it
     (`agent-placement`, TSK-046); the hook is on by default only for a
     dedicated agent account, and offered in `plan` in the single-account
@@ -1565,7 +1569,7 @@ builds `registry/capabilities.toml` from it.
 | Agent terminal shell | `agent-work-shell`, set in the agent manager by hand-over | the agent-work wrapper, set the same way | the agent manager has no settings CLI on either OS | hand-over, a doctor check, and a recorded request for a CLI (EPC-010 AC-11, EPC-022 AC-9) |
 | Desktop-service ceilings | user-unit drop-ins with MemoryHigh, MemoryMax, CPUQuota and `Restart=on-failure` | none | launchd agents cannot be memory-capped | the doctor's runaway report (EPC-010, EPC-022) |
 | Agent jobs and containers in the ceiling | runner `--slice=agent-work.slice`; `Slice=` drop-ins for rootless Docker and Podman | runner applies the agent QoS | Docker Desktop and OrbStack run their own VMs | their VM memory setting recorded as the cap by a guided step (TSK-044) |
-| Agent placement | login-shell hook into `agent-work.slice`; app launchers; scope move for running sessions | login-shell hook with `taskpolicy -c utility` and `nice 5`; launcher wrapper; `taskpolicy` and `renice` for running processes | no group memory ceiling on macOS | QoS and nice only (TSK-046) |
+| Agent placement | shell hook for login and interactive non-login shells into `agent-work.slice`; app launchers; scope move for running sessions | the same shell hook with `taskpolicy -c utility` and `nice 5`; launcher wrapper; `taskpolicy` and `renice` for running processes | no group memory ceiling on macOS; a shell started with `--norc` is not reached | QoS and nice only (TSK-046) |
 | Remote desktop | `physical` mode shares the console session; blanking without the fade effect and lock on disconnect | Screen Sharing and NoMachine share the physical session; curtain mode where available | Wayland blanking does not block local input | stated in `plan` (TSK-048) |
 | Keyring health | one gnome-keyring-daemon per user; login collection unlocked | login keychain unlocked and the default | a virtual remote desktop never unlocks the keyring | `physical` mode by default; the doctor reports it (TSK-047) |
 | Long-uptime swap | swapped-out desktop processes reported with a reboot-window hint | no per-process swap figure | macOS reports no per-process swap | uptime with the memory-pressure history (EPC-022 AC-10) |
@@ -1798,8 +1802,8 @@ What revert cannot undo, listed in every revert preview:
   - the OS end-of-support date, from 90 days ahead;
   - a missing or unmanaged shell baseline, and the interactive-only guard
     (section 7);
-  - tmpfs use and the resource reserve (section 7a), including a reserve
-    below the measured need or far above it;
+  - tmpfs use and the resource reserve (section 7a): a reserve below the
+    measured need, and a note when it is far above it;
   - from the pilot hosts (EPC-022): project-level settings that override
     the user-level agent mode, repositories untrusted in a Codex home,
     Claude Code sandbox placeholders, agent CLI auth checked from the
