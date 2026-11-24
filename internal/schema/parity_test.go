@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sathyassn/agent-workstation-kit/internal/cli"
 	"github.com/sathyassn/agent-workstation-kit/internal/schema"
 )
 
@@ -321,14 +322,24 @@ func TestPythonGoFleetValidatorParity(t *testing.T) {
 			t.Parallel()
 			dir := setupFleet(t, tc.mutate)
 			pyExit, pyOut := runPythonValidateFleet(t, repoRoot, dir)
-			goIssues, goErr := schema.ValidateFleetDir(dir, kitVersion)
+
+			// Exercise the Go CLI default path (no --expected-version flag),
+			// matching Python's default kit.lock version check.
+			var goOut, goErrBuf bytes.Buffer
+			cliErr := cli.Execute(context.Background(), []string{"config", "validate", "--fleet", dir}, cli.Options{
+				Stdin:   strings.NewReader(""),
+				Stdout:  &goOut,
+				Stderr:  &goErrBuf,
+				Getenv:  func(string) string { return "" },
+				Version: kitVersion,
+			})
 
 			pyAccepted := pyExit == 0
-			goAccepted := goErr == nil && len(goIssues) == 0
+			goAccepted := cliErr == nil
 
 			if pyAccepted != goAccepted || goAccepted != tc.wantAccept {
-				t.Fatalf("fleet parity mismatch (%s): wantAccept=%t pythonExit=%d (%q) goErr=%v goIssues=%v",
-					tc.name, tc.wantAccept, pyExit, pyOut, goErr, goIssues)
+				t.Fatalf("fleet parity mismatch (%s): wantAccept=%t pythonExit=%d (%q) goErr=%v goStderr=%q",
+					tc.name, tc.wantAccept, pyExit, pyOut, cliErr, goErrBuf.String())
 			}
 		})
 	}

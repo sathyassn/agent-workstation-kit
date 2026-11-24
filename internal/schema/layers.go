@@ -4,12 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
-	"os"
-	"path/filepath"
 	"reflect"
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/sathyassn/agent-workstation-kit/internal/engine"
 )
 
 // Layer identifies one configuration precedence layer in SPC-001 order:
@@ -180,9 +180,110 @@ func CheckSafetyFloor(layer Layer, rawKey string, val any) error {
 	return nil
 }
 
+// EnvOverride is one parsed value coming from a WSKIT_* environment variable.
+type EnvOverride struct {
+	Key    Key
+	Value  any
+	EnvVar string
+}
+
+// ResolveEnvLayer inspects getenv for safety-floor and schema WSKIT_*
+// environment variables, refusing safety-floor violations and invalid types
+// using the exact same rules as Resolve.
+func ResolveEnvLayer(getenv func(string) string) ([]EnvOverride, error) {
+	if getenv == nil {
+		return nil, nil
+	}
+	// Check non-configurable safety-floor env vars first so any attempt is
+	// refused regardless of value.
+	for _, sf := range SafetyFloorSpecs() {
+		if sf.HasRequiredValue {
+			continue
+		}
+		envName := EnvVarForKey(sf.Key)
+		if rawVal := getenv(envName); rawVal != "" {
+			if err := CheckSafetyFloor(LayerEnv, sf.Key.String(), rawVal); err != nil {
+				return nil, err
+			}
+		}
+	}
+	var out []EnvOverride
+	for _, fs := range FieldSpecs() {
+		envName := EnvVarForKey(fs.Key)
+		rawVal := getenv(envName)
+		if rawVal == "" {
+			continue
+		}
+		parsed, err := ParseValueForSpec(fs, rawVal)
+		if err != nil {
+			if sfErr := CheckSafetyFloor(LayerEnv, fs.Key.String(), rawVal); sfErr != nil {
+				return nil, sfErr
+			}
+			return nil, fmt.Errorf("env %s: %w", envName, err)
+		}
+		if err := CheckSafetyFloor(LayerEnv, fs.Key.String(), parsed); err != nil {
+			return nil, err
+		}
+		if err := ValidateValueType(fs, parsed); err != nil {
+			return nil, fmt.Errorf("env %s: %w", envName, err)
+		}
+		out = append(out, EnvOverride{Key: fs.Key, Value: parsed, EnvVar: envName})
+	}
+	return out, nil
+}
+
+// ValidateValueType verifies that val matches spec's declared schema type and
+// enum membership without coercing mismatched types.
+func ValidateValueType(spec FieldSpec, val any) error {
+	switch spec.Type {
+	case FieldString:
+		if _, ok := val.(string); !ok {
+			return fmt.Errorf("%w: %s must be a string", ErrInvalidValue, spec.Key)
+		}
+		return nil
+	case FieldEnum:
+		s, ok := val.(string)
+		if !ok {
+			return fmt.Errorf("%w: %s must be a string from %v", ErrInvalidValue, spec.Key, spec.EnumValues)
+		}
+		if !slices.Contains(spec.EnumValues, s) {
+			return fmt.Errorf("%w: %s must be one of %v, got %s", ErrInvalidValue, spec.Key, spec.EnumValues, redactRawForError(s))
+		}
+		return nil
+	case FieldBool:
+		if _, ok := val.(bool); !ok {
+			return fmt.Errorf("%w: %s must be a boolean", ErrInvalidValue, spec.Key)
+		}
+		return nil
+	case FieldInt:
+		if _, ok := val.(int64); !ok {
+			return fmt.Errorf("%w: %s must be an integer", ErrInvalidValue, spec.Key)
+		}
+		return nil
+	case FieldFloat:
+		if _, ok := asFiniteNumber(val); !ok {
+			return fmt.Errorf("%w: %s must be a finite number", ErrInvalidValue, spec.Key)
+		}
+		return nil
+	case FieldStringList:
+		if _, ok := asStringSlice(val); !ok {
+			return fmt.Errorf("%w: %s must be a list of strings", ErrInvalidValue, spec.Key)
+		}
+		return nil
+	case FieldStringMap:
+		if _, ok := asStringMap(val); !ok {
+			return fmt.Errorf("%w: %s must be a table of string values", ErrInvalidValue, spec.Key)
+		}
+		return nil
+	default:
+		return fmt.Errorf("%w: unsupported field type %q", ErrInvalidValue, spec.Type)
+	}
+}
+
 // Resolve merges all six configuration layers in precedence order
 // (kit-default -> fleet -> machine -> user -> env -> flag), refusing any
-// safety-floor violation in any layer before returning.
+// safety-floor violation, duplicate key or type mismatch in any layer before
+// returning.
 func Resolve(opts ResolveOptions) (*ResolvedConfig, error) {
 	specs := FieldSpecs()
 	specsByKey := make(map[Key]FieldSpec, len(specs))
@@ -195,6 +296,9 @@ func Resolve(opts ResolveOptions) (*ResolvedConfig, error) {
 		if fs.HasDefault {
 			if err := CheckSafetyFloor(LayerKitDefault, fs.Key.String(), fs.Default); err != nil {
 				return nil, err
+			}
+			if err := ValidateValueType(fs, fs.Default); err != nil {
+				return nil, fmt.Errorf("layer %s (%s): %w", LayerKitDefault, kitSourceLabel, err)
 			}
 			entry := LayerEntry{Layer: LayerKitDefault, Value: cloneValue(fs.Default), Source: kitSourceLabel}
 			values[fs.Key] = ResolvedValue{
@@ -216,6 +320,9 @@ func Resolve(opts ResolveOptions) (*ResolvedConfig, error) {
 		if !ok {
 			return fmt.Errorf("%w: %q in layer %s", ErrUnknownKey, rawKey, layer)
 		}
+		if err := ValidateValueType(spec, val); err != nil {
+			return fmt.Errorf("layer %s (%s): %w", layer, source, err)
+		}
 		rv := values[k]
 		rv.Key = k
 		rv.Value = cloneValue(val)
@@ -234,7 +341,10 @@ func Resolve(opts ResolveOptions) (*ResolvedConfig, error) {
 	// Optional kit-override map (primarily to test safety-floor enforcement at
 	// the lowest layer).
 	if len(opts.KitOverrides) > 0 {
-		flat := flattenTOMLMap(opts.KitOverrides)
+		flat, err := flattenTOMLMap(opts.KitOverrides)
+		if err != nil {
+			return nil, fmt.Errorf("layer %s (%s): %w", LayerKitDefault, kitSourceLabel, err)
+		}
 		for _, fk := range sortedFlatKeys(flat) {
 			if err := apply(LayerKitDefault, fk, flat[fk], kitSourceLabel); err != nil {
 				return nil, err
@@ -254,7 +364,10 @@ func Resolve(opts ResolveOptions) (*ResolvedConfig, error) {
 		if fl.src == nil || len(fl.src.Data) == 0 {
 			continue
 		}
-		flat := flattenTOMLMap(fl.src.Data)
+		flat, err := flattenTOMLMap(fl.src.Data)
+		if err != nil {
+			return nil, fmt.Errorf("layer %s (%s): %w", fl.layer, fl.src.Path, err)
+		}
 		for _, fk := range sortedFlatKeys(flat) {
 			if err := apply(fl.layer, fk, flat[fk], fl.src.Path); err != nil {
 				return nil, err
@@ -263,36 +376,13 @@ func Resolve(opts ResolveOptions) (*ResolvedConfig, error) {
 	}
 
 	// Environment layer.
-	if opts.Getenv != nil {
-		// Check non-configurable safety-floor env vars first so any attempt is
-		// refused regardless of value.
-		for _, sf := range SafetyFloorSpecs() {
-			if sf.HasRequiredValue {
-				continue
-			}
-			envName := EnvVarForKey(sf.Key)
-			if rawVal := opts.Getenv(envName); rawVal != "" {
-				if err := CheckSafetyFloor(LayerEnv, sf.Key.String(), rawVal); err != nil {
-					return nil, err
-				}
-			}
-		}
-		for _, fs := range specs {
-			envName := EnvVarForKey(fs.Key)
-			rawVal := opts.Getenv(envName)
-			if rawVal == "" {
-				continue
-			}
-			parsed, err := ParseValueForSpec(fs, rawVal)
-			if err != nil {
-				if sfErr := CheckSafetyFloor(LayerEnv, fs.Key.String(), rawVal); sfErr != nil {
-					return nil, sfErr
-				}
-				return nil, fmt.Errorf("env %s: %w", envName, err)
-			}
-			if err := apply(LayerEnv, fs.Key.String(), parsed, envName); err != nil {
-				return nil, err
-			}
+	envOverrides, err := ResolveEnvLayer(opts.Getenv)
+	if err != nil {
+		return nil, err
+	}
+	for _, ov := range envOverrides {
+		if err := apply(LayerEnv, ov.Key.String(), ov.Value, ov.EnvVar); err != nil {
+			return nil, err
 		}
 	}
 
@@ -362,6 +452,22 @@ func (r *ResolvedConfig) ToRawMap() map[string]any {
 	for _, k := range r.order {
 		rv, ok := r.values[k]
 		if !ok {
+			continue
+		}
+		SetValueInMap(doc, k, cloneValue(rv.Value))
+	}
+	return doc
+}
+
+// ToExplicitRawMap reconstructs a nested TOML-shaped map containing only keys
+// explicitly supplied by a non-default layer (fleet, machine, user, env or
+// flag), so kit defaults never mask missing required Schema 3 keys during
+// layered validation.
+func (r *ResolvedConfig) ToExplicitRawMap() map[string]any {
+	doc := make(map[string]any)
+	for _, k := range r.order {
+		rv, ok := r.values[k]
+		if !ok || rv.Layer == LayerKitDefault {
 			continue
 		}
 		SetValueInMap(doc, k, cloneValue(rv.Value))
@@ -458,7 +564,7 @@ func ParseValueForSpec(spec FieldSpec, raw string) (any, error) {
 		return raw, nil
 	case FieldEnum:
 		if !slices.Contains(spec.EnumValues, raw) {
-			return nil, fmt.Errorf("%w: %s must be one of %v, got %q", ErrInvalidValue, spec.Key, spec.EnumValues, raw)
+			return nil, fmt.Errorf("%w: %s must be one of %v, got %s", ErrInvalidValue, spec.Key, spec.EnumValues, redactRawForError(raw))
 		}
 		return raw, nil
 	case FieldBool:
@@ -468,17 +574,23 @@ func ParseValueForSpec(spec FieldSpec, raw string) (any, error) {
 		case boolFalseStr:
 			return false, nil
 		default:
-			return nil, fmt.Errorf("%w: %s must be %s or %s, got %q", ErrInvalidValue, spec.Key, boolTrueStr, boolFalseStr, raw)
+			return nil, fmt.Errorf("%w: %s must be %s or %s, got %s", ErrInvalidValue, spec.Key, boolTrueStr, boolFalseStr, redactRawForError(raw))
 		}
 	case FieldInt:
 		n, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
 		if err != nil {
+			if LooksLikeSecret(raw) {
+				return nil, fmt.Errorf("%w: %s must be an integer, got %s", ErrInvalidValue, spec.Key, RedactText)
+			}
 			return nil, fmt.Errorf("%w: %s must be an integer: %w", ErrInvalidValue, spec.Key, err)
 		}
 		return n, nil
 	case FieldFloat:
 		f, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
 		if err != nil {
+			if LooksLikeSecret(raw) {
+				return nil, fmt.Errorf("%w: %s must be a number, got %s", ErrInvalidValue, spec.Key, RedactText)
+			}
 			return nil, fmt.Errorf("%w: %s must be a number: %w", ErrInvalidValue, spec.Key, err)
 		}
 		return f, nil
@@ -516,7 +628,7 @@ func ParseValueForSpec(spec FieldSpec, raw string) (any, error) {
 		for _, pair := range strings.Split(trimmed, ",") {
 			k, v, ok := strings.Cut(pair, "=")
 			if !ok || strings.TrimSpace(k) == "" {
-				return nil, fmt.Errorf("%w: %s map entry %q must be key=value", ErrInvalidValue, spec.Key, pair)
+				return nil, fmt.Errorf("%w: %s map entry %s must be key=value", ErrInvalidValue, spec.Key, redactRawForError(pair))
 			}
 			m[strings.TrimSpace(k)] = strings.TrimSpace(v)
 		}
@@ -527,13 +639,18 @@ func ParseValueForSpec(spec FieldSpec, raw string) (any, error) {
 }
 
 // SetValueInMap inserts val at dotted key k inside doc, returning the previous
-// value (if any).
+// value (if any). If a legacy quoted dotted top-level key existed for k, it is
+// replaced by the canonical nested table entry so duplicates are never created.
 func SetValueInMap(doc map[string]any, k Key, val any) (any, bool) {
 	sec, name, hasSec := strings.Cut(k.String(), ".")
 	if !hasSec {
 		old, had := doc[k.String()]
 		doc[k.String()] = val
 		return old, had
+	}
+	quotedOld, hadQuoted := doc[k.String()]
+	if hadQuoted {
+		delete(doc, k.String())
 	}
 	tbl := asTable(doc[sec])
 	if tbl == nil {
@@ -542,68 +659,64 @@ func SetValueInMap(doc map[string]any, k Key, val any) (any, bool) {
 	}
 	old, had := tbl[name]
 	tbl[name] = val
+	if !had && hadQuoted {
+		return quotedOld, true
+	}
 	return old, had
 }
 
 // AtomicWriteFile writes data to path via a synced temporary file in the same
-// directory followed by an atomic rename.
+// directory followed by an atomic rename and parent-directory fsync. When path
+// already exists as a regular file, its owner, mode, extended attributes and
+// ACLs are preserved; symlinks and non-regular targets are refused.
 func AtomicWriteFile(path string, data []byte, perm fs.FileMode) error {
-	dir := filepath.Dir(path)
-	base := filepath.Base(path)
-	tmp, err := os.CreateTemp(dir, "."+base+".tmp-*")
-	if err != nil {
-		return fmt.Errorf("create temp for %s: %w", path, err)
-	}
-	tmpPath := tmp.Name()
-	cleanup := func() {
-		_ = os.Remove(tmpPath)
-	}
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		cleanup()
-		return fmt.Errorf("write temp for %s: %w", path, err)
-	}
-	if err := tmp.Chmod(perm); err != nil {
-		_ = tmp.Close()
-		cleanup()
-		return fmt.Errorf("chmod temp for %s: %w", path, err)
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		cleanup()
-		return fmt.Errorf("sync temp for %s: %w", path, err)
-	}
-	if err := tmp.Close(); err != nil {
-		cleanup()
-		return fmt.Errorf("close temp for %s: %w", path, err)
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		cleanup()
-		return fmt.Errorf("rename %s: %w", path, err)
+	if err := engine.ReplaceFilePreservingMetadata(path, data, perm); err != nil {
+		return fmt.Errorf("atomic write %s: %w", path, err)
 	}
 	return nil
 }
 
+// CheckNoDuplicateKeys verifies that doc does not define the same dotted key
+// in both quoted top-level form and nested table form.
+func CheckNoDuplicateKeys(doc map[string]any) error {
+	_, err := flattenTOMLMap(doc)
+	return err
+}
+
 // flattenTOMLMap flattens a decoded TOML document into dotted keys, keeping
-// string-map fields (like accounts.admin_assignments) as whole leaf values.
-func flattenTOMLMap(doc map[string]any) map[string]any {
+// string-map fields (like accounts.admin_assignments) as whole leaf values,
+// and refusing any duplicate between quoted dotted keys and nested tables.
+func flattenTOMLMap(doc map[string]any) (map[string]any, error) {
 	out := make(map[string]any)
-	for k, v := range doc {
+	topKeys := sortedFlatKeys(doc)
+	for _, k := range topKeys {
+		v := doc[k]
 		tbl := asTable(v)
 		if tbl == nil {
+			if _, exists := out[k]; exists {
+				return nil, fmt.Errorf("%w: duplicate key %q defined both as quoted dotted key and nested table", ErrInvalidValue, k)
+			}
 			out[k] = v
 			continue
 		}
 		if len(tbl) == 0 {
-			out[k] = v
+			if k == safetySectionName || !Section(k).Valid() {
+				if _, exists := out[k]; exists {
+					return nil, fmt.Errorf("%w: duplicate key %q defined both as quoted dotted key and nested table", ErrInvalidValue, k)
+				}
+				out[k] = v
+			}
 			continue
 		}
-		for subK, subV := range tbl {
+		for _, subK := range sortedFlatKeys(tbl) {
 			dotted := k + "." + subK
-			out[dotted] = subV
+			if _, exists := out[dotted]; exists {
+				return nil, fmt.Errorf("%w: duplicate key %q defined both as quoted dotted key and nested table", ErrInvalidValue, dotted)
+			}
+			out[dotted] = tbl[subK]
 		}
 	}
-	return out
+	return out, nil
 }
 
 func sortedFlatKeys(m map[string]any) []string {

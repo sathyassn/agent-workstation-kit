@@ -3,9 +3,13 @@ package schema_test
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/sathyassn/agent-workstation-kit/internal/schema"
 )
@@ -254,5 +258,176 @@ func TestDecodeProfileAndAtomicWrite(t *testing.T) {
 	entries, err := os.ReadDir(dir)
 	if err != nil || len(entries) != 1 {
 		t.Fatalf("unexpected temp files in %s: %v", dir, entries)
+	}
+}
+
+// TestResolveTypeChecksEveryLayerEvenWhenOverridden covers P2: invalid types
+// or enum values in any layer (fleet, machine, user) are refused at that layer
+// even when a higher layer overrides the same key with a valid value.
+func TestResolveTypeChecksEveryLayerEvenWhenOverridden(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		opts      schema.ResolveOptions
+		wantLayer schema.Layer
+	}{
+		{
+			name: "fleet string port overridden by machine and flag",
+			opts: schema.ResolveOptions{
+				Fleet:   &schema.LayerSource{Path: "fleet.toml", Data: map[string]any{"remote": map[string]any{"nomachine_port": "4000"}}},
+				Machine: &schema.LayerSource{Path: "machine.toml", Data: map[string]any{"remote": map[string]any{"nomachine_port": int64(4001)}}},
+				Flags:   []schema.FlagOverride{{Key: "remote.nomachine_port", RawValue: "4002"}},
+			},
+			wantLayer: schema.LayerFleet,
+		},
+		{
+			name: "machine bogus kvm enum overridden by user",
+			opts: schema.ResolveOptions{
+				Machine: &schema.LayerSource{Path: "machine.toml", Data: map[string]any{"remote": map[string]any{"kvm": "bogus"}}},
+				User:    &schema.LayerSource{Path: "user.toml", Data: map[string]any{"remote": map[string]any{"kvm": "installed"}}},
+			},
+			wantLayer: schema.LayerMachine,
+		},
+		{
+			name: "user wrong type bool overridden by flag",
+			opts: schema.ResolveOptions{
+				User:  &schema.LayerSource{Path: "user.toml", Data: map[string]any{"backup": map[string]any{"retention_days": "thirty"}}},
+				Flags: []schema.FlagOverride{{Key: "backup.retention_days", RawValue: "30"}},
+			},
+			wantLayer: schema.LayerUser,
+		},
+		{
+			name: "fleet wrong string list element type",
+			opts: schema.ResolveOptions{
+				Fleet: &schema.LayerSource{Path: "fleet.toml", Data: map[string]any{"accounts": map[string]any{"humans": []any{"alice", int64(42)}}}},
+			},
+			wantLayer: schema.LayerFleet,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := schema.Resolve(tc.opts)
+			if err == nil {
+				t.Fatalf("Resolve(%s) unexpectedly succeeded", tc.name)
+			}
+			if !errors.Is(err, schema.ErrInvalidValue) {
+				t.Fatalf("Resolve(%s) error = %v, want ErrInvalidValue", tc.name, err)
+			}
+			if !strings.Contains(err.Error(), tc.wantLayer.String()) {
+				t.Errorf("Resolve(%s) error = %q, want layer %q named", tc.name, err.Error(), tc.wantLayer)
+			}
+		})
+	}
+}
+
+// TestResolveRefusesDuplicateQuotedDottedAndNestedKeys covers P4: a file
+// defining the same key in both quoted dotted form and nested table form is
+// refused deterministically rather than resolved by map iteration order.
+func TestResolveRefusesDuplicateQuotedDottedAndNestedKeys(t *testing.T) {
+	t.Parallel()
+
+	raw, err := schema.LoadRawTOML([]byte("\"backup.retention_days\" = 10\n\n[backup]\nretention_days = 20\n"))
+	if err != nil {
+		t.Fatalf("LoadRawTOML: %v", err)
+	}
+	for i := range 10 {
+		_, err := schema.Resolve(schema.ResolveOptions{
+			User: &schema.LayerSource{Path: "user.toml", Data: raw},
+		})
+		if err == nil {
+			t.Fatalf("iteration %d: Resolve accepted duplicate quoted/nested backup.retention_days", i)
+		}
+		if !errors.Is(err, schema.ErrInvalidValue) {
+			t.Fatalf("iteration %d: Resolve error = %v, want ErrInvalidValue", i, err)
+		}
+		if !strings.Contains(err.Error(), "backup.retention_days") {
+			t.Errorf("iteration %d: error = %q, want key backup.retention_days named", i, err.Error())
+		}
+	}
+}
+
+// TestAtomicWriteFilePreservesMetadataAndRefusesSymlink covers P7: replacing an
+// existing config file preserves mode, extended attributes and ACLs, and
+// refuses symlink targets.
+func TestAtomicWriteFilePreservesMetadataAndRefusesSymlink(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(dst, []byte("[backup]\nretention_days = 30\n"), 0o640); err != nil { //nolint:gosec // testing 0640 mode preservation
+		t.Fatalf("write initial file: %v", err)
+	}
+	if err := os.Chmod(dst, 0o640); err != nil { //nolint:gosec // testing 0640 mode preservation
+		t.Fatalf("chmod initial file: %v", err)
+	}
+
+	const xattrName = "user.wskit_p7_test"
+	wantXattr := []byte("preserve-me")
+	xattrErr := unix.Setxattr(dst, xattrName, wantXattr, 0)
+	xattrSupported := xattrErr == nil
+	if xattrErr != nil && !errors.Is(xattrErr, unix.ENOTSUP) && !errors.Is(xattrErr, unix.EOPNOTSUPP) && !errors.Is(xattrErr, unix.ENOSYS) {
+		t.Fatalf("setxattr: %v", xattrErr)
+	}
+
+	aclSet := false
+	if runtime.GOOS == "darwin" {
+		if out, err := exec.Command("/bin/chmod", "+a", "everyone allow read", dst).CombinedOutput(); err == nil { //nolint:gosec // fixed /bin/chmod on test temp file
+			aclSet = true
+			t.Cleanup(func() { _ = exec.Command("/bin/chmod", "-N", dst).Run() }) //nolint:gosec // fixed /bin/chmod cleanup
+		} else {
+			t.Logf("skipping darwin ACL subcheck (chmod +a failed: %v: %s)", err, string(out))
+		}
+	}
+
+	if err := schema.AtomicWriteFile(dst, []byte("[backup]\nretention_days = 60\n"), 0o600); err != nil {
+		t.Fatalf("AtomicWriteFile replace: %v", err)
+	}
+
+	info, err := os.Stat(dst)
+	if err != nil {
+		t.Fatalf("stat replaced file: %v", err)
+	}
+	if info.Mode().Perm() != 0o640 {
+		t.Errorf("mode after replace = %04o, want 0640", info.Mode().Perm())
+	}
+
+	if xattrSupported {
+		buf := make([]byte, 64)
+		n, err := unix.Getxattr(dst, xattrName, buf)
+		if err != nil {
+			t.Errorf("xattr %s lost after AtomicWriteFile: %v", xattrName, err)
+		} else if string(buf[:n]) != string(wantXattr) {
+			t.Errorf("xattr %s = %q, want %q", xattrName, string(buf[:n]), string(wantXattr))
+		}
+	}
+
+	if aclSet {
+		out, err := exec.Command("/bin/ls", "-le", dst).CombinedOutput() //nolint:gosec // fixed /bin/ls on test temp file
+		if err != nil {
+			t.Fatalf("ls -le: %v: %s", err, string(out))
+		}
+		if !strings.Contains(string(out), "everyone allow read") {
+			t.Errorf("ACL lost after AtomicWriteFile; ls -le output:\n%s", string(out))
+		}
+	}
+
+	// Replacing a symlink target must be refused.
+	target := filepath.Join(dir, "real.toml")
+	link := filepath.Join(dir, "link.toml")
+	if err := os.WriteFile(target, []byte("original = true\n"), 0o600); err != nil {
+		t.Fatalf("write symlink target: %v", err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	if err := schema.AtomicWriteFile(link, []byte("overwritten = true\n"), 0o600); err == nil {
+		t.Fatal("AtomicWriteFile unexpectedly replaced a symlink target")
+	}
+	gotTarget, err := os.ReadFile(target) //nolint:gosec // temp file
+	if err != nil || string(gotTarget) != "original = true\n" {
+		t.Fatalf("symlink target modified: err=%v content=%q", err, string(gotTarget))
 	}
 }

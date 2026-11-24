@@ -234,15 +234,22 @@ func checkFleetRootMetadata(fleetRoot, expectedVersion string, hostnames []strin
 
 	lockPath := filepath.Join(fleetRoot, kitLockFileName)
 	lockBytes, err := os.ReadFile(lockPath) //nolint:gosec // caller-supplied fleet root
-	if err != nil {
+	wantVer := strings.TrimSpace(expectedVersion)
+	switch {
+	case err != nil:
 		issues = append(issues, Issue{
 			Path:    kitLockFileName,
 			Message: "private fleet must pin the toolkit version",
 		})
-	} else if expectedVersion != "" && strings.TrimSpace(string(lockBytes)) != strings.TrimSpace(expectedVersion) {
+	case wantVer == "":
 		issues = append(issues, Issue{
 			Path:    kitLockFileName,
-			Message: fmt.Sprintf("expected %s", strings.TrimSpace(expectedVersion)),
+			Message: "expected toolkit version must be specified",
+		})
+	case strings.TrimSpace(string(lockBytes)) != wantVer:
+		issues = append(issues, Issue{
+			Path:    kitLockFileName,
+			Message: fmt.Sprintf("expected %s", wantVer),
 		})
 	}
 

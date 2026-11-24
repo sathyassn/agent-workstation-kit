@@ -31,6 +31,56 @@ const (
 
 	msgUnsupportedSelection = "unsupported selection"
 	msgHostnameNoURL        = "must be a hostname without a URL scheme/path"
+	msgSecretRejected       = "must not contain a credential or secret"
+	msgUnknownKey           = "unknown key"
+	msgApprovedPkgList      = "must be a list of approved package names (no options, URLs or third-party taps)"
+	msgDuplicatePkg         = "duplicate package selections"
+	msgMiseVersion          = "select an explicit reviewed version with its binary digest"
+	msgMiseSHA256           = "requires the independently reviewed official platform binary SHA-256"
+	msgMacOSNoMisePin       = "macOS baseline uses Homebrew mise; do not select a second installation method"
+	msgMacOSProvisioning    = "requires macOS and local or managed selection"
+	msgNamespace            = "must be 2-8 lowercase letters/digits"
+	msgMatchProfile         = "must match profile"
+	msgHostnameFormat       = "must be <namespace>-<class>-<NNN>, for example acme-ws-001"
+	msgHostnameNamespace    = "namespace prefix must match deployment.namespace"
+	msgDisplayName          = "must be 1-64 trimmed ASCII letters, digits, single spaces, dots, underscores, or hyphens and start with a letter or digit"
+	msgUUID4                = "must be a canonical UUIDv4 generated once per machine"
+	msgPlainValue           = "must be a canonical, trimmed printable value and cannot start with '-'"
+	msgMacOSHostClass       = "macOS hosts must use the mac class"
+	msgLinuxHostClass       = "Linux hosts cannot use the mac class"
+	msgUnixAccount          = "must be a valid Unix account name"
+	msgAgentName            = "must use agent-NN, for example agent-01"
+	msgStringArray          = "must be an array of strings"
+	msgDuplicateNames       = "contains duplicate names"
+	msgAtLeastOneHuman      = "must contain at least one named human"
+	msgAdminName            = "every administrator must use admin-NN"
+	msgServiceName          = "every service account must use svc-purpose"
+	msgSSHAdminRequired     = "must include at least one declared administrator for recovery"
+	msgAdminAssignments     = "must map each admin account to one named human"
+	msgDistinctAdminOwner   = "each admin must be assigned to a different human"
+	msgPortRange            = "must be an integer from 1 through 65535"
+	msgInventoryChoice      = "must be a non-empty inventory choice"
+	msgTailscaleTags        = "must contain at least one tag:* string"
+	msgAgentsRequired       = "Codex, Claude Code, and Grok Build are required"
+	msgAntidoteRef          = "must be ask or a reviewed release ref"
+	msgSCMIdentityRequired  = "at least one source-control identity is required"
+	msgPrincipalNone        = "must be none when the provider identity is none"
+	msgPrincipalValid       = "must be an approved non-secret principal label, not none or a URL"
+	msgAtlassianSvcAuth     = "a service account must use service-account-api-key"
+	msgAtlassianHumanAuth   = "a named human must use oauth-2.1"
+	msgAtlassianUnused      = "an unused Atlassian integration must set principal and MCP auth to none"
+	msgAtlassianPrincipal   = "must be a 6-30 character alphanumeric service-account name or, for named-human, an approved label/email address"
+	msgAtlassianSiteNone    = "must be none when Atlassian is unused"
+	msgAtlassianSiteReq     = "an enabled Atlassian identity requires a site hostname"
+	msgBaselineTrue         = "must be true for this baseline"
+	msgReserveFixedRange    = "must be a positive number below 1000000"
+	msgReserveFixedConflict = "cannot be combined with resources.os_memory_reserve_percent"
+	msgPositiveInt          = "must be a positive integer"
+	msgNonEmptyString       = "must be a non-empty string"
+	msgIANATimezone         = "must be a recognised IANA timezone"
+
+	// RedactText replaces secret-like or rejected principal values in output.
+	RedactText = "[REDACTED]"
 
 	maxPlainValueLen = 128
 	maxEmailLen      = 254
@@ -252,7 +302,7 @@ func validateStructure(
 		}
 		slices.Sort(unknown)
 		for _, k := range unknown {
-			issues = append(issues, Issue{Path: secName + "." + k, Message: "unknown key"})
+			issues = append(issues, Issue{Path: secName + "." + k, Message: msgUnknownKey})
 		}
 
 		var missing []string
@@ -292,10 +342,10 @@ func validateToolingOptional(tooling, machine map[string]any) []Issue {
 		if !ok || !allMatch(items, r.re) {
 			issues = append(issues, Issue{
 				Path:    r.key.String(),
-				Message: "must be a list of approved package names (no options, URLs or third-party taps)",
+				Message: msgApprovedPkgList,
 			})
 		} else if hasDuplicates(items) {
-			issues = append(issues, Issue{Path: r.key.String(), Message: "duplicate package selections"})
+			issues = append(issues, Issue{Path: r.key.String(), Message: msgDuplicatePkg})
 		} else if len(items) > 0 && platformVal != r.platform.String() {
 			issues = append(issues, Issue{
 				Path:    r.key.String(),
@@ -311,20 +361,20 @@ func validateToolingOptional(tooling, machine map[string]any) []Issue {
 		if !verOK || !miseVersionRe.MatchString(ver) {
 			issues = append(issues, Issue{
 				Path:    KeyToolingMiseVersion.String(),
-				Message: "select an explicit reviewed version with its binary digest",
+				Message: msgMiseVersion,
 			})
 		}
 		sha, shaOK := tooling[fieldName(KeyToolingMiseSHA256)].(string)
 		if !shaOK || !miseSHA256Re.MatchString(sha) {
 			issues = append(issues, Issue{
 				Path:    KeyToolingMiseSHA256.String(),
-				Message: "requires the independently reviewed official platform binary SHA-256",
+				Message: msgMiseSHA256,
 			})
 		}
 		if platformVal == PlatformMacOS.String() {
 			issues = append(issues, Issue{
 				Path:    KeyToolingMiseVersion.String(),
-				Message: "macOS baseline uses Homebrew mise; do not select a second installation method",
+				Message: msgMacOSNoMisePin,
 			})
 		}
 	}
@@ -341,7 +391,7 @@ func validateMacOSProvisioning(accounts, machine map[string]any) []Issue {
 	if platformVal != PlatformMacOS.String() || !ok || !MacOSProvisioning(val).Valid() {
 		return []Issue{{
 			Path:    KeyAccountsMacOSProvisioning.String(),
-			Message: "requires macOS and local or managed selection",
+			Message: msgMacOSProvisioning,
 		}}
 	}
 	return nil
@@ -353,11 +403,11 @@ func validateDeployment(deployment map[string]any, profileKind string) []Issue {
 	if !ok || !namespaceRe.MatchString(ns) {
 		issues = append(issues, Issue{
 			Path:    KeyDeploymentNamespace.String(),
-			Message: "must be 2-8 lowercase letters/digits",
+			Message: msgNamespace,
 		})
 	}
 	if ctx, ok := deployment[fieldName(KeyDeploymentContext)].(string); !ok || ctx != profileKind {
-		issues = append(issues, Issue{Path: KeyDeploymentContext.String(), Message: "must match profile"})
+		issues = append(issues, Issue{Path: KeyDeploymentContext.String(), Message: msgMatchProfile})
 	}
 	own, ownOK := deployment[fieldName(KeyDeploymentOwnership)].(string)
 	if !ownOK || !Ownership(own).Valid() {
@@ -387,32 +437,32 @@ func validateMachine(machine, deployment map[string]any) []Issue {
 	if hostMatch == nil {
 		issues = append(issues, Issue{
 			Path:    KeyMachineHostname.String(),
-			Message: "must be <namespace>-<class>-<NNN>, for example acme-ws-001",
+			Message: msgHostnameFormat,
 		})
 	} else if !nsOK || hostMatch[1] != ns {
 		issues = append(issues, Issue{
 			Path:    KeyMachineHostname.String(),
-			Message: "namespace prefix must match deployment.namespace",
+			Message: msgHostnameNamespace,
 		})
 	}
 
 	if !validDisplayName(machine[fieldName(KeyMachineDisplayName)]) {
 		issues = append(issues, Issue{
 			Path:    KeyMachineDisplayName.String(),
-			Message: "must be 1-64 trimmed ASCII letters, digits, single spaces, dots, underscores, or hyphens and start with a letter or digit",
+			Message: msgDisplayName,
 		})
 	}
 	if !validUUID4(machine[fieldName(KeyMachineUUID)]) {
 		issues = append(issues, Issue{
 			Path:    KeyMachineUUID.String(),
-			Message: "must be a canonical UUIDv4 generated once per machine",
+			Message: msgUUID4,
 		})
 	}
 	for _, key := range []Key{KeyMachineAssetTag, KeyMachineHardwareProfile, KeyMachineRole} {
 		if !validPlainValue(machine[fieldName(key)], maxPlainValueLen) {
 			issues = append(issues, Issue{
 				Path:    key.String(),
-				Message: "must be a canonical, trimmed printable value and cannot start with '-'",
+				Message: msgPlainValue,
 			})
 		}
 	}
@@ -441,13 +491,13 @@ func validateMachine(machine, deployment map[string]any) []Issue {
 		if plat == PlatformMacOS.String() && hostMatch[2] != classMac {
 			issues = append(issues, Issue{
 				Path:    KeyMachineHostname.String(),
-				Message: "macOS hosts must use the mac class",
+				Message: msgMacOSHostClass,
 			})
 		}
 		if plat == PlatformLinux.String() && hostMatch[2] == classMac {
 			issues = append(issues, Issue{
 				Path:    KeyMachineHostname.String(),
-				Message: "Linux hosts cannot use the mac class",
+				Message: msgLinuxHostClass,
 			})
 		}
 	}
@@ -459,9 +509,9 @@ func validateAccounts(accounts map[string]any) ([]Issue, map[string]bool) {
 
 	agent, agentOK := accounts[fieldName(KeyAccountsAgent)].(string)
 	if !agentOK || !unixNameRe.MatchString(agent) {
-		issues = append(issues, Issue{Path: KeyAccountsAgent.String(), Message: "must be a valid Unix account name"})
+		issues = append(issues, Issue{Path: KeyAccountsAgent.String(), Message: msgUnixAccount})
 	} else if !agentNameRe.MatchString(agent) {
-		issues = append(issues, Issue{Path: KeyAccountsAgent.String(), Message: "must use agent-NN, for example agent-01"})
+		issues = append(issues, Issue{Path: KeyAccountsAgent.String(), Message: msgAgentName})
 	}
 
 	lists := make(map[Key][]string, 6)
@@ -471,12 +521,12 @@ func validateAccounts(accounts map[string]any) ([]Issue, map[string]bool) {
 	} {
 		vals, ok := asStringSlice(accounts[fieldName(key)])
 		if !ok {
-			issues = append(issues, Issue{Path: key.String(), Message: "must be an array of strings"})
+			issues = append(issues, Issue{Path: key.String(), Message: msgStringArray})
 			continue
 		}
 		lists[key] = vals
 		if hasDuplicates(vals) {
-			issues = append(issues, Issue{Path: key.String(), Message: "contains duplicate names"})
+			issues = append(issues, Issue{Path: key.String(), Message: msgDuplicateNames})
 		}
 		for _, v := range vals {
 			if !unixNameRe.MatchString(v) {
@@ -491,17 +541,17 @@ func validateAccounts(accounts map[string]any) ([]Issue, map[string]bool) {
 	humansAndAdmins := unionSets(humans, admins)
 
 	if len(humans) == 0 {
-		issues = append(issues, Issue{Path: KeyAccountsHumans.String(), Message: "must contain at least one named human"})
+		issues = append(issues, Issue{Path: KeyAccountsHumans.String(), Message: msgAtLeastOneHuman})
 	}
 	for a := range admins {
 		if !adminNameRe.MatchString(a) {
-			issues = append(issues, Issue{Path: KeyAccountsAdmins.String(), Message: "every administrator must use admin-NN"})
+			issues = append(issues, Issue{Path: KeyAccountsAdmins.String(), Message: msgAdminName})
 			break
 		}
 	}
 	for _, s := range lists[KeyAccountsServices] {
 		if !strings.HasPrefix(s, prefixSvc) {
-			issues = append(issues, Issue{Path: KeyAccountsServices.String(), Message: "every service account must use svc-purpose"})
+			issues = append(issues, Issue{Path: KeyAccountsServices.String(), Message: msgServiceName})
 			break
 		}
 	}
@@ -529,7 +579,7 @@ func validateAccounts(accounts map[string]any) ([]Issue, map[string]bool) {
 	if len(lists[KeyAccountsSSHUsers]) == 0 || len(intersectSets(sshUsers, admins)) == 0 {
 		issues = append(issues, Issue{
 			Path:    KeyAccountsSSHUsers.String(),
-			Message: "must include at least one declared administrator for recovery",
+			Message: msgSSHAdminRequired,
 		})
 	}
 	if overlap := intersectSets(humans, admins); len(overlap) > 0 {
@@ -549,7 +599,7 @@ func validateAccounts(accounts map[string]any) ([]Issue, map[string]bool) {
 	if !assignOK {
 		issues = append(issues, Issue{
 			Path:    KeyAccountsAdminAssignments.String(),
-			Message: "must map each admin account to one named human",
+			Message: msgAdminAssignments,
 		})
 	} else {
 		assignKeys := make(map[string]bool, len(assignMap))
@@ -573,7 +623,7 @@ func validateAccounts(accounts map[string]any) ([]Issue, map[string]bool) {
 		if hasDuplicates(owners) {
 			issues = append(issues, Issue{
 				Path:    KeyAccountsAdminAssignments.String(),
-				Message: "each admin must be assigned to a different human",
+				Message: msgDistinctAdminOwner,
 			})
 		}
 	}
@@ -586,7 +636,7 @@ func validateRemote(remote map[string]any) []Issue {
 	if port, ok := remote[fieldName(KeyRemoteNomachinePort)].(int64); !ok || port < minPort || port > maxPort {
 		issues = append(issues, Issue{
 			Path:    KeyRemoteNomachinePort.String(),
-			Message: "must be an integer from 1 through 65535",
+			Message: msgPortRange,
 		})
 	}
 	if s, ok := remote[fieldName(KeyRemoteDesktopLockMode)].(string); !ok || !DesktopLockMode(s).Valid() {
@@ -603,7 +653,7 @@ func validateRemote(remote map[string]any) []Issue {
 	}
 	for _, key := range []Key{KeyRemotePreferredKVM, KeyRemoteFallbackKVM, KeyRemoteTailscaleTailnet} {
 		if s, ok := remote[fieldName(key)].(string); !ok || strings.TrimSpace(s) == "" {
-			issues = append(issues, Issue{Path: key.String(), Message: "must be a non-empty inventory choice"})
+			issues = append(issues, Issue{Path: key.String(), Message: msgInventoryChoice})
 		}
 	}
 	tags, tagsOK := asStringSlice(remote[fieldName(KeyRemoteTailscaleTags)])
@@ -617,7 +667,7 @@ func validateRemote(remote map[string]any) []Issue {
 	if !tagsValid {
 		issues = append(issues, Issue{
 			Path:    KeyRemoteTailscaleTags.String(),
-			Message: "must contain at least one tag:* string",
+			Message: msgTailscaleTags,
 		})
 	}
 	return issues
@@ -628,7 +678,7 @@ func validateToolingCore(tooling map[string]any) []Issue {
 	if install, ok := tooling[fieldName(KeyToolingInstallAgents)].(bool); !ok || !install {
 		issues = append(issues, Issue{
 			Path:    KeyToolingInstallAgents.String(),
-			Message: "Codex, Claude Code, and Grok Build are required",
+			Message: msgAgentsRequired,
 		})
 	}
 	if s, ok := tooling[fieldName(KeyToolingGWS)].(string); !ok || !GWSMode(s).Valid() {
@@ -641,7 +691,7 @@ func validateToolingCore(tooling map[string]any) []Issue {
 	if !refOK || (ref != valueAsk && (strings.HasPrefix(ref, doubleDash) || !releaseRefRe.MatchString(ref))) {
 		issues = append(issues, Issue{
 			Path:    KeyToolingAntidoteRef.String(),
-			Message: "must be ask or a reviewed release ref",
+			Message: msgAntidoteRef,
 		})
 	}
 	return issues
@@ -667,7 +717,7 @@ func validateSourceControl(scm map[string]any) []Issue {
 	if glOK && ghOK && glID == valueNone && ghID == valueNone {
 		issues = append(issues, Issue{
 			Path:    SectionSourceControl.String(),
-			Message: "at least one source-control identity is required",
+			Message: msgSCMIdentityRequired,
 		})
 	}
 	for _, key := range []Key{KeySourceControlGitLabHost, KeySourceControlGitHubHost} {
@@ -689,13 +739,13 @@ func validateSourceControl(scm map[string]any) []Issue {
 		if idIsStr && idVal == valueNone && (!principalIsStr || principalStr != valueNone) {
 			issues = append(issues, Issue{
 				Path:    provider.principalKey.String(),
-				Message: "must be none when the provider identity is none",
+				Message: msgPrincipalNone,
 			})
 		}
 		if (!idIsStr || idVal != valueNone) && ((principalIsStr && principalStr == valueNone) || !validPrincipal(principalRaw)) {
 			issues = append(issues, Issue{
 				Path:    provider.principalKey.String(),
-				Message: "must be an approved non-secret principal label, not none or a URL",
+				Message: msgPrincipalValid,
 			})
 		}
 	}
@@ -734,13 +784,13 @@ func validateCollaboration(collab map[string]any, profileKind string, humans map
 	if atlIDOK && atlID == AtlassianIdentityServiceAccount.String() && (!mcpAuthOK || mcpAuth != AtlassianMCPAuthServiceAccountAPIKey.String()) {
 		issues = append(issues, Issue{
 			Path:    KeyCollaborationAtlassianMCPAuth.String(),
-			Message: "a service account must use service-account-api-key",
+			Message: msgAtlassianSvcAuth,
 		})
 	}
 	if atlIDOK && atlID == AtlassianIdentityNamedHuman.String() && (!mcpAuthOK || mcpAuth != AtlassianMCPAuthOAuth21.String()) {
 		issues = append(issues, Issue{
 			Path:    KeyCollaborationAtlassianMCPAuth.String(),
-			Message: "a named human must use oauth-2.1",
+			Message: msgAtlassianHumanAuth,
 		})
 	}
 
@@ -749,7 +799,7 @@ func validateCollaboration(collab map[string]any, profileKind string, humans map
 	if atlIDOK && atlID == valueNone && (!principalIsStr || principalStr != valueNone || !mcpAuthOK || mcpAuth != valueNone) {
 		issues = append(issues, Issue{
 			Path:    SectionCollaboration.String(),
-			Message: "an unused Atlassian integration must set principal and MCP auth to none",
+			Message: msgAtlassianUnused,
 		})
 	}
 
@@ -765,7 +815,7 @@ func validateCollaboration(collab map[string]any, profileKind string, humans map
 	if (!atlIDOK || (atlID != valueAsk && atlID != valueNone)) && ((principalIsStr && principalStr == valueNone) || !principalOK) {
 		issues = append(issues, Issue{
 			Path:    KeyCollaborationAtlassianPrincipal.String(),
-			Message: "must be a 6-30 character alphanumeric service-account name or, for named-human, an approved label/email address",
+			Message: msgAtlassianPrincipal,
 		})
 	}
 
@@ -777,13 +827,13 @@ func validateCollaboration(collab map[string]any, profileKind string, humans map
 	if atlIDOK && atlID == valueNone && (!siteIsStr || siteStr != valueNone) {
 		issues = append(issues, Issue{
 			Path:    KeyCollaborationAtlassianSite.String(),
-			Message: "must be none when Atlassian is unused",
+			Message: msgAtlassianSiteNone,
 		})
 	}
 	if (!atlIDOK || (atlID != valueAsk && atlID != valueNone)) && siteIsStr && (siteStr == valueAsk || siteStr == valueNone) {
 		issues = append(issues, Issue{
 			Path:    KeyCollaborationAtlassianSite.String(),
-			Message: "an enabled Atlassian identity requires a site hostname",
+			Message: msgAtlassianSiteReq,
 		})
 	}
 	return issues
@@ -816,7 +866,7 @@ func validateSecurity(security map[string]any) []Issue {
 	var issues []Issue
 	for _, key := range []Key{KeySecurityDiskEncryptionRequired, KeySecuritySecureBootRequired} {
 		if b, ok := security[fieldName(key)].(bool); !ok || !b {
-			issues = append(issues, Issue{Path: key.String(), Message: "must be true for this baseline"})
+			issues = append(issues, Issue{Path: key.String(), Message: msgBaselineTrue})
 		}
 	}
 	if s, ok := security[fieldName(KeySecurityRemoteScope)].(string); !ok || s != RemoteScopeTailscaleOnly.String() {
@@ -858,13 +908,13 @@ func validateResources(resources map[string]any) []Issue {
 		if !ok || num <= 0 || num >= maxReserveFixed {
 			issues = append(issues, Issue{
 				Path:    KeyResourcesReserveFixedGiB.String(),
-				Message: "must be a positive number below 1000000",
+				Message: msgReserveFixedRange,
 			})
 		}
 		if _, hasPct := resources[fieldName(KeyResourcesOSMemoryReservePercent)]; hasPct {
 			issues = append(issues, Issue{
 				Path:    KeyResourcesReserveFixedGiB.String(),
-				Message: "cannot be combined with resources.os_memory_reserve_percent",
+				Message: msgReserveFixedConflict,
 			})
 		}
 	}
@@ -890,7 +940,7 @@ func validateResources(resources map[string]any) []Issue {
 func validateBackupAndMaintenance(backup, maintenance map[string]any) []Issue {
 	var issues []Issue
 	if days, ok := backup[fieldName(KeyBackupRetentionDays)].(int64); !ok || days < 1 {
-		issues = append(issues, Issue{Path: KeyBackupRetentionDays.String(), Message: "must be a positive integer"})
+		issues = append(issues, Issue{Path: KeyBackupRetentionDays.String(), Message: msgPositiveInt})
 	}
 	for _, item := range []struct {
 		key   Key
@@ -902,14 +952,14 @@ func validateBackupAndMaintenance(backup, maintenance map[string]any) []Issue {
 		{key: KeyBackupTarget, table: backup},
 	} {
 		if s, ok := item.table[fieldName(item.key)].(string); !ok || strings.TrimSpace(s) == "" {
-			issues = append(issues, Issue{Path: item.key.String(), Message: "must be a non-empty string"})
+			issues = append(issues, Issue{Path: item.key.String(), Message: msgNonEmptyString})
 		}
 	}
 	if tz, ok := maintenance[fieldName(KeyMaintenanceTimezone)].(string); ok && strings.TrimSpace(tz) != "" {
 		if !validIANATimezone(tz) {
 			issues = append(issues, Issue{
 				Path:    KeyMaintenanceTimezone.String(),
-				Message: "must be a recognised IANA timezone",
+				Message: msgIANATimezone,
 			})
 		}
 	}
@@ -973,7 +1023,7 @@ func validPlainValue(raw any, maxLen int) bool {
 }
 
 func looksLikeCredential(value string) bool {
-	lowered := cases.Fold().String(value)
+	lowered := cases.Fold().String(strings.TrimSpace(value))
 	for _, prefix := range []string{
 		"ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_",
 		"glpat-", "glptt-", "glcbt-", "gldt-", "glrt-", "atatt",
@@ -984,6 +1034,548 @@ func looksLikeCredential(value string) bool {
 		}
 	}
 	return false
+}
+
+// LooksLikeSecret reports whether value carries a recognised credential or
+// token prefix/header that must never be stored in config or echoed back.
+func LooksLikeSecret(value string) bool {
+	if looksLikeCredential(value) {
+		return true
+	}
+	lowered := cases.Fold().String(strings.TrimSpace(value))
+	for _, prefix := range []string{
+		"xoxb-", "xoxp-", "xoxa-", "xoxr-", "tskey-",
+		"akia", "asia", "aiza", "npm_", "pypi-",
+		"bearer ", "-----begin ",
+	} {
+		if strings.HasPrefix(lowered, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsPrincipalKey reports whether k holds a provider principal label whose
+// invalid values must be redacted instead of echoed.
+func IsPrincipalKey(k Key) bool {
+	switch k {
+	case KeySourceControlGitLabPrincipal, KeySourceControlGitHubPrincipal, KeyCollaborationAtlassianPrincipal:
+		return true
+	default:
+		return false
+	}
+}
+
+func containsSecretValue(val any) bool {
+	switch x := val.(type) {
+	case string:
+		return LooksLikeSecret(x)
+	case []string:
+		for _, item := range x {
+			if LooksLikeSecret(item) {
+				return true
+			}
+		}
+	case []any:
+		for _, item := range x {
+			if s, ok := item.(string); ok && LooksLikeSecret(s) {
+				return true
+			}
+		}
+	case map[string]string:
+		for _, v := range x {
+			if LooksLikeSecret(v) {
+				return true
+			}
+		}
+	case map[string]any:
+		for _, raw := range x {
+			if s, ok := raw.(string); ok && LooksLikeSecret(s) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isInvalidPrincipalString(k Key, s string) bool {
+	if !IsPrincipalKey(k) || s == valueNone || s == valueAsk {
+		return false
+	}
+	if k == KeyCollaborationAtlassianPrincipal {
+		return !validNamedHumanPrincipal(s)
+	}
+	return !validPrincipal(s)
+}
+
+// RedactValue replaces any secret-like string or invalid principal value with
+// RedactText so credentials are never echoed in previews, JSON or errors.
+func RedactValue(k Key, val any) any {
+	switch x := val.(type) {
+	case string:
+		if LooksLikeSecret(x) || isInvalidPrincipalString(k, x) {
+			return RedactText
+		}
+		return x
+	case []string:
+		out := slices.Clone(x)
+		for i, item := range out {
+			if LooksLikeSecret(item) {
+				out[i] = RedactText
+			}
+		}
+		return out
+	case []any:
+		out := slices.Clone(x)
+		for i, item := range out {
+			if s, ok := item.(string); ok && LooksLikeSecret(s) {
+				out[i] = RedactText
+			}
+		}
+		return out
+	case map[string]string:
+		out := make(map[string]string, len(x))
+		for mk, mv := range x {
+			if LooksLikeSecret(mv) {
+				out[mk] = RedactText
+			} else {
+				out[mk] = mv
+			}
+		}
+		return out
+	case map[string]any:
+		out := make(map[string]any, len(x))
+		for mk, mv := range x {
+			if s, ok := mv.(string); ok && LooksLikeSecret(s) {
+				out[mk] = RedactText
+			} else {
+				out[mk] = mv
+			}
+		}
+		return out
+	default:
+		return val
+	}
+}
+
+func redactRawForError(raw string) string {
+	if LooksLikeSecret(raw) {
+		return RedactText
+	}
+	return fmt.Sprintf("%q", raw)
+}
+
+// ValidateFieldValue validates one key/value pair against its schema type,
+// secret-exclusion rule, range bounds and field-shape constraints.
+func ValidateFieldValue(k Key, val any) []Issue {
+	spec, ok := LookupField(k)
+	if !ok {
+		return []Issue{{Path: k.String(), Message: msgUnknownKey}}
+	}
+	if err := ValidateValueType(spec, val); err != nil {
+		return []Issue{{Path: k.String(), Message: err.Error()}}
+	}
+	if IsPrincipalKey(k) {
+		s, _ := val.(string)
+		if k == KeyCollaborationAtlassianPrincipal {
+			if s != valueAsk && s != valueNone && !validNamedHumanPrincipal(val) {
+				return []Issue{{
+					Path:    k.String(),
+					Message: msgAtlassianPrincipal,
+				}}
+			}
+			return nil
+		}
+		if s != valueNone && !validPrincipal(val) {
+			return []Issue{{
+				Path:    k.String(),
+				Message: msgPrincipalValid,
+			}}
+		}
+		return nil
+	}
+	if containsSecretValue(val) {
+		return []Issue{{Path: k.String(), Message: msgSecretRejected}}
+	}
+	return validateFieldConstraints(k, val)
+}
+
+func validateFieldConstraints(k Key, val any) []Issue {
+	switch k {
+	case KeySchemaVersion:
+		if v, ok := val.(int64); !ok || v != SchemaVersion {
+			return []Issue{{Path: k.String(), Message: fmt.Sprintf("must be integer %d", SchemaVersion)}}
+		}
+	case KeyDeploymentNamespace:
+		if s, ok := val.(string); !ok || !namespaceRe.MatchString(s) {
+			return []Issue{{Path: k.String(), Message: msgNamespace}}
+		}
+	case KeyMachineHostname:
+		if s, ok := val.(string); !ok || !hostnameRe.MatchString(s) {
+			return []Issue{{Path: k.String(), Message: msgHostnameFormat}}
+		}
+	case KeyMachineDisplayName:
+		if !validDisplayName(val) {
+			return []Issue{{Path: k.String(), Message: msgDisplayName}}
+		}
+	case KeyMachineUUID:
+		if !validUUID4(val) {
+			return []Issue{{Path: k.String(), Message: msgUUID4}}
+		}
+	case KeyMachineAssetTag, KeyMachineHardwareProfile, KeyMachineRole:
+		if !validPlainValue(val, maxPlainValueLen) {
+			return []Issue{{Path: k.String(), Message: msgPlainValue}}
+		}
+	case KeyAccountsAgent:
+		s, ok := val.(string)
+		if !ok || !unixNameRe.MatchString(s) {
+			return []Issue{{Path: k.String(), Message: msgUnixAccount}}
+		}
+		if !agentNameRe.MatchString(s) {
+			return []Issue{{Path: k.String(), Message: msgAgentName}}
+		}
+	case KeyAccountsHumans, KeyAccountsAdmins, KeyAccountsServices, KeyAccountsOperators, KeyAccountsViewers, KeyAccountsSSHUsers:
+		return validateAccountsListField(k, val)
+	case KeyAccountsAdminAssignments:
+		return validateAdminAssignmentsField(val)
+	case KeyRemoteNomachinePort:
+		if port, ok := val.(int64); !ok || port < minPort || port > maxPort {
+			return []Issue{{Path: k.String(), Message: msgPortRange}}
+		}
+	case KeyRemotePreferredKVM, KeyRemoteFallbackKVM, KeyRemoteTailscaleTailnet:
+		if s, ok := val.(string); !ok || strings.TrimSpace(s) == "" {
+			return []Issue{{Path: k.String(), Message: msgInventoryChoice}}
+		}
+	case KeyRemoteTailscaleTags:
+		tags, ok := asStringSlice(val)
+		if !ok || len(tags) == 0 {
+			return []Issue{{Path: k.String(), Message: msgTailscaleTags}}
+		}
+		for _, t := range tags {
+			if !strings.HasPrefix(t, prefixTag) {
+				return []Issue{{Path: k.String(), Message: msgTailscaleTags}}
+			}
+		}
+	case KeyToolingInstallAgents:
+		if b, ok := val.(bool); !ok || !b {
+			return []Issue{{Path: k.String(), Message: msgAgentsRequired}}
+		}
+	case KeyToolingAntidoteRef:
+		if ref, ok := val.(string); !ok || (ref != valueAsk && (strings.HasPrefix(ref, doubleDash) || !releaseRefRe.MatchString(ref))) {
+			return []Issue{{Path: k.String(), Message: msgAntidoteRef}}
+		}
+	case KeyToolingAptPackages:
+		return validatePackageListField(k, val, aptSpecRe)
+	case KeyToolingBrewFormulae, KeyToolingBrewCasks:
+		return validatePackageListField(k, val, brewSpecRe)
+	case KeyToolingMiseVersion:
+		if s, ok := val.(string); !ok || !miseVersionRe.MatchString(s) {
+			return []Issue{{Path: k.String(), Message: msgMiseVersion}}
+		}
+	case KeyToolingMiseSHA256:
+		if s, ok := val.(string); !ok || !miseSHA256Re.MatchString(s) {
+			return []Issue{{Path: k.String(), Message: msgMiseSHA256}}
+		}
+	case KeySourceControlGitLabHost, KeySourceControlGitHubHost:
+		if h, ok := val.(string); !ok || h == "" || strings.Contains(h, urlScheme) || strings.Contains(h, pathSlash) {
+			return []Issue{{Path: k.String(), Message: msgHostnameNoURL}}
+		}
+	case KeyCollaborationAtlassianSite:
+		if s, ok := val.(string); !ok || (s != valueAsk && s != valueNone && (s == "" || strings.Contains(s, urlScheme) || strings.Contains(s, pathSlash))) {
+			return []Issue{{Path: k.String(), Message: msgHostnameNoURL}}
+		}
+	case KeySecurityDiskEncryptionRequired, KeySecuritySecureBootRequired:
+		if b, ok := val.(bool); !ok || !b {
+			return []Issue{{Path: k.String(), Message: msgBaselineTrue}}
+		}
+	case KeyResourcesOSMemoryReservePercent:
+		return validateIntRange(k, val, 5, 50)
+	case KeyResourcesOSMemoryReserveGiB:
+		return validateIntRange(k, val, 4, 32)
+	case KeyResourcesOSCPUReserveThreads:
+		return validateIntRange(k, val, 1, 8)
+	case KeyResourcesReserveFixedGiB:
+		if num, ok := asFiniteNumber(val); !ok || num <= 0 || num >= maxReserveFixed {
+			return []Issue{{Path: k.String(), Message: msgReserveFixedRange}}
+		}
+	case KeyResourcesReserveCores:
+		return validateIntRange(k, val, 0, 1024)
+	case KeyResourcesCPUWeight:
+		return validateIntRange(k, val, 1, 10000)
+	case KeyBackupRetentionDays:
+		if days, ok := val.(int64); !ok || days < 1 {
+			return []Issue{{Path: k.String(), Message: msgPositiveInt}}
+		}
+	case KeyBackupTarget, KeyMaintenanceUpdateWindow, KeyMaintenanceOwner:
+		if s, ok := val.(string); !ok || strings.TrimSpace(s) == "" {
+			return []Issue{{Path: k.String(), Message: msgNonEmptyString}}
+		}
+	case KeyMaintenanceTimezone:
+		s, ok := val.(string)
+		if !ok || strings.TrimSpace(s) == "" {
+			return []Issue{{Path: k.String(), Message: msgNonEmptyString}}
+		}
+		if !validIANATimezone(s) {
+			return []Issue{{Path: k.String(), Message: msgIANATimezone}}
+		}
+	}
+	return nil
+}
+
+func validateIntRange(k Key, val any, lower, upper int64) []Issue {
+	if v, ok := val.(int64); !ok || v < lower || v > upper {
+		return []Issue{{Path: k.String(), Message: fmt.Sprintf("must be an integer from %d through %d", lower, upper)}}
+	}
+	return nil
+}
+
+func validatePackageListField(k Key, val any, re *regexp.Regexp) []Issue {
+	items, ok := asStringSlice(val)
+	if !ok || !allMatch(items, re) {
+		return []Issue{{Path: k.String(), Message: msgApprovedPkgList}}
+	}
+	if hasDuplicates(items) {
+		return []Issue{{Path: k.String(), Message: msgDuplicatePkg}}
+	}
+	return nil
+}
+
+func validateAccountsListField(k Key, val any) []Issue {
+	vals, ok := asStringSlice(val)
+	if !ok {
+		return []Issue{{Path: k.String(), Message: msgStringArray}}
+	}
+	var issues []Issue
+	if hasDuplicates(vals) {
+		issues = append(issues, Issue{Path: k.String(), Message: msgDuplicateNames})
+	}
+	for _, v := range vals {
+		if !unixNameRe.MatchString(v) {
+			issues = append(issues, Issue{Path: k.String(), Message: fmt.Sprintf("invalid Unix name: %s", v)})
+		}
+	}
+	switch k {
+	case KeyAccountsHumans:
+		if len(vals) == 0 {
+			issues = append(issues, Issue{Path: k.String(), Message: msgAtLeastOneHuman})
+		}
+	case KeyAccountsAdmins:
+		for _, a := range vals {
+			if !adminNameRe.MatchString(a) {
+				issues = append(issues, Issue{Path: k.String(), Message: msgAdminName})
+				break
+			}
+		}
+	case KeyAccountsServices:
+		for _, s := range vals {
+			if !strings.HasPrefix(s, prefixSvc) {
+				issues = append(issues, Issue{Path: k.String(), Message: msgServiceName})
+				break
+			}
+		}
+	case KeyAccountsSSHUsers:
+		if len(vals) == 0 {
+			issues = append(issues, Issue{Path: k.String(), Message: msgSSHAdminRequired})
+		}
+	}
+	return issues
+}
+
+func validateAdminAssignmentsField(val any) []Issue {
+	assignMap, ok := asStringMap(val)
+	if !ok {
+		return []Issue{{Path: KeyAccountsAdminAssignments.String(), Message: msgAdminAssignments}}
+	}
+	var issues []Issue
+	owners := make([]string, 0, len(assignMap))
+	for admin, owner := range assignMap {
+		if !adminNameRe.MatchString(admin) {
+			issues = append(issues, Issue{Path: KeyAccountsAdminAssignments.String(), Message: "keys must match admin-NN"})
+			break
+		}
+		if !unixNameRe.MatchString(owner) {
+			issues = append(issues, Issue{Path: KeyAccountsAdminAssignments.String(), Message: fmt.Sprintf("invalid Unix name: %s", owner)})
+		}
+		owners = append(owners, owner)
+	}
+	if hasDuplicates(owners) {
+		issues = append(issues, Issue{Path: KeyAccountsAdminAssignments.String(), Message: msgDistinctAdminOwner})
+	}
+	return issues
+}
+
+// ValidatePartialRaw validates a partial configuration layer (such as a user or
+// fleet override file), enforcing single-field constraints and every
+// cross-field rule whose participating keys are present in doc.
+func ValidatePartialRaw(doc map[string]any) []Issue {
+	flat, err := flattenTOMLMap(doc)
+	if err != nil {
+		return []Issue{{Path: "config", Message: err.Error()}}
+	}
+	var issues []Issue
+	for _, fk := range sortedFlatKeys(flat) {
+		issues = append(issues, ValidateFieldValue(Key(fk), flat[fk])...)
+	}
+	issues = append(issues, validatePartialCrossField(flat)...)
+	return issues
+}
+
+func validatePartialCrossField(flat map[string]any) []Issue {
+	var issues []Issue
+
+	getStr := func(k Key) (string, bool) {
+		v, ok := flat[k.String()]
+		if !ok {
+			return "", false
+		}
+		s, ok := v.(string)
+		return s, ok
+	}
+
+	if prof, okP := getStr(KeyProfile); okP {
+		if ctx, okC := getStr(KeyDeploymentContext); okC && ctx != prof {
+			issues = append(issues, Issue{Path: KeyDeploymentContext.String(), Message: msgMatchProfile})
+		}
+		if own, okO := getStr(KeyDeploymentOwnership); okO && prof == ProfileKindWork.String() && own != OwnershipOrganization.String() {
+			issues = append(issues, Issue{
+				Path:    KeyDeploymentOwnership.String(),
+				Message: fmt.Sprintf("work profiles must use ownership %s", OwnershipOrganization),
+			})
+		}
+	}
+
+	if ns, okN := getStr(KeyDeploymentNamespace); okN {
+		if host, okH := getStr(KeyMachineHostname); okH {
+			if m := hostnameRe.FindStringSubmatch(host); m != nil && m[1] != ns {
+				issues = append(issues, Issue{Path: KeyMachineHostname.String(), Message: msgHostnameNamespace})
+			}
+		}
+	}
+
+	if plat, okP := getStr(KeyMachinePlatform); okP {
+		if osFam, okO := getStr(KeyMachineOSFamily); okO {
+			var want string
+			switch Platform(plat) {
+			case PlatformLinux:
+				want = OSFamilyUbuntu.String()
+			case PlatformMacOS:
+				want = OSFamilyMacOS.String()
+			}
+			if want != "" && osFam != want {
+				issues = append(issues, Issue{Path: KeyMachineOSFamily.String(), Message: fmt.Sprintf("must be %q for selected platform", want)})
+			}
+		}
+		if host, okH := getStr(KeyMachineHostname); okH {
+			if m := hostnameRe.FindStringSubmatch(host); m != nil {
+				if plat == PlatformMacOS.String() && m[2] != classMac {
+					issues = append(issues, Issue{Path: KeyMachineHostname.String(), Message: msgMacOSHostClass})
+				}
+				if plat == PlatformLinux.String() && m[2] == classMac {
+					issues = append(issues, Issue{Path: KeyMachineHostname.String(), Message: msgLinuxHostClass})
+				}
+			}
+		}
+		if _, hasProv := flat[KeyAccountsMacOSProvisioning.String()]; hasProv && plat != PlatformMacOS.String() {
+			issues = append(issues, Issue{Path: KeyAccountsMacOSProvisioning.String(), Message: msgMacOSProvisioning})
+		}
+		for _, rule := range []struct {
+			key  Key
+			want Platform
+		}{
+			{key: KeyToolingAptPackages, want: PlatformLinux},
+			{key: KeyToolingBrewFormulae, want: PlatformMacOS},
+			{key: KeyToolingBrewCasks, want: PlatformMacOS},
+		} {
+			if raw, exists := flat[rule.key.String()]; exists {
+				if items, ok := asStringSlice(raw); ok && len(items) > 0 && plat != rule.want.String() {
+					issues = append(issues, Issue{Path: rule.key.String(), Message: fmt.Sprintf("requires platform %s", rule.want)})
+				}
+			}
+		}
+		_, hasVer := flat[KeyToolingMiseVersion.String()]
+		_, hasSHA := flat[KeyToolingMiseSHA256.String()]
+		if (hasVer || hasSHA) && plat == PlatformMacOS.String() {
+			issues = append(issues, Issue{
+				Path:    KeyToolingMiseVersion.String(),
+				Message: msgMacOSNoMisePin,
+			})
+		}
+	}
+
+	if glID, okGL := getStr(KeySourceControlGitLabIdentity); okGL {
+		if ghID, okGH := getStr(KeySourceControlGitHubIdentity); okGH && glID == valueNone && ghID == valueNone {
+			issues = append(issues, Issue{Path: SectionSourceControl.String(), Message: msgSCMIdentityRequired})
+		}
+	}
+	for _, provider := range []struct {
+		idKey        Key
+		principalKey Key
+	}{
+		{idKey: KeySourceControlGitLabIdentity, principalKey: KeySourceControlGitLabPrincipal},
+		{idKey: KeySourceControlGitHubIdentity, principalKey: KeySourceControlGitHubPrincipal},
+	} {
+		idVal, okID := getStr(provider.idKey)
+		pVal, okP := getStr(provider.principalKey)
+		if !okID || !okP {
+			continue
+		}
+		if idVal == valueNone && pVal != valueNone {
+			issues = append(issues, Issue{Path: provider.principalKey.String(), Message: msgPrincipalNone})
+		}
+		if idVal != valueNone && pVal == valueNone {
+			issues = append(issues, Issue{Path: provider.principalKey.String(), Message: msgPrincipalValid})
+		}
+	}
+
+	if atlID, okA := getStr(KeyCollaborationAtlassianIdentity); okA {
+		if auth, okAuth := getStr(KeyCollaborationAtlassianMCPAuth); okAuth {
+			if atlID == AtlassianIdentityServiceAccount.String() && auth != AtlassianMCPAuthServiceAccountAPIKey.String() {
+				issues = append(issues, Issue{Path: KeyCollaborationAtlassianMCPAuth.String(), Message: msgAtlassianSvcAuth})
+			}
+			if atlID == AtlassianIdentityNamedHuman.String() && auth != AtlassianMCPAuthOAuth21.String() {
+				issues = append(issues, Issue{Path: KeyCollaborationAtlassianMCPAuth.String(), Message: msgAtlassianHumanAuth})
+			}
+			if atlID == valueNone && auth != valueNone {
+				issues = append(issues, Issue{Path: SectionCollaboration.String(), Message: msgAtlassianUnused})
+			}
+		}
+		if pVal, okP := getStr(KeyCollaborationAtlassianPrincipal); okP {
+			if atlID == valueNone && pVal != valueNone {
+				issues = append(issues, Issue{Path: SectionCollaboration.String(), Message: msgAtlassianUnused})
+			}
+			if atlID == AtlassianIdentityServiceAccount.String() && !atlassianSvcAcctRe.MatchString(pVal) {
+				issues = append(issues, Issue{
+					Path:    KeyCollaborationAtlassianPrincipal.String(),
+					Message: msgAtlassianPrincipal,
+				})
+			}
+			if atlID != valueAsk && atlID != valueNone && pVal == valueNone {
+				issues = append(issues, Issue{
+					Path:    KeyCollaborationAtlassianPrincipal.String(),
+					Message: msgAtlassianPrincipal,
+				})
+			}
+		}
+		if site, okS := getStr(KeyCollaborationAtlassianSite); okS {
+			if atlID == valueNone && site != valueNone {
+				issues = append(issues, Issue{Path: KeyCollaborationAtlassianSite.String(), Message: msgAtlassianSiteNone})
+			}
+			if atlID != valueAsk && atlID != valueNone && (site == valueAsk || site == valueNone) {
+				issues = append(issues, Issue{Path: KeyCollaborationAtlassianSite.String(), Message: msgAtlassianSiteReq})
+			}
+		}
+	}
+
+	_, hasFixed := flat[KeyResourcesReserveFixedGiB.String()]
+	_, hasPct := flat[KeyResourcesOSMemoryReservePercent.String()]
+	if hasFixed && hasPct {
+		issues = append(issues, Issue{
+			Path:    KeyResourcesReserveFixedGiB.String(),
+			Message: msgReserveFixedConflict,
+		})
+	}
+
+	return issues
 }
 
 func validPrincipal(raw any) bool {

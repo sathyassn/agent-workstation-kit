@@ -85,7 +85,7 @@ func newConfigCommand(opts Options, shared *sharedFlags) *cobra.Command {
 
 	cfg.AddCommand(
 		newConfigGetCommand(opts, shared, cfgFlags),
-		newConfigSetCommand(shared, cfgFlags),
+		newConfigSetCommand(opts, shared, cfgFlags),
 		newConfigExplainCommand(opts, shared, cfgFlags),
 		newConfigValidateCommand(opts, shared, cfgFlags),
 	)
@@ -110,7 +110,7 @@ func newConfigGetCommand(opts Options, shared *sharedFlags, cfgFlags *configFlag
 	}
 }
 
-func newConfigSetCommand(shared *sharedFlags, cfgFlags *configFlags) *cobra.Command {
+func newConfigSetCommand(opts Options, shared *sharedFlags, cfgFlags *configFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:   cmdConfigSet + " KEY VALUE",
 		Short: "Set a value (previews unless --apply is given)",
@@ -128,6 +128,10 @@ func newConfigSetCommand(shared *sharedFlags, cfgFlags *configFlags) *cobra.Comm
 			if err != nil {
 				return mapSchemaError(err)
 			}
+			key := schema.Key(rawKey)
+			if issues := schema.ValidateFieldValue(key, parsed); len(issues) > 0 {
+				return mapSchemaError(&schema.ValidationError{Issues: issues})
+			}
 			if targetPath == "" {
 				return &Error{
 					Class: ClassUsage,
@@ -136,14 +140,16 @@ func newConfigSetCommand(shared *sharedFlags, cfgFlags *configFlags) *cobra.Comm
 			}
 
 			doc := make(map[string]any)
-			perm := fs.FileMode(0o600)
-			info, statErr := os.Stat(targetPath)
+			const defaultPerm = fs.FileMode(0o600)
+			_, statErr := os.Lstat(targetPath)
 			switch {
 			case statErr == nil:
-				perm = info.Mode().Perm()
 				loaded, loadErr := schema.LoadRawFile(targetPath)
 				if loadErr != nil {
 					return mapSchemaError(loadErr)
+				}
+				if dupErr := schema.CheckNoDuplicateKeys(loaded); dupErr != nil {
+					return mapSchemaError(dupErr)
 				}
 				doc = loaded
 			case errors.Is(statErr, os.ErrNotExist) && targetLayer == schema.LayerUser:
@@ -152,16 +158,9 @@ func newConfigSetCommand(shared *sharedFlags, cfgFlags *configFlags) *cobra.Comm
 				return &Error{Class: ClassFailed, Err: fmt.Errorf("stat %s: %w", targetPath, statErr)}
 			}
 
-			key := schema.Key(rawKey)
 			oldVal, hadOld := schema.SetValueInMap(doc, key, parsed)
-			if targetLayer == schema.LayerMachine {
-				ready := false
-				if st, ok := doc[schema.KeyState.String()].(string); ok && st == schema.ProfileStateApproved.String() {
-					ready = true
-				}
-				if issues := schema.ValidateRaw(doc, ready); len(issues) > 0 {
-					return mapSchemaError(&schema.ValidationError{Issues: issues})
-				}
+			if err := validateConfigSetResult(opts, shared, cfgFlags, targetLayer, targetPath, doc); err != nil {
+				return mapSchemaError(err)
 			}
 
 			rendered, err := schema.RenderTOML(doc)
@@ -169,19 +168,21 @@ func newConfigSetCommand(shared *sharedFlags, cfgFlags *configFlags) *cobra.Comm
 				return &Error{Class: ClassFailed, Err: err}
 			}
 			if shared.apply {
-				if err := schema.AtomicWriteFile(targetPath, rendered, perm); err != nil {
+				if err := schema.AtomicWriteFile(targetPath, rendered, defaultPerm); err != nil {
 					return &Error{Class: ClassFailed, Err: err}
 				}
 			}
 
+			safeOld := schema.RedactValue(key, oldVal)
+			safeNew := schema.RedactValue(key, parsed)
 			resp := configSetResponse{
 				SchemaVersion: configJSONVersion,
 				Applied:       shared.apply,
 				Target:        targetPath,
 				Key:           key,
-				OldValue:      oldVal,
+				OldValue:      safeOld,
 				HadOld:        hadOld,
-				NewValue:      parsed,
+				NewValue:      safeNew,
 			}
 			if shared.json {
 				return writeJSON(cmd.OutOrStdout(), resp)
@@ -190,13 +191,78 @@ func newConfigSetCommand(shared *sharedFlags, cfgFlags *configFlags) *cobra.Comm
 			if shared.apply {
 				verb = "SET"
 			}
-			line := fmt.Sprintf("%s %s = %s in %s\n", verb, key, formatConfigValue(parsed), targetPath)
+			line := fmt.Sprintf("%s %s = %s in %s\n", verb, key, formatConfigValue(safeNew), targetPath)
 			if _, err := io.WriteString(cmd.OutOrStdout(), line); err != nil {
 				return fmt.Errorf("write config set output: %w", err)
 			}
 			return nil
 		}),
 	}
+}
+
+func validateConfigSetResult(
+	opts Options,
+	shared *sharedFlags,
+	cfgFlags *configFlags,
+	targetLayer schema.Layer,
+	targetPath string,
+	doc map[string]any,
+) error {
+	if targetLayer == schema.LayerMachine {
+		ready := false
+		if st, ok := doc[schema.KeyState.String()].(string); ok && st == schema.ProfileStateApproved.String() {
+			ready = true
+		}
+		if issues := schema.ValidateRaw(doc, ready); len(issues) > 0 {
+			return &schema.ValidationError{Issues: issues}
+		}
+		return nil
+	}
+
+	if issues := schema.ValidatePartialRaw(doc); len(issues) > 0 {
+		return &schema.ValidationError{Issues: issues}
+	}
+	if shared.config == "" && cfgFlags.fleetConfig == "" {
+		return nil
+	}
+
+	resOpts := schema.ResolveOptions{
+		Getenv: opts.Getenv,
+		User:   &schema.LayerSource{Path: targetPath, Data: doc},
+	}
+	if cfgFlags.fleetConfig != "" {
+		data, err := schema.LoadRawFile(cfgFlags.fleetConfig)
+		if err != nil {
+			return fmt.Errorf("load fleet config: %w", err)
+		}
+		resOpts.Fleet = &schema.LayerSource{Path: cfgFlags.fleetConfig, Data: data}
+	}
+	if shared.config != "" {
+		data, err := schema.LoadRawFile(shared.config)
+		if err != nil {
+			return fmt.Errorf("load machine config: %w", err)
+		}
+		resOpts.Machine = &schema.LayerSource{Path: shared.config, Data: data}
+	}
+	merged, err := schema.Resolve(resOpts)
+	if err != nil {
+		return fmt.Errorf("resolve merged config: %w", err)
+	}
+	explicit := merged.ToExplicitRawMap()
+	if shared.config != "" {
+		ready := false
+		if st, ok := explicit[schema.KeyState.String()].(string); ok && st == schema.ProfileStateApproved.String() {
+			ready = true
+		}
+		if issues := schema.ValidateRaw(explicit, ready); len(issues) > 0 {
+			return &schema.ValidationError{Issues: issues}
+		}
+		return nil
+	}
+	if issues := schema.ValidatePartialRaw(explicit); len(issues) > 0 {
+		return &schema.ValidationError{Issues: issues}
+	}
+	return nil
 }
 
 func newConfigExplainCommand(opts Options, shared *sharedFlags, cfgFlags *configFlags) *cobra.Command {
@@ -248,7 +314,11 @@ func newConfigValidateCommand(opts Options, shared *sharedFlags, cfgFlags *confi
 						Err:   fmt.Errorf("%w: --fleet requires a fleet directory path", ErrUsage),
 					}
 				}
-				issues, err := schema.ValidateFleetDir(target, expectedVersion)
+				wantVersion := expectedVersion
+				if wantVersion == "" {
+					wantVersion = opts.Version
+				}
+				issues, err := schema.ValidateFleetDir(target, wantVersion)
 				if err != nil {
 					return &Error{Class: ClassFailed, Err: err}
 				}
@@ -257,12 +327,19 @@ func newConfigValidateCommand(opts Options, shared *sharedFlags, cfgFlags *confi
 
 			hasOverlays := cfgFlags.fleetConfig != "" || cfgFlags.userConfig != "" || len(cfgFlags.sets) > 0
 			if target != "" && !hasOverlays {
+				envOverrides, envErr := schema.ResolveEnvLayer(opts.Getenv)
+				if envErr != nil {
+					return mapSchemaError(envErr)
+				}
 				raw, err := schema.LoadRawFile(target)
 				if err != nil {
 					return NewRefusal(ruleSchemaValidation, err)
 				}
 				if err := checkRawSafetyNamespace(schema.LayerMachine, raw); err != nil {
 					return mapSchemaError(err)
+				}
+				for _, ov := range envOverrides {
+					schema.SetValueInMap(raw, ov.Key, ov.Value)
 				}
 				issues := schema.ValidateRaw(raw, ready)
 				return emitValidateResult(cmd, shared.json, target, ready, false, issues)
@@ -276,13 +353,13 @@ func newConfigValidateCommand(opts Options, shared *sharedFlags, cfgFlags *confi
 			if err != nil {
 				return mapSchemaError(err)
 			}
-			issues := schema.ValidateRaw(resolved.ToRawMap(), ready)
+			issues := schema.ValidateRaw(resolved.ToExplicitRawMap(), ready)
 			return emitValidateResult(cmd, shared.json, target, ready, false, issues)
 		}),
 	}
 	cmd.Flags().BoolVar(&ready, flagReady, false, "require all apply-time decisions (approved state and no unresolved ask fields)")
 	cmd.Flags().BoolVar(&fleet, flagFleet, false, "validate a fleet directory as one consistent unit")
-	cmd.Flags().StringVar(&expectedVersion, flagExpectedVersion, "", "expected kit.lock version when validating with --fleet")
+	cmd.Flags().StringVar(&expectedVersion, flagExpectedVersion, "", "expected kit.lock version when validating with --fleet (defaults to running wskit version)")
 	return cmd
 }
 

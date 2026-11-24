@@ -280,3 +280,235 @@ func TestConfigGetSetAndValidate(t *testing.T) {
 	}
 	validateJSON(t, compileSchema(t, "error"), []byte(rInvalid.stdout))
 }
+
+// TestConfigSetValidatesAndRedactsSecrets covers P1: config set runs full
+// key validation (principal shape, range, cross-field) on every set path
+// including --user-config, and never echoes secret-like or invalid principal
+// values in preview, apply or error output.
+func TestConfigSetValidatesAndRedactsSecrets(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	userFile := filepath.Join(dir, "user.toml")
+	badPrefixInput := "ghp_" + "example"
+
+	// Preview and --apply, plain and --json, must reject and never echo badPrefixInput.
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{
+			name: "github principal secret preview plain",
+			args: []string{"config", "set", "source_control.github_principal", badPrefixInput, "--user-config", userFile},
+		},
+		{
+			name: "github principal secret apply plain",
+			args: []string{"config", "set", "source_control.github_principal", badPrefixInput, "--user-config", userFile, "--apply"},
+		},
+		{
+			name: "github principal secret preview json",
+			args: []string{"config", "set", "source_control.github_principal", badPrefixInput, "--user-config", userFile, "--json"},
+		},
+		{
+			name: "github principal URL on user config",
+			args: []string{"config", "set", "source_control.github_principal", "https://example.invalid/token", "--user-config", userFile},
+		},
+		{
+			name: "backup target secret on user config",
+			args: []string{"config", "set", "backup.target", badPrefixInput, "--user-config", userFile},
+		},
+		{
+			name: "out of range port on user config",
+			args: []string{"config", "set", "remote.nomachine_port", "70000", "--user-config", userFile},
+		},
+		{
+			name: "invalid timezone on user config",
+			args: []string{"config", "set", "maintenance.timezone", "Mars/Olympus", "--user-config", userFile},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := execute(t, tc.args...)
+			if ExitCodeFor(r.err) != contract.ExitRefused {
+				t.Fatalf("%s: exit code = %d, want 2 (err=%v stdout=%q stderr=%q)",
+					tc.name, ExitCodeFor(r.err), r.err, r.stdout, r.stderr)
+			}
+			if strings.Contains(r.stdout, badPrefixInput) || strings.Contains(r.stderr, badPrefixInput) || (r.err != nil && strings.Contains(r.err.Error(), badPrefixInput)) {
+				t.Fatalf("%s: rejected credential-shaped input echoed! stdout=%q stderr=%q err=%v", tc.name, r.stdout, r.stderr, r.err)
+			}
+			if strings.Contains(r.stdout, "https://example.invalid/token") || strings.Contains(r.stderr, "https://example.invalid/token") {
+				t.Fatalf("%s: invalid principal echoed! stdout=%q stderr=%q", tc.name, r.stdout, r.stderr)
+			}
+			if _, statErr := os.Stat(userFile); !os.IsNotExist(statErr) {
+				t.Fatalf("%s: rejected config set wrote %s", tc.name, userFile)
+			}
+		})
+	}
+
+	// Cross-field check on --user-config when paired with --config:
+	// github_identity = "none" requires github_principal = "none".
+	readyBytes, err := os.ReadFile(filepath.Join("..", "..", "testdata", "profiles", "valid", "ready", "work-linux-ready.toml")) //nolint:gosec // repo fixture
+	if err != nil {
+		t.Fatalf("read ready profile: %v", err)
+	}
+	ghNoneProfile := strings.Replace(string(readyBytes), `github_identity = "app"`, `github_identity = "none"`, 1)
+	ghNoneProfile = strings.Replace(ghNoneProfile, `github_principal = "acme-agent-dev"`, `github_principal = "none"`, 1)
+	machineFile := filepath.Join(dir, "machine.toml")
+	if err := os.WriteFile(machineFile, []byte(ghNoneProfile), 0o600); err != nil { //nolint:gosec // test temp file
+		t.Fatalf("write machine.toml: %v", err)
+	}
+	rCross := execute(t, "config", "set", "source_control.github_principal", "acme-agent-dev", "--config", machineFile, "--user-config", userFile, "--apply")
+	if ExitCodeFor(rCross.err) != contract.ExitRefused {
+		t.Fatalf("cross-field set exit = %d, want 2 (err=%v)", ExitCodeFor(rCross.err), rCross.err)
+	}
+}
+
+// TestConfigValidateRejectsMissingRequiredIdentityKeys covers P3: kit defaults
+// must never fill missing required identity keys (such as machine.platform on
+// macOS) during layered config validation.
+func TestConfigValidateRejectsMissingRequiredIdentityKeys(t *testing.T) {
+	t.Parallel()
+
+	macBytes, err := os.ReadFile(filepath.Join("..", "..", "testdata", "profiles", "valid", "ready", "work-macos-ready.toml")) //nolint:gosec // repo fixture
+	if err != nil {
+		t.Fatalf("read macOS fixture: %v", err)
+	}
+	macSrc := string(macBytes)
+
+	dir := t.TempDir()
+	userOverlay := filepath.Join(dir, "user.toml")
+	if err := os.WriteFile(userOverlay, []byte("[backup]\nretention_days = 45\n"), 0o600); err != nil {
+		t.Fatalf("write user overlay: %v", err)
+	}
+
+	cases := []struct {
+		name       string
+		removeLine string
+	}{
+		{name: "missing machine.platform", removeLine: "platform = \"macos\"\n"},
+		{name: "missing machine.os_family", removeLine: "os_family = \"macos\"\n"},
+		{name: "missing accounts.agent", removeLine: "agent = \"agent-01\"\n"},
+		{name: "missing profile", removeLine: "profile = \"work\"\n"},
+		{name: "missing state", removeLine: "state = \"approved\"\n"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if !strings.Contains(macSrc, tc.removeLine) {
+				t.Fatalf("fixture does not contain %q", tc.removeLine)
+			}
+			broken := strings.Replace(macSrc, tc.removeLine, "", 1)
+			brokenPath := filepath.Join(t.TempDir(), "broken.toml")
+			if err := os.WriteFile(brokenPath, []byte(broken), 0o600); err != nil { //nolint:gosec // test temp file
+				t.Fatalf("write broken profile: %v", err)
+			}
+
+			rSingle := execute(t, "config", "validate", brokenPath)
+			if ExitCodeFor(rSingle.err) != contract.ExitRefused {
+				t.Fatalf("single-file validate (%s) exit = %d, want 2 (stdout=%q stderr=%q)",
+					tc.name, ExitCodeFor(rSingle.err), rSingle.stdout, rSingle.stderr)
+			}
+
+			rLayered := execute(t, "config", "validate", brokenPath, "--user-config", userOverlay)
+			if ExitCodeFor(rLayered.err) != contract.ExitRefused {
+				t.Fatalf("layered validate (%s) exit = %d, want 2 (stdout=%q stderr=%q)",
+					tc.name, ExitCodeFor(rLayered.err), rLayered.stdout, rLayered.stderr)
+			}
+		})
+	}
+}
+
+// TestConfigValidateAppliesEnvLayerOnSingleFile covers P5: single-file config
+// validate applies the same WSKIT_* environment layer as resolve, refusing
+// safety-floor violations and invalid overrides from the environment.
+func TestConfigValidateAppliesEnvLayerOnSingleFile(t *testing.T) {
+	t.Parallel()
+
+	readyPath := filepath.Join("..", "..", "testdata", "profiles", "valid", "ready", "work-linux-ready.toml")
+
+	for _, tc := range []struct {
+		name     string
+		env      map[string]string
+		wantRule string
+	}{
+		{
+			name:     "WSKIT_SAFETY_BACKUPS=false",
+			env:      map[string]string{schema.EnvVarForKey(schema.KeySafetyBackups): "false"},
+			wantRule: schema.RuleSafetyFloorBackups.String(),
+		},
+		{
+			name:     "WSKIT_SECURITY_DISK_ENCRYPTION_REQUIRED=false",
+			env:      map[string]string{schema.EnvVarForKey(schema.KeySecurityDiskEncryptionRequired): "false"},
+			wantRule: schema.RuleSafetyFloorDiskEncryption.String(),
+		},
+		{
+			name:     "WSKIT_REMOTE_NOMACHINE_PORT=70000",
+			env:      map[string]string{schema.EnvVarForKey(schema.KeyRemoteNomachinePort): "70000"},
+			wantRule: ruleSchemaValidation,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := executeWithEnv(t, tc.env, "config", "validate", readyPath, "--ready", "--json")
+			if ExitCodeFor(r.err) != contract.ExitRefused {
+				t.Fatalf("%s: exit = %d, want 2 (err=%v stdout=%q stderr=%q)",
+					tc.name, ExitCodeFor(r.err), r.err, r.stdout, r.stderr)
+			}
+			var cliErr *Error
+			if !errors.As(r.err, &cliErr) || cliErr.Class != ClassRefused || cliErr.Rule != tc.wantRule {
+				t.Fatalf("%s: error = %v, want ClassRefused rule=%q", tc.name, r.err, tc.wantRule)
+			}
+		})
+	}
+}
+
+// TestConfigValidateFleetDefaultsToRunningVersion covers P8: config validate
+// --fleet checks kit.lock against the running wskit version by default without
+// requiring --expected-version.
+func TestConfigValidateFleetDefaultsToRunningVersion(t *testing.T) {
+	t.Parallel()
+
+	readyBytes, err := os.ReadFile(filepath.Join("..", "..", "testdata", "profiles", "valid", "ready", "work-linux-ready.toml")) //nolint:gosec // repo fixture
+	if err != nil {
+		t.Fatalf("read ready fixture: %v", err)
+	}
+
+	makeFleet := func(t *testing.T, lockVer string) string {
+		t.Helper()
+		dir := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(dir, "machines"), 0o750); err != nil {
+			t.Fatalf("mkdir machines: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "kit.lock"), []byte(lockVer+"\n"), 0o600); err != nil {
+			t.Fatalf("write kit.lock: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "machines", "acme-ws-001.toml"), readyBytes, 0o600); err != nil { //nolint:gosec // test temp file
+			t.Fatalf("write profile: %v", err)
+		}
+		return dir
+	}
+
+	// Stale kit.lock MUST be rejected without --expected-version.
+	staleFleet := makeFleet(t, "0.0.1")
+	rStale := execute(t, "config", "validate", "--fleet", staleFleet)
+	if ExitCodeFor(rStale.err) != contract.ExitRefused {
+		t.Fatalf("fleet validate stale kit.lock without --expected-version: exit=%d, want 2 (stdout=%q stderr=%q)",
+			ExitCodeFor(rStale.err), rStale.stdout, rStale.stderr)
+	}
+	if !strings.Contains(rStale.stderr, "kit.lock") {
+		t.Errorf("stale fleet stderr = %q, want kit.lock error", rStale.stderr)
+	}
+
+	// Matching running version MUST pass without --expected-version.
+	okFleet := makeFleet(t, testVersion)
+	rOK := execute(t, "config", "validate", "--fleet", okFleet)
+	if rOK.err != nil {
+		t.Fatalf("fleet validate matching running version failed: err=%v stderr=%q", rOK.err, rOK.stderr)
+	}
+
+	// Explicit --expected-version override still works.
+	rOverride := execute(t, "config", "validate", "--fleet", staleFleet, "--expected-version", "0.0.1")
+	if rOverride.err != nil {
+		t.Fatalf("fleet validate explicit --expected-version failed: err=%v stderr=%q", rOverride.err, rOverride.stderr)
+	}
+}

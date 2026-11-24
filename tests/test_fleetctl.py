@@ -1063,6 +1063,13 @@ class FleetProfileTests(unittest.TestCase):
             run.assert_called_once()
             self.assertNotIn("--apply", run.call_args.args[0])
 
+    def test_mise_version_rejects_non_ascii_digits(self) -> None:
+        profile = self.make_ready(self.load_work())
+        profile["tooling"]["mise_version"] = "2026.\u0661\u0661.\u0661"
+        profile["tooling"]["mise_sha256"] = "a" * 64
+        issues = fleetctl.validate_profile(profile, ready=True)
+        self.assertIn("tooling.mise_version", {issue.path for issue in issues})
+
 
 if __name__ == "__main__":
     unittest.main()

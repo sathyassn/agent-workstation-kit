@@ -553,9 +553,11 @@ type plannedWrite struct {
 }
 
 type stagedWrite struct {
-	label   string
-	target  string
-	tmpPath string
+	label      string
+	target     string
+	tmpPath    string
+	backupPath string
+	existed    bool
 }
 
 type fileOps struct {
@@ -572,10 +574,10 @@ func defaultFileOps() fileOps {
 	}
 }
 
-func writeTempFile(targetPath string, data []byte) (string, error) {
+func writeTempWithSuffix(targetPath, suffix string, data []byte) (string, error) {
 	dir := filepath.Dir(targetPath)
 	base := filepath.Base(targetPath)
-	tmp, err := os.CreateTemp(dir, "."+base+".tmp-*")
+	tmp, err := os.CreateTemp(dir, "."+base+suffix)
 	if err != nil {
 		return "", fmt.Errorf("create temp for %s: %w", targetPath, err)
 	}
@@ -607,17 +609,46 @@ func writeTempFile(targetPath string, data []byte) (string, error) {
 	return tmpPath, nil
 }
 
+func writeTempFile(targetPath string, data []byte) (string, error) {
+	return writeTempWithSuffix(targetPath, ".tmp-*", data)
+}
+
+func stageBackupFile(targetPath string) (string, bool, error) {
+	orig, err := os.ReadFile(targetPath) //nolint:gosec // generated output path inside repo root
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("read existing %s for backup: %w", targetPath, err)
+	}
+	bakPath, err := writeTempWithSuffix(targetPath, ".bak-*", orig)
+	if err != nil {
+		return "", false, fmt.Errorf("stage backup for %s: %w", targetPath, err)
+	}
+	return bakPath, true, nil
+}
+
 func commitWrites(writes []plannedWrite, ops fileOps) error {
 	staged := make([]stagedWrite, 0, len(writes))
-	cleanup := func(items []stagedWrite) {
+	cleanupTemps := func(items []stagedWrite) {
 		for _, item := range items {
-			_ = ops.remove(item.tmpPath)
+			if item.tmpPath != "" {
+				_ = ops.remove(item.tmpPath)
+			}
 		}
 	}
+	cleanupBackups := func(items []stagedWrite) {
+		for _, item := range items {
+			if item.backupPath != "" {
+				_ = ops.remove(item.backupPath)
+			}
+		}
+	}
+
 	for _, w := range writes {
 		tmpPath, err := ops.writeTemp(w.path, w.data)
 		if err != nil {
-			cleanup(staged)
+			cleanupTemps(staged)
 			return fmt.Errorf("write %s: %w", w.label, err)
 		}
 		staged = append(staged, stagedWrite{
@@ -626,12 +657,39 @@ func commitWrites(writes []plannedWrite, ops fileOps) error {
 			tmpPath: tmpPath,
 		})
 	}
+
+	for i := range staged {
+		bakPath, existed, err := stageBackupFile(staged[i].target)
+		if err != nil {
+			cleanupTemps(staged)
+			cleanupBackups(staged[:i])
+			return fmt.Errorf("backup %s: %w", staged[i].label, err)
+		}
+		staged[i].backupPath = bakPath
+		staged[i].existed = existed
+	}
+
 	for i, s := range staged {
 		if err := ops.rename(s.tmpPath, s.target); err != nil {
-			cleanup(staged[i:])
-			return fmt.Errorf("rename %s: %w", s.label, err)
+			cleanupTemps(staged[i:])
+			var rollbackErrs []error
+			for j := i - 1; j >= 0; j-- {
+				if staged[j].existed {
+					if rbErr := ops.rename(staged[j].backupPath, staged[j].target); rbErr != nil {
+						rollbackErrs = append(rollbackErrs, fmt.Errorf("rollback %s: %w", staged[j].label, rbErr))
+					} else {
+						staged[j].backupPath = ""
+					}
+				} else if rmErr := ops.remove(staged[j].target); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
+					rollbackErrs = append(rollbackErrs, fmt.Errorf("rollback remove %s: %w", staged[j].label, rmErr))
+				}
+			}
+			cleanupBackups(staged)
+			return errors.Join(append([]error{fmt.Errorf("rename %s: %w", s.label, err)}, rollbackErrs...)...)
 		}
 	}
+
+	cleanupBackups(staged)
 	return nil
 }
 
