@@ -30,6 +30,7 @@ type fileSpec struct {
 	data  []byte
 	perm  fs.FileMode
 	owner *contract.Owner // nil keeps the creating process's owner
+	meta  *FileMetadata   // nil applies no xattrs or ACL
 }
 
 // atomicWrite replaces path with spec: it writes a temporary file in the same
@@ -66,6 +67,20 @@ func (e *Engine) atomicWriteAt(p parent, spec fileSpec) error {
 	}
 	if err := tmp.Chmod(spec.perm & modeBits); err != nil {
 		return fail(fmt.Errorf("chmod %q: %w", tmp.Name(), err))
+	}
+	// Apply xattrs and ACLs after chmod on the temp file so the rename puts
+	// content, owner, mode, xattrs and ACL into place atomically. If clearing
+	// an inherited ACL was requested, re-apply chmod afterwards so the exact
+	// mode bits hold even when a parent default ACL masked initial mode bits.
+	if spec.meta != nil {
+		if err := e.meta().Apply(tmp, *spec.meta); err != nil {
+			return fail(fmt.Errorf("apply metadata to %q: %w", tmp.Name(), err))
+		}
+		if spec.meta.ACLStatus == MetadataCaptured && spec.meta.ACL == nil {
+			if err := tmp.Chmod(spec.perm & modeBits); err != nil {
+				return fail(fmt.Errorf("chmod %q: %w", tmp.Name(), err))
+			}
+		}
 	}
 	if err := tmp.Sync(); err != nil {
 		return fail(fmt.Errorf("fsync %q: %w", tmp.Name(), err))
@@ -110,8 +125,8 @@ func createTemp(p parent) (string, *os.File, error) {
 
 // removeTemps removes temporary files a kill left next to path. A missing
 // folder has none.
-func removeTemps(path string) error {
-	p, err := openParent(path)
+func (e *Engine) removeTemps(path string) error {
+	p, err := e.openParent(path)
 	if errors.Is(err, unix.ENOENT) {
 		return nil
 	}
@@ -132,6 +147,35 @@ func removeTemps(path string) error {
 		}
 	}
 	return nil
+}
+
+// validateStaleTemps checks every leftover temporary entry for p.name in p's
+// folder. It returns true if at least one stale temp exists, and refuses any
+// stale temp that is a directory (which unlinkat would fail to remove).
+func validateStaleTemps(p parent) (bool, error) {
+	names, err := listDir(p.dir)
+	if err != nil {
+		return false, err
+	}
+	prefix := "." + p.name + tempMarker
+	found := false
+	for _, n := range names {
+		if !strings.HasPrefix(n, prefix) {
+			continue
+		}
+		var st unix.Stat_t
+		if err := unix.Fstatat(p.fd(), n, &st, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+			if errors.Is(err, unix.ENOENT) {
+				continue
+			}
+			return false, fmt.Errorf("stat stale temp %q: %w", filepath.Join(p.dir.Name(), n), err)
+		}
+		if st.Mode&unix.S_IFMT == unix.S_IFDIR {
+			return false, fmt.Errorf("%w: stale temp %q is a folder", ErrUnsupportedTarget, filepath.Join(p.dir.Name(), n))
+		}
+		found = true
+	}
+	return found, nil
 }
 
 // listDir lists an open folder's names through a duplicate descriptor, so

@@ -39,14 +39,53 @@ var (
 	// yet. Declared-target checks still run first.
 	ErrUnsupported = errors.New("operation not supported by this engine")
 	// ErrUnsupportedTarget reports a declared path that is neither a regular
-	// file, a symbolic link nor absent, so it cannot be backed up.
+	// file nor absent, so it cannot be backed up.
 	ErrUnsupportedTarget = errors.New("target cannot be backed up")
 	// ErrCorruptRecord reports a journal file that does not decode into a
 	// known record. The engine refuses to guess.
 	ErrCorruptRecord = errors.New("journal record is corrupt")
 	// ErrBackupMismatch reports a backup whose digest no longer matches its
-	// manifest entry.
+	// manifest entry. Exit 4, intent left unfinished.
 	ErrBackupMismatch = errors.New("backup does not match its manifest")
+	// ErrRestoreMismatch reports restored content, metadata or state that
+	// failed verification against the manifest. Exit 4, intent left
+	// unfinished.
+	ErrRestoreMismatch = errors.New("restored target does not match its manifest")
+	// ErrRestoreValidation reports a post-restore validator that failed.
+	// Exit 4, intent left unfinished.
+	ErrRestoreValidation = errors.New("post-restore validation failed")
+	// ErrRestoreFailed wraps any failure during the restore phase so every
+	// restore error maps to exit 4 with the intent left unfinished.
+	ErrRestoreFailed = errors.New("restore failed; intent left unfinished")
+	// ErrUnregisteredProvider reports SetState called with a StateProvider
+	// not registered in Options.Providers (so recovery could not replay it).
+	ErrUnregisteredProvider = errors.New("state provider is not registered on this engine")
+	// ErrPackageDBPath reports a declared or manifest path inside a
+	// package-manager database; packages are changed and reverted only
+	// through the package manager.
+	ErrPackageDBPath = errors.New("package-database path cannot be backed up or restored as a file")
+	// ErrPackageDBScan reports that the startup package-database directory
+	// walk could not complete (for example due to hitting the directory cap or
+	// an unexpected OS read/fd error), failing closed rather than silently
+	// leaving package-database paths unguarded.
+	ErrPackageDBScan = errors.New("package-database directory scan incomplete")
+	// ErrTargetChanged reports a target whose device, inode, file type or size
+	// changed between stat and open/read.
+	ErrTargetChanged = errors.New("target changed between stat and open")
+	// ErrHardLinkTarget reports a regular-file target with multiple hard links
+	// (Nlink > 1), which is unsafe to back up, replace or remove as a single
+	// path.
+	ErrHardLinkTarget = errors.New("target has multiple hard links")
+	// ErrProtectedMetadata reports a target carrying OS-protected metadata
+	// (such as macOS SIP com.apple.rootless) that cannot be preserved across
+	// replacement or restore.
+	ErrProtectedMetadata = errors.New("target carries OS-protected metadata that cannot be preserved")
+	// ErrNilStateProvider reports SetState called with a nil StateProvider.
+	ErrNilStateProvider = errors.New("state provider is nil")
+	// ErrStateRestoreFailed reports that SetState could not restore the
+	// provider's snapshot after a failed Write, so the provider may hold a
+	// partial write.
+	ErrStateRestoreFailed = errors.New("restore after failed state write")
 	// ErrPlanChanged reports that the plan resolved for a reapply has a
 	// different digest from the interrupted run's plan.
 	ErrPlanChanged = errors.New("plan changed since the interrupted run")
@@ -76,17 +115,23 @@ func ExitCode(err error) contract.ExitCode {
 		errors.Is(err, ErrRecoveryClaimed),
 		errors.Is(err, ErrRecoveryPending),
 		errors.Is(err, ErrEmptinessUnknown),
+		errors.Is(err, ErrRestoreFailed),
+		errors.Is(err, ErrBackupMismatch),
+		errors.Is(err, ErrRestoreMismatch),
+		errors.Is(err, ErrRestoreValidation),
 		errors.Is(err, platform.ErrContainmentNotEmpty),
 		errors.Is(err, platform.ErrSupervisorState):
 		return contract.ExitRecoveryBlocks
-	case errors.Is(err, contract.ErrUndeclaredTarget), errors.Is(err, platform.ErrForbiddenEnv):
+	case errors.Is(err, contract.ErrUndeclaredTarget),
+		errors.Is(err, ErrPackageDBPath),
+		errors.Is(err, ErrPackageDBScan),
+		errors.Is(err, ErrTargetChanged),
+		errors.Is(err, ErrHardLinkTarget),
+		errors.Is(err, ErrProtectedMetadata),
+		errors.Is(err, ErrUnregisteredProvider),
+		errors.Is(err, platform.ErrForbiddenEnv):
 		return contract.ExitRefused
 	default:
 		return contract.ExitFailed
 	}
 }
-
-// ErrUnsupportedMetadata reports a target that carries an ACL or extended
-// attributes. The backup cannot keep them yet, so the engine refuses rather
-// than drop them. It is a sentinel for errors.Is and is never reassigned.
-var ErrUnsupportedMetadata = errors.New("target has an ACL or extended attributes, which the backup cannot keep yet")

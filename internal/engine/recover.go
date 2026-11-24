@@ -264,14 +264,16 @@ func (e *Engine) recoverLocked(ctx context.Context, l *locks, self platform.Proc
 	if receipt == nil || rec.Status != StatusRestored {
 		m, err := e.readManifest(rec.RunID)
 		if err != nil {
-			return res, err
+			_ = k.stopRenewing()
+			return res, errors.Join(fmt.Errorf("%w: %w", ErrRestoreFailed, err), e.dropClaim(bk, l, rec.RunID, self))
 		}
 		rec.RestoreOnly = rec.RestoreOnly || o.RestoreOnly
 		if err := k.err(); err != nil {
 			return res, err
 		}
 		if err := e.restoreRun(bk, l, rec, m, next); err != nil {
-			return res, err
+			_ = k.stopRenewing()
+			return res, errors.Join(err, e.dropClaim(bk, l, rec.RunID, self))
 		}
 	}
 	res.Action = ResumeRestored
@@ -280,7 +282,7 @@ func (e *Engine) recoverLocked(ctx context.Context, l *locks, self platform.Proc
 		return res, err
 	}
 	if next == StatusIdle {
-		rec.Claim = nil
+		rec.Status, rec.Claim = StatusIdle, nil
 		return res, l.withJournal(bk, func() error { return e.writeRecord(rec) })
 	}
 
@@ -288,18 +290,30 @@ func (e *Engine) recoverLocked(ctx context.Context, l *locks, self platform.Proc
 	if err != nil {
 		return res, fmt.Errorf("resolve %s for reapply: %w", rec.Unit, err)
 	}
-	if p.Digest != rec.PlanDigest {
-		rec.Status, rec.Claim = StatusIdle, nil
-		return res, errors.Join(
-			fmt.Errorf("%w: %s plan %s, run %s had %s", ErrPlanChanged, rec.Unit, p.Digest, rec.RunID, rec.PlanDigest),
-			l.withJournal(bk, func() error { return e.writeRecord(rec) }))
-	}
 	desc, err := u.Describe(ctx)
 	if err != nil {
 		return res, fmt.Errorf("describe %s: %w", rec.Unit, err)
 	}
 	if desc.Unit != rec.Unit || u.ID() != rec.Unit || p.Unit != rec.Unit {
 		return res, fmt.Errorf("%w: resolver returned %q for %q", ErrUnitMismatch, u.ID(), rec.Unit)
+	}
+	finalised, _, mutated, err := e.finalisePlan(ctx, desc, p)
+	if err != nil {
+		return res, fmt.Errorf("finalise plan %s for reapply: %w", rec.Unit, err)
+	}
+	// Compare digests on the same canonical basis as Engine.Plan. Also accept a
+	// verbatim match when the interrupted run bypassed Engine.Plan with a
+	// non-canonical digest and target inspection added no new CannotUndo notes.
+	canonicalMatch := finalised.Digest == rec.PlanDigest
+	verbatimMatch := !mutated && p.Digest != "" && p.Digest == rec.PlanDigest && !isCanonicalDigest(rec.PlanDigest)
+	if !canonicalMatch && !verbatimMatch {
+		rec.Status, rec.Claim = StatusIdle, nil
+		return res, errors.Join(
+			fmt.Errorf("%w: %s plan %s, run %s had %s", ErrPlanChanged, rec.Unit, finalised.Digest, rec.RunID, rec.PlanDigest),
+			l.withJournal(bk, func() error { return e.writeRecord(rec) }))
+	}
+	if canonicalMatch {
+		p = finalised
 	}
 	if err := e.runApply(ctx, l, self, u, desc, p); err != nil {
 		return res, err

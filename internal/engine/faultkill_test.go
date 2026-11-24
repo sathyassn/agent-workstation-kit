@@ -12,6 +12,8 @@ import (
 
 	"github.com/sathyassn/agent-workstation-kit/internal/contract"
 	"github.com/sathyassn/agent-workstation-kit/internal/engine"
+	"github.com/sathyassn/agent-workstation-kit/internal/platform"
+	"github.com/sathyassn/agent-workstation-kit/internal/platform/platformtest"
 )
 
 // The child-process protocol of the kill harness.
@@ -24,8 +26,24 @@ const (
 	modeResume    = "resume"
 	killedFile    = "killed"
 	completedFile = "completed"
+	faultHostFile = "fault-hostname.json"
 	maxBoundaries = 500
 )
+
+func faultHostnameProvider(t *testing.T, w *world) contract.StateProvider {
+	t.Helper()
+	runner, err := platformtest.NewFileHostnameRunner(filepath.Join(w.dir, faultHostFile), platformtest.HostnameState{
+		Static:        testOrigHostname,
+		Pretty:        "Lab Fault Orig",
+		Transient:     testOrigHostname,
+		LocalHostName: testOrigHostname,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.wireHostnameRunner(runner)
+	return newHostnameProvider(runner)
+}
 
 // TestHelperFaultChild is not a test: it is the child process of the kill
 // harness. It runs one apply or resume and SIGKILLs itself at the Nth
@@ -49,8 +67,15 @@ func TestHelperFaultChild(t *testing.T) {
 		}
 	}
 	w := worldAt(dir)
-	e, _ := w.engine(t, func(o *engine.Options) { o.Fault = fault })
-	u := &testUnit{root: w.root}
+	hostProv := faultHostnameProvider(t, w)
+	providers := map[contract.StateProviderName]contract.StateProvider{
+		contract.ProviderHostname: hostProv,
+	}
+	e, _ := w.engine(t, func(o *engine.Options) {
+		o.Fault = fault
+		o.Providers = providers
+	})
+	u := &testUnit{root: w.root, hostProv: hostProv}
 	var err error
 	if os.Getenv(envChildMode) == modeResume {
 		_, err = e.Resume(context.Background(), resolverFor(u), engine.ResumeOptions{})
@@ -97,8 +122,12 @@ func runChild(t *testing.T, dir, mode string, env ...string) (engine.Point, bool
 // resume action.
 func nextStart(t *testing.T, w *world) engine.ResumeAction {
 	t.Helper()
-	u := &testUnit{root: w.root}
-	e, _ := w.engine(t)
+	hostProv := faultHostnameProvider(t, w)
+	providers := map[contract.StateProviderName]contract.StateProvider{
+		contract.ProviderHostname: hostProv,
+	}
+	u := &testUnit{root: w.root, hostProv: hostProv}
+	e, _ := w.engine(t, func(o *engine.Options) { o.Providers = providers })
 	res, err := e.Resume(context.Background(), resolverFor(u), engine.ResumeOptions{})
 	if err != nil {
 		t.Fatalf("resume: %v", err)
@@ -125,11 +154,19 @@ func finished(t *testing.T, w *world) bool {
 
 // assertFinished checks the end state every kill must reach: the unit
 // applied, the record idle, a verified receipt for the last run, and no
-// temporary files.
+// temporary files. When a fault-hostname fixture was seeded in w.dir, it also
+// verifies the applied hostname state.
 func assertFinished(t *testing.T, w *world, what string) {
 	t.Helper()
 	w.assertState(t, appliedState(), what)
 	w.assertNoTemps(t)
+	if _, err := os.Stat(filepath.Join(w.dir, faultHostFile)); err == nil {
+		hostProv := faultHostnameProvider(t, w)
+		gotHost, err := hostProv.Read(context.Background(), platform.HostnameKeyStatic)
+		if err != nil || gotHost.Value != testAppliedHostname {
+			t.Fatalf("%s: hostname = %+v, %v; want %q", what, gotHost, err, testAppliedHostname)
+		}
+	}
 	rec := w.record(t)
 	if rec == nil || rec.Status != engine.StatusIdle {
 		t.Fatalf("%s: record = %+v, want idle", what, rec)
@@ -140,10 +177,11 @@ func assertFinished(t *testing.T, w *world, what string) {
 }
 
 // TestKillAtEveryApplyBoundaryRecovers is AC-1: for N = 1, 2, ..., a child
-// apply is SIGKILLed at its Nth boundary, until an apply runs to the end
-// with no kill. After each kill, the next start must end with the unit
-// applied. The unit's Apply refuses to start from anything but the original
-// state, so every reapply proves the restore ran first.
+// apply is SIGKILLed at its Nth boundary (including before, inside and after
+// SetState), until an apply runs to the end with no kill. After each kill,
+// the next start must end with both files and hostname state applied. The
+// unit's Apply refuses to start from anything but the original files and
+// hostname, so every reapply proves the restore ran first.
 func TestKillAtEveryApplyBoundaryRecovers(t *testing.T) {
 	seen := map[engine.Point]bool{}
 	actions := map[engine.ResumeAction]int{}
@@ -152,6 +190,7 @@ func TestKillAtEveryApplyBoundaryRecovers(t *testing.T) {
 			t.Fatal("apply never completed")
 		}
 		w := newWorld(t)
+		_ = faultHostnameProvider(t, w)
 		point, completed := runChild(t, w.dir, modeApply, envKillAt+"="+strconv.Itoa(n))
 		if completed {
 			if n == 1 {
@@ -177,7 +216,8 @@ func TestKillAtEveryApplyBoundaryRecovers(t *testing.T) {
 	}
 	for _, p := range []engine.Point{
 		engine.PointAtomicTemp, engine.PointAtomicRenamed, engine.PointBackupEntry, engine.PointIntent,
-		engine.PointMutation, engine.PointLaunch, engine.PointCommandDone, engine.PointCommandEmptied, engine.PointApplied,
+		engine.PointMutation, engine.PointStateBackup, engine.PointStateWrite,
+		engine.PointLaunch, engine.PointCommandDone, engine.PointCommandEmptied, engine.PointApplied,
 		engine.PointVerified, engine.PointReceipt, engine.PointIdle,
 	} {
 		if !seen[p] {
@@ -189,26 +229,32 @@ func TestKillAtEveryApplyBoundaryRecovers(t *testing.T) {
 	}
 }
 
-// TestKillDuringRecoveryRecovers kills the apply at its first change, then
-// kills the recovering start at each of its boundaries in turn. The start
-// after that must still end with the unit applied: recovery is itself safe
-// to interrupt.
+// TestKillDuringRecoveryRecovers kills the apply after SetState mutates the
+// hostname, then kills the recovering start at each of its boundaries in turn
+// (including mid state-restore at PointStateRestore). The start after that
+// must still end with the unit applied: recovery is itself safe to interrupt.
 func TestKillDuringRecoveryRecovers(t *testing.T) {
+	seen := map[engine.Point]bool{}
 	for m := 1; ; m++ {
 		if m > maxBoundaries {
 			t.Fatal("resume never completed")
 		}
 		w := newWorld(t)
-		if _, completed := runChild(t, w.dir, modeApply, envKillPoint+"="+string(engine.PointMutation)); completed {
-			t.Fatal("apply was not killed at its first change")
+		_ = faultHostnameProvider(t, w)
+		if _, completed := runChild(t, w.dir, modeApply, envKillPoint+"="+string(engine.PointStateWrite)); completed {
+			t.Fatal("apply was not killed after SetState write")
 		}
 		point, completed := runChild(t, w.dir, modeResume, envKillAt+"="+strconv.Itoa(m))
 		if completed {
 			assertFinished(t, w, "uninterrupted resume")
 			t.Logf("resume killed at %d boundaries", m-1)
-			return
+			break
 		}
+		seen[point] = true
 		nextStart(t, w)
 		assertFinished(t, w, "resume kill "+strconv.Itoa(m)+" at "+string(point))
+	}
+	if !seen[engine.PointStateRestore] {
+		t.Errorf("no kill at %s during recovery", engine.PointStateRestore)
 	}
 }
