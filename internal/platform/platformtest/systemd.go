@@ -32,9 +32,10 @@ type Systemd struct {
 	table *ProcessTable
 	tool  func(ctx context.Context, s *Scope) int
 	hold  func(name string)
-	late  func()
-	units map[string]*unit
-	held  map[string]heldLaunch
+	late      func()
+	afterShow func(name string)
+	units     map[string]*unit
+	held      map[string]heldLaunch
 }
 
 type unit struct {
@@ -68,6 +69,39 @@ func (f *Systemd) HoldRegistration(fn func(name string), late func()) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.hold, f.late = fn, late
+}
+
+// HoldLaunch starts a supervisor for name that has passed its gate but not
+// yet registered the scope, as after an engine crash in that window.
+func (f *Systemd) HoldLaunch(name string) platform.ProcessIdentity {
+	sup := f.table.Spawn()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.held[name] = heldLaunch{sup: sup}
+	return sup
+}
+
+// AfterShow calls fn after each systemctl show has computed its answer and
+// before the caller sees it, to place another process's step between two of
+// the adapter's checks.
+func (f *Systemd) AfterShow(fn func(name string)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.afterShow = fn
+}
+
+// RegisterHeld lets the held supervisor for name register its scope, start
+// a tool that leaves one descendant with later as its delayed work, and
+// exit. It returns the descendant.
+func (f *Systemd) RegisterHeld(name string, later func()) platform.ProcessIdentity {
+	desc := f.table.Spawn()
+	f.mu.Lock()
+	h := f.held[name]
+	delete(f.held, name)
+	f.units[name] = &unit{members: map[platform.ProcessIdentity]func(){desc: later}}
+	f.mu.Unlock()
+	f.table.Kill(h.sup)
+	return desc
 }
 
 // CompleteRegistrations lets every held supervisor that is still alive
@@ -134,7 +168,14 @@ func (f *Systemd) Run(ctx context.Context, spec platform.ExecSpec) (platform.Exe
 	case "systemd-run":
 		return f.systemdRun(ctx, spec)
 	case "systemctl":
-		return f.systemctl(spec.Argv[1:])
+		res, err := f.systemctl(spec.Argv[1:])
+		f.mu.Lock()
+		after := f.afterShow
+		f.mu.Unlock()
+		if after != nil && slices.Contains(spec.Argv, "show") {
+			after(spec.Argv[len(spec.Argv)-1])
+		}
+		return res, err
 	}
 	return platform.ExecResult{ExitCode: 127}, nil
 }

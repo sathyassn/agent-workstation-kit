@@ -376,3 +376,33 @@ func TestRefusedGateRunsNothing(t *testing.T) {
 		t.Fatalf("err = %v, ran = %v, loaded = %v", err, ran, sd.Loaded(scope))
 	}
 }
+
+// TestEmptyCatchesRegistrationBetweenChecks is round 3, item 1. Right after
+// the scope reads "not-found", the held supervisor registers it, starts a
+// tool that leaves a descendant, and exits. Checking the scope before the
+// supervisor would see "gone" then "dead" and call it empty. Checking the
+// supervisor first, and requiring two consistent quiet samples, catches the
+// descendant and kills it before Empty succeeds.
+func TestEmptyCatchesRegistrationBetweenChecks(t *testing.T) {
+	table := platformtest.NewProcessTable("b")
+	sd := platformtest.NewSystemd(table)
+	sup := sd.HoldLaunch(scope)
+	var desc platform.ProcessIdentity
+	fired := false
+	sd.AfterShow(func(string) {
+		if !fired {
+			fired = true
+			desc = sd.RegisterHeld(scope, nil)
+		}
+	})
+	c := &linux.Containment{Runner: sd, Inspector: table}
+	err := c.Empty(context.Background(), scope, platform.EmptyOptions{
+		Scope: contract.ScopeRoot, Supervisor: sup, KillWait: 20 * time.Millisecond, PollInterval: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("Empty: %v", err)
+	}
+	if alive, _ := table.Alive(context.Background(), desc); alive {
+		t.Fatal("Empty succeeded while the descendant still ran")
+	}
+}

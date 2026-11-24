@@ -28,6 +28,7 @@ type fakeControl struct {
 	signals  []syscall.Signal
 	stateErr error
 	block    bool // State blocks until its context ends
+	lateOn   int  // the State check at which a late registration appears
 }
 
 func (f *fakeControl) State(ctx context.Context, _ string, _ platform.ScopeSelector) (platform.ContainmentState, error) {
@@ -41,6 +42,9 @@ func (f *fakeControl) State(ctx context.Context, _ string, _ platform.ScopeSelec
 		return 0, f.stateErr
 	}
 	f.checks++
+	if f.lateOn > 0 && f.checks == f.lateOn {
+		f.active = true
+	}
 	if f.selfEnds > 0 && f.checks >= f.selfEnds {
 		f.active = false
 	}
@@ -303,5 +307,20 @@ func TestCheckTrustedBinary(t *testing.T) {
 		if err := platform.CheckTrustedBinary(tc.path); (err == nil) != tc.ok || (err != nil && !errors.Is(err, platform.ErrUntrustedBinary)) {
 			t.Errorf("CheckTrustedBinary(%q) = %v, want ok=%v", tc.path, err, tc.ok)
 		}
+	}
+}
+
+// TestEmptyBoundedNeedsTwoQuietSamples is round 3, items 1 and 3: one quiet
+// sample is not enough, because a registration can still be in flight. Here
+// the containment reads gone once, then a late registration makes it
+// active; Empty must see it and terminate it.
+func TestEmptyBoundedNeedsTwoQuietSamples(t *testing.T) {
+	ctl := &fakeControl{lateOn: 2, emptyOn: syscall.SIGTERM}
+	opts := platform.EmptyOptions{KillWait: 10 * time.Millisecond, PollInterval: time.Millisecond}
+	if err := platform.EmptyBounded(context.Background(), ctl, &fakeProcs{}, "c", platform.ScopeSelector{}, opts); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(ctl.signals, []syscall.Signal{syscall.SIGTERM}) || ctl.active {
+		t.Fatalf("signals = %v, active = %v; want the late registration terminated", ctl.signals, ctl.active)
 	}
 }

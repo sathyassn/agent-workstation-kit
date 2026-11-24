@@ -114,7 +114,15 @@ func (b bounded) supervisorAlive(ctx context.Context) (bool, error) {
 	return alive, err
 }
 
-func (b bounded) busy(ctx context.Context) (bool, error) {
+// quiet takes one sample: the supervisor first, then the containment. In
+// this order a supervisor seen dead can no longer register the containment
+// or start anything after the containment is read, so a quiet sample means
+// both were quiet at the containment read.
+func (b bounded) quiet(ctx context.Context) (bool, error) {
+	sup, err := b.supervisorAlive(ctx)
+	if err != nil || sup {
+		return false, err
+	}
 	var st ContainmentState
 	if err := b.call(ctx, "check containment", func(c context.Context) error {
 		var err error
@@ -125,25 +133,38 @@ func (b bounded) busy(ctx context.Context) (bool, error) {
 	}); err != nil {
 		return false, err
 	}
-	sup, err := b.supervisorAlive(ctx)
-	if err != nil {
-		return false, err
-	}
-	return st != StateGone || sup, nil
+	return st == StateGone, nil
 }
 
+// busy reports whether the containment may still hold processes. It is
+// empty only when two consecutive samples are quiet; one quiet sample can be
+// a registration still in flight.
+func (b bounded) busy(ctx context.Context) (bool, error) {
+	for range 2 {
+		q, err := b.quiet(ctx)
+		if err != nil || !q {
+			return true, err
+		}
+	}
+	return false, nil
+}
+
+// signal signals the supervisor first, so it cannot register or start
+// anything more, then every process in the containment.
 func (b bounded) signal(ctx context.Context, sig syscall.Signal) error {
-	if err := b.call(ctx, "signal containment", func(c context.Context) error {
-		return b.ctl.Signal(c, b.name, b.sel, sig)
-	}); err != nil {
-		return err
-	}
 	alive, err := b.supervisorAlive(ctx)
-	if err != nil || !alive {
+	if err != nil {
 		return err
 	}
-	return b.call(ctx, "signal supervisor of", func(c context.Context) error {
-		return b.procs.Signal(c, b.opts.Supervisor, sig)
+	if alive {
+		if err := b.call(ctx, "signal supervisor of", func(c context.Context) error {
+			return b.procs.Signal(c, b.opts.Supervisor, sig)
+		}); err != nil {
+			return err
+		}
+	}
+	return b.call(ctx, "signal containment", func(c context.Context) error {
+		return b.ctl.Signal(c, b.name, b.sel, sig)
 	})
 }
 
