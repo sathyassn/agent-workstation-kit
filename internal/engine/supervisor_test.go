@@ -196,3 +196,50 @@ func TestLatchedEmptinessFailureSurvivesUnitError(t *testing.T) {
 		t.Fatalf("record = %+v, want applying", rec)
 	}
 }
+
+// TestLatchedEmptinessSurvivesEventLogFailure is round 3, item 2, the case
+// Codex found: Run latches ErrEmptinessUnknown and the event log fails too.
+// Whether the unit ignores Run's error or returns its own, both failures
+// must reach the engine: exit 4, nothing restored, the intent unfinished.
+func TestLatchedEmptinessSurvivesEventLogFailure(t *testing.T) {
+	for _, ownErr := range []bool{false, true} {
+		name := "unit ignores the command error"
+		if ownErr {
+			name = "unit returns its own error"
+		}
+		t.Run(name, func(t *testing.T) {
+			w := newWorld(t)
+			sd := platformtest.NewSystemd(w.table)
+			sink := &failingSink{}
+			sd.SetTool(func(_ context.Context, s *platformtest.Scope) int {
+				s.Spawn(nil, true) // survives every signal
+				sink.mu.Lock()
+				sink.err = errors.New("disk full")
+				sink.mu.Unlock()
+				return 0
+			})
+			e, _ := w.engine(t, withSystemd(w, sd), func(o *engine.Options) { o.Sink = sink })
+			u := &refusalUnit{testUnit: testUnit{root: w.root}, op: func(ctx context.Context, tx contract.Tx) error {
+				owner := contract.Owner{UID: os.Getuid(), GID: os.Getgid()}
+				if err := tx.WriteFile(ctx, pathA, []byte("new-a\n"), 0o644, owner); err != nil {
+					return err
+				}
+				_, _ = tx.Run(ctx, contract.Command{Argv: []string{"/usr/bin/true"}})
+				if ownErr {
+					return errors.New("unit gave up")
+				}
+				return nil
+			}}
+			err := e.Apply(context.Background(), u, testPlan())
+			if !errors.Is(err, engine.ErrEmptinessUnknown) || engine.ExitCode(err) != contract.ExitRecoveryBlocks {
+				t.Fatalf("err = %v (exit %d), want ErrEmptinessUnknown and exit 4", err, engine.ExitCode(err))
+			}
+			if got := w.state(t)[pathA]; got == nil || *got != "new-a\n" {
+				t.Fatalf("path A = %v, want the change left in place, not restored", got)
+			}
+			if rec := w.record(t); rec.Status != engine.StatusApplying || rec.Command == nil || rec.Command.Finished {
+				t.Fatalf("record = %+v, want applying with an unfinished command", rec)
+			}
+		})
+	}
+}

@@ -89,15 +89,21 @@ func (t *tx) Events() []contract.Event {
 	return append([]contract.Event(nil), t.events...)
 }
 
+// sinkErr returns every failure that must stop the step: a failed event
+// write and the latched failure (such as ErrEmptinessUnknown), joined. One
+// never replaces the other, so a failing event log cannot hide a
+// containment that was not proven empty.
 func (t *tx) sinkErr() error {
+	var sinkErr error
 	if r, ok := t.e.opts.Sink.(errReporter); ok {
 		if err := r.Err(); err != nil {
-			return fmt.Errorf("%w: %w", ErrEventLog, err)
+			sinkErr = fmt.Errorf("%w: %w", ErrEventLog, err)
 		}
 	}
 	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.failed
+	failed := t.failed
+	t.mu.Unlock()
+	return errors.Join(sinkErr, failed)
 }
 
 // begin checks that a mutation may start: the target is declared, the step
