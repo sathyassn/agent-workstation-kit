@@ -78,12 +78,34 @@ func (p ProcessInspector) Alive(ctx context.Context, id platform.ProcessIdentity
 	return start == id.StartTime, nil
 }
 
-// Signal sends sig to the process id names, after checking it is still that
-// process. A process that has already exited is not an error.
+// Signal sends sig to the process id names. It re-reads the start time
+// immediately before kill(2): a PID now held by a process with another start
+// time is refused with ErrIdentityChanged, and a PID with no process is not
+// an error.
+//
+// Residual race: macOS has no pidfd, so the process can exit, and its PID be
+// reused, between that read and kill(2). The window is one system call, and
+// macOS hands out PIDs in sequence rather than reusing a freed one at once.
 func (p ProcessInspector) Signal(ctx context.Context, id platform.ProcessIdentity, sig syscall.Signal) error {
-	alive, err := p.Alive(ctx, id)
-	if err != nil || !alive {
+	if !id.Valid() {
+		return fmt.Errorf("%w: %+v", platform.ErrInvalidProcessIdentity, id)
+	}
+	boot, err := p.BootID(ctx)
+	if err != nil {
 		return err
+	}
+	if boot != id.BootID {
+		return nil
+	}
+	start, found, err := startTime(id.PID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return nil
+	}
+	if start != id.StartTime {
+		return fmt.Errorf("%w: pid %d started at %s, recorded %s", platform.ErrIdentityChanged, id.PID, start, id.StartTime)
 	}
 	if err := syscall.Kill(id.PID, sig); err != nil && !errors.Is(err, syscall.ESRCH) {
 		return fmt.Errorf("signal pid %d: %w", id.PID, err)

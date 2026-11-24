@@ -39,6 +39,9 @@ var (
 	// adapter cannot interpret, so it cannot tell whether a containment is
 	// empty. Callers treat it as not empty.
 	ErrSupervisorState = errors.New("supervisor state unknown")
+	// ErrIdentityChanged reports a PID that now belongs to a process with
+	// another start time; nothing is signalled.
+	ErrIdentityChanged = errors.New("process identity changed; not signalled")
 	// ErrForbiddenEnv reports a tool variable that would steer the dynamic
 	// loader or the supervisor itself: LD_*, DYLD_* or SYSTEMD_*.
 	ErrForbiddenEnv = errors.New("environment variable not allowed for a tool")

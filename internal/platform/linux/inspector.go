@@ -27,6 +27,7 @@ const (
 type ProcessInspector struct {
 	// ProcRoot is /proc, or a fixture folder in tests.
 	ProcRoot string
+	pidfd    *pidfdOps
 }
 
 // NewProcessInspector returns an inspector that reads /proc.
@@ -94,17 +95,56 @@ func (p *ProcessInspector) Alive(ctx context.Context, id platform.ProcessIdentit
 	return start == id.StartTime, nil
 }
 
-// Signal sends sig to the process id names, after checking it is still that
-// process. A process that has already exited is not an error.
+// Signal sends sig to the process id names through a pidfd. The pidfd is
+// opened first and pins that process; the identity is checked after, while
+// the pidfd holds it, and the signal goes through pidfd_send_signal, so a
+// reused PID can never receive it. A PID now held by a process with another
+// start time is refused with ErrIdentityChanged; a process that has exited
+// is not an error. A kernel without pidfd (before 5.3) fails closed.
 func (p *ProcessInspector) Signal(ctx context.Context, id platform.ProcessIdentity, sig syscall.Signal) error {
-	alive, err := p.Alive(ctx, id)
-	if err != nil || !alive {
+	if !id.Valid() {
+		return fmt.Errorf("%w: %+v", platform.ErrInvalidProcessIdentity, id)
+	}
+	pf := p.pidfd
+	if pf == nil {
+		pf = defaultPidfd()
+	}
+	fd, err := pf.open(id.PID)
+	if errors.Is(err, syscall.ESRCH) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("pidfd for pid %d: %w", id.PID, err)
+	}
+	defer func() { _ = pf.close(fd) }()
+	boot, err := p.BootID(ctx)
+	if err != nil {
 		return err
 	}
-	if err := syscall.Kill(id.PID, sig); err != nil && !errors.Is(err, syscall.ESRCH) {
+	if boot != id.BootID {
+		return nil
+	}
+	start, err := p.startTime(id.PID)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if start != id.StartTime {
+		return fmt.Errorf("%w: pid %d started at %s, recorded %s", platform.ErrIdentityChanged, id.PID, start, id.StartTime)
+	}
+	if err := pf.send(fd, sig); err != nil && !errors.Is(err, syscall.ESRCH) {
 		return fmt.Errorf("signal pid %d: %w", id.PID, err)
 	}
 	return nil
+}
+
+// pidfdOps are the pidfd system calls, replaceable in tests.
+type pidfdOps struct {
+	open  func(pid int) (int, error)
+	send  func(fd int, sig syscall.Signal) error
+	close func(fd int) error
 }
 
 func (p *ProcessInspector) startTime(pid int) (string, error) {
