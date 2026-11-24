@@ -1000,8 +1000,12 @@ class _AhoCorasick:
                 if self._out[self._fail[nxt]]:
                     self._out[nxt].extend(self._out[self._fail[nxt]])
 
-    def find_bounded(self, text: str) -> list[str]:
-        """Return canonical tokens whose patterns match on non-alnum boundaries."""
+    def find_bounded(self, text: str, *, must_cross_index: int | None = None) -> list[str]:
+        """Return canonical tokens whose patterns match on non-alnum boundaries.
+
+        When `must_cross_index` is set, only matches whose span strictly crosses
+        that index (`start < must_cross_index < end`) are returned.
+        """
         if not text or not self._goto[0]:
             return []
         hits: list[str] = []
@@ -1030,6 +1034,8 @@ class _AhoCorasick:
                 continue
             for pat_len, canonicals in outputs:
                 start = end - pat_len
+                if must_cross_index is not None and not (start < must_cross_index < end):
+                    continue
                 if start > 0 and text[start - 1].isalnum():
                     continue
                 for canonical in canonicals:
@@ -1143,5 +1149,56 @@ class IdentityMatcher:
             record(self._zero.find_bounded(zero_view))
             zero_sep = ZERO_PAD_RE.sub(r"\1", SEP_COLLAPSE_RE.sub(" ", lower))
             record(self._zero.find_bounded(zero_sep))
+
+        return hits
+
+    def detect_crossing(self, before: str, after: str, *, path: str = "") -> list[str]:
+        """Return identity tokens whose matched span strictly crosses the before/after boundary."""
+        if not self.tokens or not before or not after:
+            return []
+        masked_before = _mask_public_identifier_contexts(before, path=path)
+        masked_after = _mask_public_identifier_contexts(after, path=path)
+        lower_before = masked_before.casefold()
+        lower_after = masked_after.casefold()
+        seen: set[str] = set()
+        hits: list[str] = []
+
+        def record(found: list[str]) -> None:
+            for item in found:
+                if item not in seen:
+                    seen.add(item)
+                    hits.append(item)
+
+        def check_joined(matcher: _AhoCorasick, left: str, right: str, sep: str) -> None:
+            if not left or not right:
+                return
+            joined = left + sep + right
+            record(matcher.find_bounded(joined, must_cross_index=len(left)))
+
+        # Direct boundary with space (line wrap acts as whitespace between tokens).
+        ws_left = WHITESPACE_RE.sub(" ", lower_before).rstrip(" ")
+        ws_right = WHITESPACE_RE.sub(" ", lower_after).lstrip(" ")
+        check_joined(self._direct, ws_left, ws_right, " ")
+
+        if masked_before != lower_before or masked_after != lower_after:
+            c_left = WHITESPACE_RE.sub(" ", CAMEL_BOUNDARY_RE.sub(" ", masked_before).casefold()).rstrip(" ")
+            c_right = WHITESPACE_RE.sub(" ", CAMEL_BOUNDARY_RE.sub(" ", masked_after).casefold()).lstrip(" ")
+            if c_left != ws_left or c_right != ws_right:
+                check_joined(self._direct, c_left, c_right, " ")
+
+        if self._sep is not None:
+            s_left = SEP_COLLAPSE_RE.sub(" ", lower_before).rstrip(" ")
+            s_right = SEP_COLLAPSE_RE.sub(" ", lower_after).lstrip(" ")
+            check_joined(self._sep, s_left, s_right, " ")
+
+        if self._zero is not None and (
+            HAS_DIGIT_RE.search(lower_before) is not None or HAS_DIGIT_RE.search(lower_after) is not None
+        ):
+            z_left = ZERO_PAD_RE.sub(r"\1", ws_left)
+            z_right = ZERO_PAD_RE.sub(r"\1", ws_right)
+            check_joined(self._zero, z_left, z_right, " ")
+            zs_left = ZERO_PAD_RE.sub(r"\1", SEP_COLLAPSE_RE.sub(" ", lower_before).rstrip(" "))
+            zs_right = ZERO_PAD_RE.sub(r"\1", SEP_COLLAPSE_RE.sub(" ", lower_after).lstrip(" "))
+            check_joined(self._zero, zs_left, zs_right, " ")
 
         return hits

@@ -2086,11 +2086,17 @@ class Scanner:
         if not text:
             return None, [], False
         git_lines = _split_git_lines(text)
-        prescreen_text = "\n".join(git_lines).replace("\r", "\n")
-        if not prescreen_text:
+        lf_text = "\n".join(line.replace("\r", " ") for line in git_lines)
+        cr_text = "\n".join(git_lines).replace("\r", "\n")
+        if not lf_text and not cr_text:
             return None, [], False
         try:
-            file_variants = self._text_variants(prescreen_text)
+            lf_variants = self._text_variants(lf_text)
+            if cr_text != lf_text:
+                cr_variants = self._text_variants(cr_text)
+                file_variants = tuple(dict.fromkeys((*lf_variants, *cr_variants)))
+            else:
+                file_variants = lf_variants
         except ScanConfigError as exc:
             return f"decode failed ({exc}); failing closed", [], False
         scoped_identity = identity_scope is not None and not identity_scope.all_content
@@ -2127,8 +2133,34 @@ class Scanner:
         for number, git_line in enumerate(git_lines, start=1):
             if not git_line:
                 continue
-            sub_lines = git_line.split("\r")
             seen_for_git_line: dict[str, set[str]] = {}
+            # Union: when bare CR is present, scan the LF-only view first (preserving multi-part
+            # identities and phones split across CRs) and then each CR-split sub-line (catching
+            # bare-CR YAML phone lists), mapping every hit to Git line `number`.
+            if "\r" in git_line:
+                lf_view = git_line.replace("\r", " ")
+                try:
+                    lf_line_variants = _line_variants(lf_view)
+                except ScanConfigError as exc:
+                    return f"decode failed ({exc}); failing closed", [], False
+                for rule_id, detector_fn in triggered:
+                    if (
+                        rule_id == IDENTITY_RULE_ID
+                        and scoped_identity
+                        and not identity_scope.includes_line(path, number)
+                    ):
+                        continue
+                    det_hits, err = self._run_detector_checked(rule_id, detector_fn, lf_line_variants, path=path)
+                    if err is not None:
+                        return err, [], False
+                    seen_values = seen_for_git_line.setdefault(rule_id, set())
+                    for value in det_hits:
+                        if value not in seen_values:
+                            seen_values.add(value)
+                            raw_hits.append((number, rule_id, value, False))
+                            if len(raw_hits) > MAX_FINDINGS:
+                                return None, raw_hits[:MAX_FINDINGS], True
+            sub_lines = git_line.split("\r")
             for sub_line in sub_lines:
                 if not sub_line:
                     continue
@@ -2191,48 +2223,11 @@ class Scanner:
                 for rule_id, _fn in wrap_triggered:
                     if rule_id in seen_for_git_line:
                         per_line_hits[(number, rule_id)] = seen_for_git_line[rule_id]
-                # Also catch wrapped identity/keyed terms split across bare-CR sub-lines on the same Git line.
-                if len(sub_lines) > 1:
-                    for s_idx in range(len(sub_lines) - 1):
-                        cur_sub = sub_lines[s_idx]
-                        nxt_sub = sub_lines[s_idx + 1]
-                        if not cur_sub or not nxt_sub:
-                            continue
-                        sub_pair_rules = [
-                            (rule_id, fn)
-                            for rule_id, fn in wrap_triggered
-                            if not (
-                                rule_id == IDENTITY_RULE_ID
-                                and scoped_identity
-                                and not identity_scope.includes_line(path, number)
-                            )
-                        ]
-                        if not sub_pair_rules:
-                            continue
-                        sub_pair_text = cur_sub[-WRAP_WINDOW_CHARS:] + "\n" + nxt_sub[:WRAP_WINDOW_CHARS]
-                        try:
-                            sub_pair_variants = _line_variants(sub_pair_text)
-                        except ScanConfigError as exc:
-                            return f"decode failed ({exc}); failing closed", [], False
-                        for rule_id, detector_fn in sub_pair_rules:
-                            det_hits, err = self._run_detector_checked(
-                                rule_id, detector_fn, sub_pair_variants, path=path
-                            )
-                            if err is not None:
-                                return err, [], False
-                            seen_values = seen_for_git_line.setdefault(rule_id, set())
-                            for value in det_hits:
-                                if value not in seen_values:
-                                    seen_values.add(value)
-                                    raw_hits.append((number, rule_id, value, False))
-                                    if len(raw_hits) > MAX_FINDINGS:
-                                        return None, raw_hits[:MAX_FINDINGS], True
-                            per_line_hits[(number, rule_id)] = seen_values
 
         # Linear-time wrapped cross-line pass for multi-word/hyphenated identities
         # and keyed terms split across adjacent Git lines (bounded by WRAP_WINDOW_CHARS).
         if wrap_triggered and len(git_lines) > 1:
-            unchanged_boundary_hits: dict[tuple[int, str, str], set[str]] = {}
+            detect_crossing = getattr(self.identity_matcher, "detect_crossing", None)
             for idx in range(len(git_lines) - 1):
                 cur_line = git_lines[idx]
                 nxt_line = git_lines[idx + 1]
@@ -2250,55 +2245,49 @@ class Scanner:
                 ]
                 if not pair_rules:
                     continue
-                cur_tail = cur_line.rsplit("\r", 1)[-1][-WRAP_WINDOW_CHARS:]
-                nxt_head = nxt_line.split("\r", 1)[0][:WRAP_WINDOW_CHARS]
+                cur_tail = cur_line.replace("\r", " ")[-WRAP_WINDOW_CHARS:]
+                nxt_head = nxt_line.replace("\r", " ")[:WRAP_WINDOW_CHARS]
                 if not cur_tail or not nxt_head:
                     continue
-                pair_text = cur_tail + "\n" + nxt_head
-                try:
-                    pair_variants = _line_variants(pair_text)
-                except ScanConfigError as exc:
-                    return f"decode failed ({exc}); failing closed", [], False
                 for rule_id, detector_fn in pair_rules:
+                    if rule_id == IDENTITY_RULE_ID and callable(detect_crossing):
+                        try:
+                            tail_variants = _line_variants(cur_tail)
+                            head_variants = _line_variants(nxt_head)
+                        except ScanConfigError as exc:
+                            return f"decode failed ({exc}); failing closed", [], False
+                        seen_pair: set[str] = set()
+                        max_len = max(len(tail_variants), len(head_variants))
+                        for stage_idx in range(max_len):
+                            tv = tail_variants[min(stage_idx, len(tail_variants) - 1)]
+                            hv = head_variants[min(stage_idx, len(head_variants) - 1)]
+                            try:
+                                cross_hits = detect_crossing(tv, hv, path=path)
+                            except Exception:  # noqa: BLE001 - fail closed without leaking input
+                                return f"detector '{rule_id}' failed; failing closed", [], False
+                            if not isinstance(cross_hits, list):
+                                return f"detector '{rule_id}' returned invalid output; failing closed", [], False
+                            for value in cross_hits:
+                                if not isinstance(value, str):
+                                    return f"detector '{rule_id}' returned invalid match; failing closed", [], False
+                                if value not in seen_pair:
+                                    seen_pair.add(value)
+                                    raw_hits.append((number, rule_id, value, True))
+                                    if len(raw_hits) > MAX_FINDINGS:
+                                        return None, raw_hits[:MAX_FINDINGS], True
+                        continue
+                    pair_text = cur_tail + "\n" + nxt_head
+                    try:
+                        pair_variants = _line_variants(pair_text)
+                    except ScanConfigError as exc:
+                        return f"decode failed ({exc}); failing closed", [], False
                     det_hits, err = self._run_detector_checked(rule_id, detector_fn, pair_variants, path=path)
                     if err is not None:
                         return err, [], False
-                    if not det_hits:
-                        continue
-                    cur_hits = per_line_hits.get((number, rule_id))
-                    if cur_hits is None:
-                        bkey = (number, "tail", rule_id)
-                        cur_hits = unchanged_boundary_hits.get(bkey)
-                        if cur_hits is None:
-                            try:
-                                tail_variants = _line_variants(cur_tail)
-                            except ScanConfigError as exc:
-                                return f"decode failed ({exc}); failing closed", [], False
-                            t_hits, t_err = self._run_detector_checked(
-                                rule_id, detector_fn, tail_variants, path=path
-                            )
-                            if t_err is not None:
-                                return t_err, [], False
-                            cur_hits = set(t_hits)
-                            unchanged_boundary_hits[bkey] = cur_hits
-                    nxt_hits = per_line_hits.get((number + 1, rule_id))
-                    if nxt_hits is None:
-                        bkey = (number + 1, "head", rule_id)
-                        nxt_hits = unchanged_boundary_hits.get(bkey)
-                        if nxt_hits is None:
-                            try:
-                                head_variants = _line_variants(nxt_head)
-                            except ScanConfigError as exc:
-                                return f"decode failed ({exc}); failing closed", [], False
-                            h_hits, h_err = self._run_detector_checked(
-                                rule_id, detector_fn, head_variants, path=path
-                            )
-                            if h_err is not None:
-                                return h_err, [], False
-                            nxt_hits = set(h_hits)
-                            unchanged_boundary_hits[bkey] = nxt_hits
-                    already = cur_hits | nxt_hits
-                    seen_pair: set[str] = set()
+                    already = per_line_hits.get((number, rule_id), set()) | per_line_hits.get(
+                        (number + 1, rule_id), set()
+                    )
+                    seen_pair = set()
                     for value in det_hits:
                         if value not in already and value not in seen_pair:
                             seen_pair.add(value)

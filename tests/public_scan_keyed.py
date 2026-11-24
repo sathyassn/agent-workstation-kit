@@ -45,7 +45,7 @@ COMPOUND_TOKEN_RE = re.compile(r"[^\W_][\w.-]*", re.UNICODE)
 WORD_RUN_RE = re.compile(r"[^\W_]+", re.UNICODE)
 CAMEL_RUN_RE = re.compile(r"[A-Z]+|[a-z]+|[0-9]+|[^\WA-Za-z0-9_]+", re.UNICODE)
 WHITESPACE_RE = re.compile(r"\s+")
-DELIM_SPLIT_RE = re.compile(r"[\s\[\]()<>\"'=&,;{}?]+")
+DELIM_SPLIT_RE = re.compile(r"[\s\[\]()<>\"'=&,;{}]+")
 PUNCTUATION_RE = re.compile(r"[^\w\s]|_", re.UNICODE)
 OUTER_WRAPPER_CHARS = "()[]{}<>\"'`,;:.!?*#~|\\"
 MAX_DOT_SLICE_LABELS = 6
@@ -390,6 +390,16 @@ def extract_candidates_from_normalized(text: str) -> set[str]:
                 continue
             if len(seg) <= MAX_CANDIDATE_CHARS:
                 _add_candidate(candidates, seg)
+            if "?" in seg:
+                for q_part in seg.split("?"):
+                    q_clean = q_part.strip(OUTER_WRAPPER_CHARS)
+                    if not q_clean:
+                        continue
+                    _add_candidate(candidates, q_clean)
+                    if q_clean.casefold().startswith("mailto:"):
+                        q_addr = q_clean[7:].strip(OUTER_WRAPPER_CHARS)
+                        if q_addr:
+                            _add_candidate(candidates, q_addr)
             lower_seg = seg.casefold()
             if lower_seg.startswith("mailto:"):
                 addr = seg[7:].split("?", 1)[0].strip(OUTER_WRAPPER_CHARS)

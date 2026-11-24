@@ -2521,8 +2521,17 @@ class Round3ReviewRegressionTests(unittest.TestCase):
             self.assertNotEqual(0, proc_other_push.returncode, proc_other_push.stdout + proc_other_push.stderr)
 
             # (c) Failed --help probe on a PR (or even pinned push) MUST FAIL CLOSED.
+            # Fixture fails ONLY on --help; any scan invocation would succeed and write scan_ran.txt,
+            # proving the --help probe guard itself stops execution.
+            scan_ran = root / "scan_ran.txt"
             (root / "tests/check_public_release.py").write_text(
-                "import sys\nprint('broken scanner', file=sys.stderr)\nraise SystemExit(1)\n",
+                "import pathlib, sys\n"
+                "if '--help' in sys.argv:\n"
+                "    print('broken help probe', file=sys.stderr)\n"
+                "    raise SystemExit(1)\n"
+                "pathlib.Path('scan_ran.txt').write_text('ran', encoding='utf-8')\n"
+                "print('PUBLIC_SCAN_VERIFIED=1')\n"
+                "print('PUBLIC_SCAN_IDENTITY_VERIFIED=1')\n",
                 encoding="utf-8",
             )
             for label, ev_env in (
@@ -2531,6 +2540,8 @@ class Round3ReviewRegressionTests(unittest.TestCase):
             ):
                 with self.subTest(case=label):
                     gh_out.write_text("", encoding="utf-8")
+                    if scan_ran.exists():
+                        scan_ran.unlink()
                     proc_fail = subprocess.run(
                         ["bash", "-c", run_scan_script],
                         cwd=root,
@@ -2539,7 +2550,10 @@ class Round3ReviewRegressionTests(unittest.TestCase):
                         text=True,
                         check=False,
                     )
-                    self.assertNotEqual(0, proc_fail.returncode, proc_fail.stdout + proc_fail.stderr)
+                    combined_fail = proc_fail.stdout + proc_fail.stderr
+                    self.assertNotEqual(0, proc_fail.returncode, combined_fail)
+                    self.assertIn("--help probe failed", combined_fail)
+                    self.assertFalse(scan_ran.exists(), "probe guard must stop before running the scan")
                     self.assertEqual("", gh_out.read_text(encoding="utf-8").strip())
 
             # (d) ONLY push to refs/heads/main with before == PINNED_BOOTSTRAP_BEFORE is allowed bootstrap.
@@ -2720,6 +2734,195 @@ class Round3ReviewRegressionTests(unittest.TestCase):
                     self.assertIn("identity check failed", combined)
                     self.assertIn("<redacted-", combined)
                     self.assertNotIn(secret_host, combined.casefold())
+
+
+class Round4ReviewRegressionTests(unittest.TestCase):
+    """Regression tests for PR #45 round 4 surgical fixes (Q1-Q4)."""
+
+    SYNTHETIC_KEY_BYTES = bytes(range(30, 62))
+    PINNED_BOOTSTRAP_BEFORE = "85f4b9eccbf5fb4a62599beeb32a4cd4cd6961d4"
+
+    def _identity_mod(self):
+        return _load_module("public_scan_identity_r4", "tests/public_scan_identity.py")
+
+    def _keyed_mod(self):
+        return _load_module("public_scan_keyed_r4", "tests/public_scan_keyed.py")
+
+    def test_q1_bare_cr_union_catches_yaml_phone_list_and_three_part_identity_and_cr_phone(self) -> None:
+        ident = self._identity_mod()
+        three_part = join("Kestrel", " ", "Maren", " ", "Nolan")
+        matcher = ident.IdentityMatcher(
+            ident.derive_identity_tokens([("git-name", three_part)], normalize_fn=scan.normalize_text)
+        )
+
+        # (a) Three-part identity split across two bare CRs on Git line 1 MUST be caught on line 1.
+        cr_three_part = join("Kestrel", "\r", "Maren", "\r", "Nolan", "\n").encode("utf-8")
+        res_id = scan.scan_sources(
+            [scan.SourceFile("docs/three.txt", cr_three_part)],
+            identity_matcher=matcher,
+        )
+        self.assertEqual(["docs/three.txt:1: matched rule 'identity'"], res_id.failures)
+        self.assertNotIn(join("kestrel"), "\n".join(res_id.failures).casefold())
+
+        # (b) Phone number split across bare CRs (e.g. "phone: 415\r867\r5309") MUST be caught on line 1.
+        p1, p2, p3 = "415", "867", "5309"
+        cr_phone = f"phone: {p1}\r{p2}\r{p3}\n".encode("utf-8")
+        res_phone = scan.scan_sources([scan.SourceFile("docs/cr-phone.txt", cr_phone)])
+        self.assertEqual(["docs/cr-phone.txt:1: matched rule 'phone'"], res_phone.failures)
+
+        # (c) Bare-CR YAML phone list (bare 10 digits) MUST still be caught on line 1.
+        bare_digits = join("415", "867", "5309")
+        yaml_cr = f"phones:\r  - {bare_digits}\n".encode("utf-8")
+        res_yaml = scan.scan_sources([scan.SourceFile("docs/contacts.yaml", yaml_cr)])
+        self.assertEqual(["docs/contacts.yaml:1: matched rule 'phone'"], res_yaml.failures)
+
+    def test_q2_keyed_list_matches_both_exact_question_mark_values_and_mailto_query(self) -> None:
+        keyed = self._keyed_mod()
+        qmark_val = join("cobalt", "?", "signal")
+        email_val = join("client", "@", "northwind-corp", ".test")
+
+        for label, value, line in (
+            ("exact_qmark_in_markdown", qmark_val, f"[x]({qmark_val})"),
+            ("exact_qmark_bare", qmark_val, f"Tag {qmark_val} active."),
+            ("mailto_with_subject", email_val, f"[x](mailto:{email_val}?subject=hi)"),
+            ("mailto_with_cc", email_val, f"mailto:{email_val}?cc=x"),
+        ):
+            with self.subTest(case=label):
+                digest = keyed.compute_keyed_digest(
+                    self.SYNTHETIC_KEY_BYTES,
+                    value,
+                    normalize_fn=scan.normalize_text,
+                )
+                matcher = keyed.KeyedListMatcher(
+                    self.SYNTHETIC_KEY_BYTES,
+                    frozenset({digest}),
+                    normalize_fn=scan.normalize_text,
+                )
+                hits = matcher.detect(scan.normalize_text(line))
+                self.assertIn(digest, hits, f"keyed matcher missed shape '{label}'")
+
+    def test_q3_wrapped_identity_touching_added_line_caught_even_when_unchanged_line_has_whole_identity(self) -> None:
+        author = join("Kestrel", " ", "Nolan")
+        email = join("knolan", "@", "northwind-lab", ".test")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_scan_configs(root)
+            git(root, "init", "-q", "-b", "main")
+            (root / "docs").mkdir()
+            (root / "docs/notes.md").write_text(
+                f"{author} met Kestrel\n",
+                encoding="utf-8",
+            )
+            git(root, "add", "-A")
+            git(root, "commit", "-q", "-m", "chore: base with whole identity and trailing first word")
+            base = git(root, "rev-parse", "HEAD").stdout.strip()
+
+            # (a) Clean edit adjacent to unchanged identity line MUST still pass.
+            git(root, "checkout", "-q", "-b", "feat/q3-clean")
+            (root / "docs/notes.md").write_text(
+                f"{author} met Kestrel\nClean follow-up line.\n",
+                encoding="utf-8",
+            )
+            git(root, "add", "docs/notes.md")
+            git(
+                root,
+                "commit",
+                "-q",
+                "-m",
+                "docs: clean adjacent line",
+                author_name=author,
+                author_email=email,
+            )
+            clean_head = git(root, "rev-parse", "HEAD").stdout.strip()
+            code_clean, out_clean, err_clean = run_main(
+                ["--root", str(root), "--range", base, clean_head, "--identity-source", "ci"]
+            )
+            self.assertEqual(0, code_clean, out_clean + err_clean)
+
+            # (b) Adding "Nolan today." completes a genuine wrapped identity spanning into added line 2,
+            # even though line 1 ALSO already contains the whole identity "Kestrel Nolan" -> MUST fail!
+            git(root, "checkout", "-q", "-b", "feat/q3-wrap", base)
+            (root / "docs/notes.md").write_text(
+                f"{author} met Kestrel\nNolan today.\n",
+                encoding="utf-8",
+            )
+            git(root, "add", "docs/notes.md")
+            git(
+                root,
+                "commit",
+                "-q",
+                "-m",
+                "docs: wrapped second word",
+                author_name=author,
+                author_email=email,
+            )
+            wrap_head = git(root, "rev-parse", "HEAD").stdout.strip()
+            code_wrap, out_wrap, err_wrap = run_main(
+                ["--root", str(root), "--range", base, wrap_head, "--identity-source", "ci"]
+            )
+            combined_wrap = out_wrap + err_wrap
+            self.assertEqual(1, code_wrap, combined_wrap)
+            self.assertIn("docs/notes.md:1: matched rule 'identity'", combined_wrap)
+            self.assertNotIn(join("kestrel"), combined_wrap.casefold())
+
+    def test_q4_failed_help_probe_fixture_only_fails_help_and_proves_guard_stops_execution(self) -> None:
+        # Verify test_n1's failed-probe fixture fails ONLY on --help and asserts the probe guard stops it.
+        import inspect
+
+        n1_src = inspect.getsource(
+            Round3ReviewRegressionTests.test_n1_bootstrap_is_strictly_one_time_for_pinned_main_push_only
+        )
+        self.assertIn("--help probe failed", n1_src)
+        self.assertIn("scan_ran", n1_src)
+
+        run_scan_script = Round2ReviewRegressionTests()._extract_workflow_step_run(
+            ".github/workflows/public-scan.yml",
+            "Run deterministic privacy and identity scan on every commit",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "tests").mkdir()
+            gh_out = root / "gh_output.txt"
+            sentinel = root / "scan_ran.txt"
+            # Fixture fails ONLY on --help; any non-help scan call would succeed and write scan_ran.txt.
+            (root / "tests/check_public_release.py").write_text(
+                "import pathlib, sys\n"
+                "if '--help' in sys.argv:\n"
+                "    print('help probe broken', file=sys.stderr)\n"
+                "    raise SystemExit(1)\n"
+                "pathlib.Path('scan_ran.txt').write_text('ran', encoding='utf-8')\n"
+                "print('PUBLIC_SCAN_VERIFIED=1')\n"
+                "print('PUBLIC_SCAN_IDENTITY_VERIFIED=1')\n",
+                encoding="utf-8",
+            )
+            for label, ev_env in (
+                ("pr_help_only_fail", {"EVENT_NAME": "pull_request_target", "GITHUB_REF": "refs/heads/main", "PUSH_BEFORE": ""}),
+                ("push_help_only_fail", {"EVENT_NAME": "push", "GITHUB_REF": "refs/heads/main", "PUSH_BEFORE": self.PINNED_BOOTSTRAP_BEFORE}),
+            ):
+                with self.subTest(case=label):
+                    gh_out.write_text("", encoding="utf-8")
+                    if sentinel.exists():
+                        sentinel.unlink()
+                    proc = subprocess.run(
+                        ["bash", "-c", run_scan_script],
+                        cwd=root,
+                        env={
+                            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                            "SCAN_MODE": "range",
+                            "BASE_SHA": self.PINNED_BOOTSTRAP_BEFORE,
+                            "HEAD_SHA": "b" * 40,
+                            "GITHUB_OUTPUT": str(gh_out),
+                            **ev_env,
+                        },
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    combined = proc.stdout + proc.stderr
+                    self.assertNotEqual(0, proc.returncode, combined)
+                    self.assertIn("--help probe failed", combined)
+                    self.assertFalse(sentinel.exists(), "probe guard must stop before invoking the scan")
+                    self.assertEqual("", gh_out.read_text(encoding="utf-8").strip())
 
 
 if __name__ == "__main__":
