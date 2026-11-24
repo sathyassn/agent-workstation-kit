@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/sathyassn/agent-workstation-kit/internal/contract"
 	"github.com/sathyassn/agent-workstation-kit/internal/contract/contracttest"
+	"github.com/sathyassn/agent-workstation-kit/internal/engine/events"
 	"github.com/sathyassn/agent-workstation-kit/internal/platform/platformtest"
 )
 
@@ -231,5 +233,149 @@ func TestDarwinMACLDropSurfacedInEventsAndReceiptWithoutBlocking(t *testing.T) {
 	}
 	if !sawReceiptDrop {
 		t.Fatalf("receipt changes did not record dropped com.apple.macl: %+v", rc.Changes)
+	}
+}
+
+// TestBackupWarningsAndTxEventsHaveUniqueIncreasingSeqInRealSink is T4:
+// backup warnings and subsequent transaction/apply events must share one
+// strictly increasing Seq counter so events.Sink never drops overlapping events.
+func TestBackupWarningsAndTxEventsHaveUniqueIncreasingSeqInRealSink(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(dir, "root")
+	target := "/etc/wskit-seq-sink.conf"
+	if err := os.MkdirAll(filepath.Join(root, "etc"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, target), []byte("orig\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	uiCh := make(chan contract.Event, 32)
+	logPath := filepath.Join(dir, "events.jsonl")
+	logFile, err := os.Create(logPath) //nolint:gosec // test temp log file
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = logFile.Close() }()
+	sink, err := events.New(events.Options{
+		Log:     logFile,
+		OpenLog: func() (io.ReadCloser, error) { return os.Open(logPath) }, //nolint:gosec // test temp log file
+		UI:      uiCh,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	table := platformtest.NewProcessTable("boot-seq-sink")
+	e, err := New(Options{
+		JournalDir:  filepath.Join(dir, "journal"),
+		HostLock:    filepath.Join(dir, "host.lock"),
+		Root:        root,
+		Scope:       contract.ScopeUser,
+		Containment: platformtest.NewContainment(table),
+		Inspector:   table.Inspector(table.Spawn()),
+		Sink:        sink,
+		metaOps:     sipSimulatingMetaOps{injectedName: "com.apple.macl"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unit := failingWriteUnit{path: target, fail: false}
+	plan, err := e.Plan(context.Background(), unit, contract.Inputs{})
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if err := e.Apply(context.Background(), unit, plan); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if err := sink.Close(context.Background()); err != nil {
+		t.Fatalf("sink.Close: %v", err)
+	}
+	close(uiCh)
+	var got []contract.Event
+	for ev := range uiCh {
+		got = append(got, ev)
+	}
+	var sawPlanWarn, sawBackupWarn, sawChange, sawApplyWarn bool
+	var prevSeq uint64
+	for _, ev := range got {
+		if ev.Seq <= prevSeq {
+			t.Fatalf("non-increasing Seq %d after %d in UI events: %+v", ev.Seq, prevSeq, got)
+		}
+		prevSeq = ev.Seq
+		if ev.Kind == contract.EventWarning && ev.Step == contract.StepPlan {
+			sawPlanWarn = true
+		}
+		if ev.Kind == contract.EventWarning && ev.Step == contract.StepBackup {
+			sawBackupWarn = true
+		}
+		if ev.Kind == contract.EventChange && ev.Step == contract.StepApply {
+			sawChange = true
+		}
+		if ev.Kind == contract.EventWarning && ev.Step == contract.StepApply {
+			sawApplyWarn = true
+		}
+	}
+	if !sawPlanWarn || !sawBackupWarn || !sawChange || !sawApplyWarn {
+		t.Fatalf("real events.Sink UI dropped events (planWarn=%v backupWarn=%v change=%v applyWarn=%v): %+v", sawPlanWarn, sawBackupWarn, sawChange, sawApplyWarn, got)
+	}
+}
+
+// TestEnginePlanSurfacesMACLDropBeforeApproval is T3: Engine.Plan inspects
+// existing targets read-only and surfaces com.apple.macl drop in Plan.CannotUndo
+// and StepPlan warning events BEFORE apply/approval.
+func TestEnginePlanSurfacesMACLDropBeforeApproval(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(dir, "root")
+	target := "/etc/wskit-plan-macl.conf"
+	if err := os.MkdirAll(filepath.Join(root, "etc"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, target), []byte("orig\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sink := contracttest.NewFakeSink(32)
+	table := platformtest.NewProcessTable("boot-plan-macl")
+	e, err := New(Options{
+		JournalDir:  filepath.Join(dir, "journal"),
+		HostLock:    filepath.Join(dir, "host.lock"),
+		Root:        root,
+		Scope:       contract.ScopeUser,
+		Containment: platformtest.NewContainment(table),
+		Inspector:   table.Inspector(table.Spawn()),
+		Sink:        sink,
+		metaOps:     sipSimulatingMetaOps{injectedName: "com.apple.macl"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := e.Plan(context.Background(), failingWriteUnit{path: target, fail: false}, contract.Inputs{})
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	var sawCannotUndo bool
+	for _, note := range plan.CannotUndo {
+		if strings.Contains(note, target) && strings.Contains(note, "com.apple.macl") {
+			sawCannotUndo = true
+		}
+	}
+	if !sawCannotUndo {
+		t.Fatalf("Plan.CannotUndo did not list com.apple.macl drop for %q: %+v", target, plan.CannotUndo)
+	}
+	var sawPlanEvent bool
+	for _, ev := range sink.Events() {
+		if ev.Step == contract.StepPlan && ev.Kind == contract.EventWarning && ev.Data[contract.DataPath] == target && strings.Contains(ev.Text, "com.apple.macl") {
+			sawPlanEvent = true
+		}
+	}
+	if !sawPlanEvent {
+		t.Fatalf("Plan did not emit StepPlan warning event for com.apple.macl: %+v", sink.Events())
+	}
+	if rec, rerr := e.readRecord(); rerr != nil || rec != nil {
+		t.Fatalf("Plan unexpectedly wrote journal record: %+v, %v", rec, rerr)
 	}
 }

@@ -58,7 +58,6 @@ type tx struct {
 	changes      []contract.AppliedChange
 	events       []contract.Event
 	droppedNoted map[string]bool
-	seq          uint64
 	stateOpSeq   int
 	failed       error
 }
@@ -656,8 +655,7 @@ func (t *tx) toolEnv(keys []string) []string {
 func (t *tx) Emit(ev contract.Event) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.seq++
-	ev.Seq = t.seq
+	ev.Seq = t.e.nextSeq()
 	if ev.Time.IsZero() {
 		ev.Time = t.e.opts.Now().UTC()
 	}

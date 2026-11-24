@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -19,6 +20,8 @@ import (
 	"github.com/sathyassn/agent-workstation-kit/internal/contract"
 	"github.com/sathyassn/agent-workstation-kit/internal/contract/contracttest"
 	"github.com/sathyassn/agent-workstation-kit/internal/platform"
+	"github.com/sathyassn/agent-workstation-kit/internal/platform/darwin"
+	"github.com/sathyassn/agent-workstation-kit/internal/platform/linux"
 	"github.com/sathyassn/agent-workstation-kit/internal/platform/platformtest"
 )
 
@@ -935,5 +938,80 @@ func TestContainedStateRunnerSeparatesStdoutAndStderrInternal(t *testing.T) {
 	}
 	if !strings.Contains(res.Stderr, "noisy stderr message") {
 		t.Fatalf("Stderr = %q, want diagnostic warning preserved", res.Stderr)
+	}
+	// Drive the real OS HostnameProvider through containedCommandRunner to verify
+	// parsed hostname equals stdout only with zero stderr contamination.
+	var hostProv contract.StateProvider
+	if runtime.GOOS == "darwin" {
+		hostProv = &darwin.HostnameProvider{}
+	} else {
+		hostProv = &linux.HostnameProvider{}
+	}
+	gotHost, err := hostProv.Read(platform.WithCommandRunner(ctx, runner), platform.HostnameKeyStatic)
+	if err != nil || gotHost.Value != "lab-ws-clean" {
+		t.Fatalf("HostnameProvider.Read via contained runner = %+v, %v; want lab-ws-clean", gotHost, err)
+	}
+}
+
+// TestPackageDBScanPreservesLaterRootsWhenFirstHitsCap is T1:
+//  1. Every existing package-DB root identity is recorded BEFORE descending
+//     into any subdirectories, so later roots stay recorded even when an
+//     earlier root hits maxPackageDBWalkDirs.
+//  2. Hitting the cap fails closed with ErrPackageDBScan (exit 2) rather than
+//     silently skipping the rest of the tree.
+func TestPackageDBScanPreservesLaterRootsWhenFirstHitsCap(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root1 := filepath.Join(dir, "root1")
+	for _, sub := range []string{"a", "b", "c", "d", "e"} {
+		if err := os.MkdirAll(filepath.Join(root1, sub), 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	root2 := filepath.Join(dir, "root2")
+	if err := os.MkdirAll(root2, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	// Direct resolvePackageDBIDs check: root1 hits maxDirs=2, yet root2 is
+	// already recorded AND ErrPackageDBScan is returned (never silent skip).
+	ids, scanErr := resolvePackageDBIDs([]string{root1, root2}, nil, 2)
+	if !errors.Is(scanErr, ErrPackageDBScan) {
+		t.Fatalf("resolvePackageDBIDs err = %v, want ErrPackageDBScan", scanErr)
+	}
+	var st1, st2 unix.Stat_t
+	if err := unix.Stat(root1, &st1); err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.Stat(root2, &st2); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := ids[platform.FileIDFromStat(st1)]; !ok {
+		t.Fatalf("first root %q missing from ids", root1)
+	}
+	if _, ok := ids[platform.FileIDFromStat(st2)]; !ok {
+		t.Fatalf("later root %q was silently skipped after root1 hit cap (ids=%d)", root2, len(ids))
+	}
+
+	// Engine.New fails closed with ErrPackageDBScan (exit 2) when scan hits cap.
+	root := filepath.Join(dir, "root")
+	if err := os.MkdirAll(root, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	table := platformtest.NewProcessTable("boot-pkgdb-cap")
+	_, err = New(Options{
+		JournalDir:          filepath.Join(dir, "journal"),
+		HostLock:            filepath.Join(dir, "host.lock"),
+		Root:                root,
+		Scope:               contract.ScopeUser,
+		Containment:         platformtest.NewContainment(table),
+		Inspector:           table.Inspector(table.Spawn()),
+		extraPackageDBPaths: []string{root1, root2},
+		maxPackageDBDirs:    2,
+	})
+	if !errors.Is(err, ErrPackageDBScan) || ExitCode(err) != contract.ExitRefused {
+		t.Fatalf("New with capped package-DB scan = %v (exit %d), want ErrPackageDBScan (exit 2)", err, ExitCode(err))
 	}
 }

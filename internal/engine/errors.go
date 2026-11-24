@@ -64,6 +64,11 @@ var (
 	// package-manager database; packages are changed and reverted only
 	// through the package manager.
 	ErrPackageDBPath = errors.New("package-database path cannot be backed up or restored as a file")
+	// ErrPackageDBScan reports that the startup package-database directory
+	// walk could not complete (for example due to hitting the directory cap or
+	// an unexpected OS read/fd error), failing closed rather than silently
+	// leaving package-database paths unguarded.
+	ErrPackageDBScan = errors.New("package-database directory scan incomplete")
 	// ErrTargetChanged reports a target whose device, inode, file type or size
 	// changed between stat and open/read.
 	ErrTargetChanged = errors.New("target changed between stat and open")
@@ -119,6 +124,7 @@ func ExitCode(err error) contract.ExitCode {
 		return contract.ExitRecoveryBlocks
 	case errors.Is(err, contract.ErrUndeclaredTarget),
 		errors.Is(err, ErrPackageDBPath),
+		errors.Is(err, ErrPackageDBScan),
 		errors.Is(err, ErrTargetChanged),
 		errors.Is(err, ErrHardLinkTarget),
 		errors.Is(err, ErrProtectedMetadata),

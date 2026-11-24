@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -143,15 +144,15 @@ func (m *Manifest) UnmarshalJSON(data []byte) error {
 		return fmt.Errorf("decode manifest: %w", err)
 	}
 	ver := raw.Version
-	if ver == 0 {
-		ver = manifestVersionLegacy
-	}
-	if ver != manifestVersionLegacy && ver != manifestVersion {
+	if ver != 0 && ver != manifestVersionLegacy && ver != manifestVersion {
 		return fmt.Errorf("%w: unsupported manifest version %d", ErrCorruptRecord, raw.Version)
 	}
+	// Track whether an unversioned manifest (version == 0) is consistently
+	// legacy string-encoded or unversioned base64-encoded (from 2a6b1d5).
+	unversionedMode := 0 // 0 = undecided, 1 = legacy string, 2 = base64
 	entries := make([]ManifestEntry, len(raw.Entries))
 	for i, re := range raw.Entries {
-		xattrs, err := decodeManifestXattrs(ver, re.Xattrs)
+		xattrs, err := decodeManifestXattrs(ver, re.Xattrs, &unversionedMode)
 		if err != nil {
 			return err
 		}
@@ -171,6 +172,13 @@ func (m *Manifest) UnmarshalJSON(data []byte) error {
 			ACL:           re.ACL,
 		}
 	}
+	if ver == 0 {
+		if unversionedMode == manifestVersion {
+			ver = manifestVersion
+		} else {
+			ver = manifestVersionLegacy
+		}
+	}
 	*m = Manifest{
 		Version: ver,
 		RunID:   raw.RunID,
@@ -181,7 +189,7 @@ func (m *Manifest) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-func decodeManifestXattrs(ver int, raw []json.RawMessage) ([]XattrEntry, error) {
+func decodeManifestXattrs(ver int, raw []json.RawMessage, unversionedMode *int) ([]XattrEntry, error) {
 	if len(raw) == 0 {
 		return nil, nil
 	}
@@ -189,7 +197,14 @@ func decodeManifestXattrs(ver int, raw []json.RawMessage) ([]XattrEntry, error) 
 	for i, item := range raw {
 		dec := json.NewDecoder(bytes.NewReader(item))
 		dec.DisallowUnknownFields()
-		if ver == manifestVersionLegacy {
+		switch ver {
+		case manifestVersion:
+			var cur XattrEntry
+			if err := dec.Decode(&cur); err != nil {
+				return nil, fmt.Errorf("decode xattr entry: %w", err)
+			}
+			out[i] = cur
+		case manifestVersionLegacy:
 			var legacy struct {
 				Name  string `json:"name"`
 				Value []byte `json:"value"`
@@ -198,15 +213,71 @@ func decodeManifestXattrs(ver int, raw []json.RawMessage) ([]XattrEntry, error) 
 				return nil, fmt.Errorf("decode legacy xattr entry: %w", err)
 			}
 			out[i] = XattrEntry{Name: []byte(legacy.Name), Value: legacy.Value}
-			continue
+		case 0:
+			var unv struct {
+				Name  string `json:"name"`
+				Value []byte `json:"value"`
+			}
+			if err := dec.Decode(&unv); err != nil {
+				return nil, fmt.Errorf("decode unversioned xattr entry: %w", err)
+			}
+			decoded, mode, err := disambiguateUnversionedXattrName(unv.Name)
+			if err != nil {
+				return nil, err
+			}
+			if *unversionedMode != 0 && *unversionedMode != mode {
+				return nil, fmt.Errorf("%w: unversioned manifest mixes literal and base64 xattr names", ErrCorruptRecord)
+			}
+			*unversionedMode = mode
+			out[i] = XattrEntry{Name: decoded, Value: unv.Value}
+		default:
+			return nil, fmt.Errorf("%w: unsupported manifest version %d", ErrCorruptRecord, ver)
 		}
-		var cur XattrEntry
-		if err := dec.Decode(&cur); err != nil {
-			return nil, fmt.Errorf("decode xattr entry: %w", err)
-		}
-		out[i] = cur
 	}
 	return out, nil
+}
+
+// disambiguateUnversionedXattrName distinguishes pre-versioning literal xattr
+// strings (such as "user.k" or "com.example.foo", which contain non-base64
+// characters like '.') from unversioned base64-encoded xattr names written
+// before Manifest.Version was added (such as "dXNlci5r" -> "user.k"). Anything
+// that could plausibly be either format (such as "aaaa") is refused with
+// ErrCorruptRecord rather than guessed.
+func disambiguateUnversionedXattrName(rawName string) (name []byte, mode int, err error) {
+	if rawName == "" {
+		return nil, 0, fmt.Errorf("%w: empty xattr name in unversioned manifest", ErrCorruptRecord)
+	}
+	decoded, isB64 := tryStrictBase64Xattr(rawName)
+	if !isB64 {
+		return []byte(rawName), manifestVersionLegacy, nil
+	}
+	if hasKnownXattrNamespace(decoded) {
+		return decoded, manifestVersion, nil
+	}
+	return nil, 0, fmt.Errorf("%w: ambiguous unversioned xattr name %q (cannot distinguish literal string from base64 without manifest version)", ErrCorruptRecord, rawName)
+}
+
+func tryStrictBase64Xattr(s string) ([]byte, bool) {
+	if len(s) == 0 || len(s)%4 != 0 {
+		return nil, false
+	}
+	b, err := base64.StdEncoding.Strict().DecodeString(s)
+	if err != nil || len(b) == 0 || bytes.IndexByte(b, 0) >= 0 {
+		return nil, false
+	}
+	return b, true
+}
+
+func hasKnownXattrNamespace(b []byte) bool {
+	for _, pref := range []string{
+		"user.", "system.", "security.", "trusted.",
+		"com.", "org.", "net.", "io.", "dev.", "apple.",
+	} {
+		if len(b) > len(pref) && bytes.HasPrefix(b, []byte(pref)) {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Manifest) entry(path string) (ManifestEntry, bool) {

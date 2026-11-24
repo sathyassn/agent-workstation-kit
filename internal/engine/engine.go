@@ -9,9 +9,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/sathyassn/agent-workstation-kit/internal/contract"
 	"github.com/sathyassn/agent-workstation-kit/internal/platform"
@@ -121,6 +125,9 @@ type Options struct {
 	// extraPackageDBPaths, set only by tests in this package, adds real
 	// directories whose (dev, ino) identities are treated as package-DB roots.
 	extraPackageDBPaths []string
+	// maxPackageDBDirs, set only by tests in this package, overrides the
+	// startup package-DB walk cap (default maxPackageDBWalkDirs).
+	maxPackageDBDirs int
 	// afterLstat, set only by tests in this package, runs between lstat and
 	// open in backupOne to exercise the TOCTOU window deterministically.
 	afterLstat func(path string)
@@ -134,6 +141,11 @@ type Engine struct {
 	opts     Options
 	provMu   sync.RWMutex
 	pkgDBIDs map[platform.FileID]string
+	seq      atomic.Uint64
+}
+
+func (e *Engine) nextSeq() uint64 {
+	return e.seq.Add(1)
 }
 
 func (e *Engine) lookupProvider(name contract.StateProviderName) (contract.StateProvider, bool) {
@@ -234,7 +246,11 @@ func New(opts Options) (*Engine, error) {
 		walkRoots = append(walkRoots, opts.extraPackageDBPaths...)
 		statOnlyRoots = packageDBPrefixes()
 	}
-	return &Engine{opts: opts, pkgDBIDs: resolvePackageDBIDs(walkRoots, statOnlyRoots)}, nil
+	pkgIDs, err := resolvePackageDBIDs(walkRoots, statOnlyRoots, opts.maxPackageDBDirs)
+	if err != nil {
+		return nil, err
+	}
+	return &Engine{opts: opts, pkgDBIDs: pkgIDs}, nil
 }
 
 func (e *Engine) meta() metadataOps {
@@ -282,6 +298,95 @@ func (e *Engine) empty(ctx context.Context, name string, sup platform.ProcessIde
 		return fmt.Errorf("empty %s: %w", name, err)
 	}
 	return nil
+}
+
+// Plan runs u.Plan and inspects existing declared target files (read-only) for
+// OS-protected extended attributes that inode replacement cannot preserve (such
+// as macOS com.apple.macl). Any such loss is appended to Plan.CannotUndo and
+// emitted as a StepPlan warning event before the user approves the plan.
+func (e *Engine) Plan(ctx context.Context, u contract.Unit, in contract.Inputs) (contract.Plan, error) {
+	desc, err := u.Describe(ctx)
+	if err != nil {
+		return contract.Plan{}, fmt.Errorf("describe %s: %w", u.ID(), err)
+	}
+	if desc.Unit != u.ID() {
+		return contract.Plan{}, fmt.Errorf("%w: unit %q, description %q", ErrUnitMismatch, u.ID(), desc.Unit)
+	}
+	p, err := u.Plan(ctx, in)
+	if err != nil {
+		return contract.Plan{}, fmt.Errorf("plan %s: %w", u.ID(), err)
+	}
+	if p.Unit != u.ID() {
+		return contract.Plan{}, fmt.Errorf("%w: unit %q, plan %q", ErrUnitMismatch, u.ID(), p.Unit)
+	}
+	var paths []string
+	paths = append(paths, desc.OwnedPaths...)
+	for _, ch := range p.Changes {
+		if strings.HasPrefix(ch.Target, "/") {
+			paths = append(paths, ch.Target)
+		}
+	}
+	slices.Sort(paths)
+	paths = slices.Compact(paths)
+
+	for _, path := range paths {
+		if err := ctx.Err(); err != nil {
+			return contract.Plan{}, fmt.Errorf("plan %s: %w", u.ID(), err)
+		}
+		dropped := e.inspectTargetDroppedXattrs(path)
+		if len(dropped) == 0 {
+			continue
+		}
+		for _, attr := range dropped {
+			note := fmt.Sprintf("%s: replacing drops OS-protected extended attribute %s (cannot be re-set)", path, attr)
+			if !slices.Contains(p.CannotUndo, note) {
+				p.CannotUndo = append(p.CannotUndo, note)
+			}
+		}
+		if e.opts.Sink != nil {
+			e.opts.Sink.Deliver(contract.Event{
+				Seq:  e.nextSeq(),
+				Time: e.opts.Now().UTC(),
+				Unit: u.ID(),
+				Step: contract.StepPlan,
+				Kind: contract.EventWarning,
+				Text: fmt.Sprintf("replacing %s will drop OS-protected extended attribute %s (cannot be re-set)", path, strings.Join(dropped, ", ")),
+				Data: map[contract.DataKey]string{
+					contract.DataPath: path,
+				},
+			})
+		}
+	}
+	return p, nil
+}
+
+// inspectTargetDroppedXattrs inspects an existing regular file at path without
+// modifying disk or journal state, returning any non-preservable OS-protected
+// extended attributes (such as macOS com.apple.macl) that replacement will drop.
+func (e *Engine) inspectTargetDroppedXattrs(path string) []string {
+	clean, err := cleanPath(path)
+	if err != nil || isPackageDBPath(clean) {
+		return nil
+	}
+	p, err := e.openParent(e.real(clean))
+	if err != nil {
+		return nil
+	}
+	defer p.close()
+	st, err := p.lstat()
+	if err != nil || st.Mode&unix.S_IFMT != unix.S_IFREG {
+		return nil
+	}
+	f, _, err := p.openChecked(st)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = f.Close() }()
+	meta, err := e.meta().Read(f)
+	if err != nil {
+		return nil
+	}
+	return meta.DroppedXattrs
 }
 
 // Apply runs one unit's apply as a transaction: back up every declared path
@@ -427,19 +532,19 @@ func (e *Engine) failRun(ctx context.Context, l *locks, rec *Record, m *Manifest
 }
 
 // emitBackupWarnings surfaces non-preservable OS-protected attributes (such as
-// macOS com.apple.macl) detected on declared targets before apply begins.
+// macOS com.apple.macl) detected on declared targets before apply begins,
+// sharing the engine's monotonic sequence counter with Plan and tx.Emit so
+// events.Sink never drops overlapping events.
 func (e *Engine) emitBackupWarnings(runID contract.RunID, unit contract.UnitID, m *Manifest) {
 	if e.opts.Sink == nil || m == nil {
 		return
 	}
-	var seq uint64
 	for _, en := range m.Entries {
 		if len(en.DroppedXattrs) == 0 {
 			continue
 		}
-		seq++
 		e.opts.Sink.Deliver(contract.Event{
-			Seq:   seq,
+			Seq:   e.nextSeq(),
 			Time:  e.opts.Now().UTC(),
 			RunID: runID,
 			Unit:  unit,

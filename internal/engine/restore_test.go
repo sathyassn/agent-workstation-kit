@@ -1357,29 +1357,117 @@ func TestResumeDecodesAndRestoresLegacyStringXattrManifest(t *testing.T) {
 	}
 }
 
-// TestContainedStateRunnerSeparatesStdoutAndStderr is R7: a hostname tool that
-// writes warnings to stderr while printing the hostname to stdout must not
-// contaminate the parsed hostname.
-func TestContainedStateRunnerSeparatesStdoutAndStderr(t *testing.T) {
-	ctx := context.Background()
-	baseRunner := platformtest.NewHostnameRunner(platformtest.HostnameState{
-		Static: "lab-ws-clean", Pretty: "Lab Clean", Transient: "lab-ws-clean", Local: "lab-ws-clean",
-	})
-	noisyRunner := &stderrNoisyRunner{inner: baseRunner, warning: "warning: noisy stderr message\n"}
-	hostProv := newHostnameProvider(noisyRunner)
-	got, err := hostProv.Read(ctx, platform.HostnameKeyStatic)
-	if err != nil || got.Value != "lab-ws-clean" {
-		t.Fatalf("hostname.static = %+v, %v; want lab-ws-clean (without stderr warning)", got, err)
+// TestManifestFormatDisambiguation is T2: verifies all four manifest xattr
+// formats: (a) versioned v2 base64, (b) legacy unversioned literal string,
+// (c) unversioned 2a6b1d5 base64, and (d) ambiguous unversioned refused exit 4.
+func TestManifestFormatDisambiguation(t *testing.T) {
+	makeJSON := func(version int, xattrName string) []byte {
+		doc := map[string]any{
+			"run_id": "rmant2test",
+			"unit":   "shell",
+			"entries": []map[string]any{{
+				"path":          pathA,
+				"kind":          "file",
+				"xattrs_status": "captured",
+				"xattrs": []map[string]any{{
+					"name":  xattrName,
+					"value": []byte("v1"),
+				}},
+			}},
+		}
+		if version != 0 {
+			doc["version"] = version
+		}
+		raw, err := json.Marshal(doc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return raw
 	}
-}
 
-type stderrNoisyRunner struct {
-	inner   platform.CommandRunner
-	warning string
-}
+	t.Run("versioned v2 base64 manifest", func(t *testing.T) {
+		var m engine.Manifest
+		if err := json.Unmarshal(makeJSON(2, "dXNlci5r"), &m); err != nil {
+			t.Fatalf("Unmarshal v2: %v", err)
+		}
+		if got := string(m.Entries[0].Xattrs[0].Name); got != "user.k" {
+			t.Fatalf("v2 xattr name = %q, want %q", got, "user.k")
+		}
+	})
 
-func (r *stderrNoisyRunner) Run(ctx context.Context, spec platform.ExecSpec) (platform.ExecResult, error) {
-	res, err := r.inner.Run(ctx, spec)
-	res.Stderr += r.warning
-	return res, err
+	t.Run("legacy unversioned string manifest", func(t *testing.T) {
+		var m engine.Manifest
+		if err := json.Unmarshal(makeJSON(0, "user.k"), &m); err != nil {
+			t.Fatalf("Unmarshal legacy string: %v", err)
+		}
+		if got := string(m.Entries[0].Xattrs[0].Name); got != "user.k" {
+			t.Fatalf("legacy string xattr name = %q, want %q", got, "user.k")
+		}
+	})
+
+	t.Run("unversioned 2a6b1d5 base64 manifest", func(t *testing.T) {
+		var m engine.Manifest
+		if err := json.Unmarshal(makeJSON(0, "dXNlci5r"), &m); err != nil {
+			t.Fatalf("Unmarshal unversioned base64: %v", err)
+		}
+		if got := string(m.Entries[0].Xattrs[0].Name); got != "user.k" {
+			t.Fatalf("unversioned base64 xattr name = %q, want %q", got, "user.k")
+		}
+	})
+
+	t.Run("ambiguous unversioned manifest refused exit 4 on Resume", func(t *testing.T) {
+		ctx := context.Background()
+		w := newWorld(t)
+		u := &testUnit{root: w.root}
+		w.abandon(t, engine.PointMutation, u)
+		rec := w.record(t)
+
+		mPath := filepath.Join(w.journal, "backups", string(rec.RunID), "manifest.json")
+		raw, err := os.ReadFile(mPath) //nolint:gosec // test temp journal
+		if err != nil {
+			t.Fatal(err)
+		}
+		var cur engine.Manifest
+		if err := json.Unmarshal(raw, &cur); err != nil {
+			t.Fatal(err)
+		}
+		var entryA engine.ManifestEntry
+		for _, en := range cur.Entries {
+			if en.Path == pathA {
+				entryA = en
+				break
+			}
+		}
+		// "aaaa" is valid base64 and also a plausible macOS literal xattr name,
+		// so without a manifest version field it is genuinely ambiguous.
+		ambigJSON, err := json.MarshalIndent(map[string]any{
+			"run_id": string(rec.RunID),
+			"unit":   string(cur.Unit),
+			"entries": []map[string]any{{
+				"path":          pathA,
+				"kind":          "file",
+				"mode":          entryA.Mode,
+				"uid":           entryA.UID,
+				"gid":           entryA.GID,
+				"digest":        string(entryA.Digest),
+				"data":          entryA.Data,
+				"xattrs_status": "captured",
+				"xattrs": []map[string]any{{
+					"name":  "aaaa",
+					"value": []byte("v1"),
+				}},
+			}},
+		}, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(mPath, ambigJSON, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		e, _ := w.engine(t)
+		_, err = e.Resume(ctx, resolverFor(u), engine.ResumeOptions{RestoreOnly: true})
+		if !errors.Is(err, engine.ErrRestoreFailed) || !errors.Is(err, engine.ErrCorruptRecord) || engine.ExitCode(err) != contract.ExitRecoveryBlocks {
+			t.Fatalf("Resume on ambiguous unversioned manifest = %v (exit %d), want ErrRestoreFailed + ErrCorruptRecord (exit 4)", err, engine.ExitCode(err))
+		}
+	})
 }
