@@ -11,11 +11,12 @@
 # No secret is required, so fork and same-repository pull requests run the exact
 # same blocking checks on both Linux and macOS.
 #
-# Both platform jobs (`scan-linux` and `scan-macos`) emit a positive verification
-# output only when `tests/check_public_release.py` exits 0 and prints
-# `PUBLIC_SCAN_VERIFIED=1`. The required status check is `public-scan / result`
-# (the exact job `name:` published to GitHub Checks), which always runs and fails
-# closed unless BOTH Linux and macOS succeeded and emitted `scan_verified=true`.
+# Both platform jobs (`scan-linux` and `scan-macos`) emit positive verification
+# outputs only when `tests/check_public_release.py` exits 0 and prints both
+# `PUBLIC_SCAN_VERIFIED=1` and `PUBLIC_SCAN_IDENTITY_VERIFIED=1`. The required
+# status check is `public-scan / result` (the exact job `name:` published to
+# GitHub Checks), which always runs and fails closed unless BOTH Linux and macOS
+# succeeded and emitted `scan_verified=true` and `identity_verified=true`.
 name: public-scan
 
 on:
@@ -38,6 +39,7 @@ jobs:
     timeout-minutes: 10
     outputs:
       scan_verified: ${{ steps.run_scan.outputs.verified }}
+      identity_verified: ${{ steps.run_scan.outputs.identity_verified }}
     steps:
       - name: Check out the trusted base commit with full history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -94,10 +96,10 @@ jobs:
           set -euo pipefail
           set +e
           if [ "$SCAN_MODE" = "range" ]; then
-            out=$(python3 -I -B tests/check_public_release.py --range "$BASE_SHA" "$HEAD_SHA" 2>&1)
+            out=$(python3 -I -B tests/check_public_release.py --range "$BASE_SHA" "$HEAD_SHA" --identity-source ci 2>&1)
             status=$?
           elif [ "$SCAN_MODE" = "tree" ]; then
-            out=$(python3 -I -B tests/check_public_release.py --tree "$HEAD_SHA" 2>&1)
+            out=$(python3 -I -B tests/check_public_release.py --tree "$HEAD_SHA" --identity-source ci 2>&1)
             status=$?
           else
             echo "::error::unexpected scan mode"
@@ -107,7 +109,9 @@ jobs:
           printf '%s\n' "$out"
           test "$status" -eq 0
           printf '%s\n' "$out" | grep -qx 'PUBLIC_SCAN_VERIFIED=1'
+          printf '%s\n' "$out" | grep -qx 'PUBLIC_SCAN_IDENTITY_VERIFIED=1'
           echo "verified=true" >> "$GITHUB_OUTPUT"
+          echo "identity_verified=true" >> "$GITHUB_OUTPUT"
 
   scan-macos:
     name: public scan (macos-latest)
@@ -115,6 +119,7 @@ jobs:
     timeout-minutes: 10
     outputs:
       scan_verified: ${{ steps.run_scan.outputs.verified }}
+      identity_verified: ${{ steps.run_scan.outputs.identity_verified }}
     steps:
       - name: Check out the trusted base commit with full history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -171,10 +176,10 @@ jobs:
           set -euo pipefail
           set +e
           if [ "$SCAN_MODE" = "range" ]; then
-            out=$(python3 -I -B tests/check_public_release.py --range "$BASE_SHA" "$HEAD_SHA" 2>&1)
+            out=$(python3 -I -B tests/check_public_release.py --range "$BASE_SHA" "$HEAD_SHA" --identity-source ci 2>&1)
             status=$?
           elif [ "$SCAN_MODE" = "tree" ]; then
-            out=$(python3 -I -B tests/check_public_release.py --tree "$HEAD_SHA" 2>&1)
+            out=$(python3 -I -B tests/check_public_release.py --tree "$HEAD_SHA" --identity-source ci 2>&1)
             status=$?
           else
             echo "::error::unexpected scan mode"
@@ -184,7 +189,9 @@ jobs:
           printf '%s\n' "$out"
           test "$status" -eq 0
           printf '%s\n' "$out" | grep -qx 'PUBLIC_SCAN_VERIFIED=1'
+          printf '%s\n' "$out" | grep -qx 'PUBLIC_SCAN_IDENTITY_VERIFIED=1'
           echo "verified=true" >> "$GITHUB_OUTPUT"
+          echo "identity_verified=true" >> "$GITHUB_OUTPUT"
 
   result:
     name: public-scan / result
@@ -193,20 +200,22 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Require verified deterministic privacy scan on Linux and macOS
+      - name: Require verified deterministic privacy and identity scan on Linux and macOS
         env:
           LINUX_RESULT: ${{ needs.scan-linux.result }}
           LINUX_VERIFIED: ${{ needs.scan-linux.outputs.scan_verified }}
+          LINUX_IDENTITY_VERIFIED: ${{ needs.scan-linux.outputs.identity_verified }}
           MACOS_RESULT: ${{ needs.scan-macos.result }}
           MACOS_VERIFIED: ${{ needs.scan-macos.outputs.scan_verified }}
+          MACOS_IDENTITY_VERIFIED: ${{ needs.scan-macos.outputs.identity_verified }}
         run: |
           set -euo pipefail
-          if [ "$LINUX_RESULT" != "success" ] || [ "$LINUX_VERIFIED" != "true" ]; then
-            echo "::error::Linux public scan did not complete with verification (result=$LINUX_RESULT verified=$LINUX_VERIFIED)"
+          if [ "$LINUX_RESULT" != "success" ] || [ "$LINUX_VERIFIED" != "true" ] || [ "$LINUX_IDENTITY_VERIFIED" != "true" ]; then
+            echo "::error::Linux public scan did not complete with verification (result=$LINUX_RESULT verified=$LINUX_VERIFIED identity=$LINUX_IDENTITY_VERIFIED)"
             exit 1
           fi
-          if [ "$MACOS_RESULT" != "success" ] || [ "$MACOS_VERIFIED" != "true" ]; then
-            echo "::error::macOS public scan did not complete with verification (result=$MACOS_RESULT verified=$MACOS_VERIFIED)"
+          if [ "$MACOS_RESULT" != "success" ] || [ "$MACOS_VERIFIED" != "true" ] || [ "$MACOS_IDENTITY_VERIFIED" != "true" ]; then
+            echo "::error::macOS public scan did not complete with verification (result=$MACOS_RESULT verified=$MACOS_VERIFIED identity=$MACOS_IDENTITY_VERIFIED)"
             exit 1
           fi
-          echo "Deterministic public scan verified on Linux and macOS."
+          echo "Deterministic public and identity scan verified on Linux and macOS."

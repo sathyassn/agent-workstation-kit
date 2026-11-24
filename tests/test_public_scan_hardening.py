@@ -583,6 +583,8 @@ class TrustedBaseRevisionSimulationTests(unittest.TestCase):
         git(root, "init", "-q", "-b", "main")
         (root / "README.md").write_text("clean base\n", encoding="utf-8")
         shutil.copyfile(ROOT / "tests/check_public_release.py", root / "tests/check_public_release.py")
+        shutil.copyfile(ROOT / "tests/public_scan_identity.py", root / "tests/public_scan_identity.py")
+        shutil.copyfile(ROOT / "tests/public_scan_keyed.py", root / "tests/public_scan_keyed.py")
         write_scan_configs(root)
         git(root, "add", "-A")
         git(root, "commit", "-q", "-m", "chore: base")
@@ -701,8 +703,11 @@ class TimingSelfScanAndJourneyTests(unittest.TestCase):
         # Scanner and both test suites must pass self-scan with zero exemptions.
         self_files = [
             "tests/check_public_release.py",
+            "tests/public_scan_identity.py",
+            "tests/public_scan_keyed.py",
             "tests/test_public_release.py",
             "tests/test_public_scan_hardening.py",
+            "tests/test_public_identity_and_keyed.py",
             "tests/public_scan_modes.json",
             "tests/public_scan_exemptions.json",
             "tests/public_scan_binary_exceptions.json",
@@ -759,7 +764,11 @@ class TimingSelfScanAndJourneyTests(unittest.TestCase):
             shutil.copyfile(ROOT / "scripts/check_git_discipline.py", repo / "scripts/check_git_discipline.py")
             (repo / "tests").mkdir()
             shutil.copyfile(ROOT / "tests/check_public_release.py", repo / "tests/check_public_release.py")
+            shutil.copyfile(ROOT / "tests/public_scan_identity.py", repo / "tests/public_scan_identity.py")
+            shutil.copyfile(ROOT / "tests/public_scan_keyed.py", repo / "tests/public_scan_keyed.py")
             write_scan_configs(repo)
+            git(repo, "config", "user.name", "Test Contributor")
+            git(repo, "config", "user.email", "contributor@example.invalid")
             # Minimal repo metadata for check_public_release.py --allow-missing-license.
             for req in scan.REQUIRED:
                 target = repo / req
@@ -1094,7 +1103,11 @@ class Round2ReviewRegressionTests(unittest.TestCase):
         shutil.copyfile(ROOT / "scripts/check_git_discipline.py", repo / "scripts/check_git_discipline.py")
         (repo / "tests").mkdir()
         shutil.copyfile(ROOT / "tests/check_public_release.py", repo / "tests/check_public_release.py")
+        shutil.copyfile(ROOT / "tests/public_scan_identity.py", repo / "tests/public_scan_identity.py")
+        shutil.copyfile(ROOT / "tests/public_scan_keyed.py", repo / "tests/public_scan_keyed.py")
         write_scan_configs(repo)
+        git(repo, "config", "user.name", "Test Contributor")
+        git(repo, "config", "user.email", "contributor@example.invalid")
         for req in scan.REQUIRED:
             target = repo / req
             if not target.exists():
@@ -1366,12 +1379,12 @@ class Round2ReviewRegressionTests(unittest.TestCase):
         self.assertIn("MACOS_VERIFIED", script)
 
         cases = (
-            ("both_verified_passes", {"LINUX_RESULT": "success", "LINUX_VERIFIED": "true", "MACOS_RESULT": "success", "MACOS_VERIFIED": "true"}, 0),
-            ("missing_linux_marker_fails", {"LINUX_RESULT": "success", "LINUX_VERIFIED": "", "MACOS_RESULT": "success", "MACOS_VERIFIED": "true"}, 1),
-            ("missing_macos_marker_fails", {"LINUX_RESULT": "success", "LINUX_VERIFIED": "true", "MACOS_RESULT": "success", "MACOS_VERIFIED": ""}, 1),
-            ("linux_failed_fails", {"LINUX_RESULT": "failure", "LINUX_VERIFIED": "true", "MACOS_RESULT": "success", "MACOS_VERIFIED": "true"}, 1),
-            ("macos_failed_with_marker_fails", {"LINUX_RESULT": "success", "LINUX_VERIFIED": "true", "MACOS_RESULT": "failure", "MACOS_VERIFIED": "true"}, 1),
-            ("macos_skipped_fails", {"LINUX_RESULT": "success", "LINUX_VERIFIED": "true", "MACOS_RESULT": "skipped", "MACOS_VERIFIED": ""}, 1),
+            ("both_verified_passes", {"LINUX_RESULT": "success", "LINUX_VERIFIED": "true", "LINUX_IDENTITY_VERIFIED": "true", "MACOS_RESULT": "success", "MACOS_VERIFIED": "true", "MACOS_IDENTITY_VERIFIED": "true"}, 0),
+            ("missing_linux_marker_fails", {"LINUX_RESULT": "success", "LINUX_VERIFIED": "", "LINUX_IDENTITY_VERIFIED": "true", "MACOS_RESULT": "success", "MACOS_VERIFIED": "true", "MACOS_IDENTITY_VERIFIED": "true"}, 1),
+            ("missing_macos_marker_fails", {"LINUX_RESULT": "success", "LINUX_VERIFIED": "true", "LINUX_IDENTITY_VERIFIED": "true", "MACOS_RESULT": "success", "MACOS_VERIFIED": "", "MACOS_IDENTITY_VERIFIED": "true"}, 1),
+            ("linux_failed_fails", {"LINUX_RESULT": "failure", "LINUX_VERIFIED": "true", "LINUX_IDENTITY_VERIFIED": "true", "MACOS_RESULT": "success", "MACOS_VERIFIED": "true", "MACOS_IDENTITY_VERIFIED": "true"}, 1),
+            ("macos_failed_with_marker_fails", {"LINUX_RESULT": "success", "LINUX_VERIFIED": "true", "LINUX_IDENTITY_VERIFIED": "true", "MACOS_RESULT": "failure", "MACOS_VERIFIED": "true", "MACOS_IDENTITY_VERIFIED": "true"}, 1),
+            ("macos_skipped_fails", {"LINUX_RESULT": "success", "LINUX_VERIFIED": "true", "LINUX_IDENTITY_VERIFIED": "true", "MACOS_RESULT": "skipped", "MACOS_VERIFIED": "", "MACOS_IDENTITY_VERIFIED": ""}, 1),
         )
         for name, env_vars, expected_rc in cases:
             with self.subTest(case=name):

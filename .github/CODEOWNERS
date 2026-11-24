@@ -6,6 +6,8 @@
 /.github/workflows/ci.yml @sathyassn
 /.github/ @sathyassn
 /tests/check_public_release.py @sathyassn
+/tests/public_scan_identity.py @sathyassn
+/tests/public_scan_keyed.py @sathyassn
 /tests/public_scan_modes.json @sathyassn
 /tests/public_scan_exemptions.json @sathyassn
 /tests/public_scan_binary_exceptions.json @sathyassn
