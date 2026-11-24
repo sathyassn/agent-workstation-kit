@@ -1,0 +1,11 @@
+id = "TSK-045"
+uid = "7a30492f-44ef-47e6-a45b-73b1d2b8664a"
+kind = "TSK"
+title = "Softer memory behaviour at the limit"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-24T00:26:52Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
