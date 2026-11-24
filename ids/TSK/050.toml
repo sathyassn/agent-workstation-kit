@@ -1,0 +1,11 @@
+id = "TSK-050"
+uid = "c5b5a48f-9ebd-4cf3-b4e7-300d20cf9879"
+kind = "TSK"
+title = "Local person-name warning on changed prose"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-24T00:51:15Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
