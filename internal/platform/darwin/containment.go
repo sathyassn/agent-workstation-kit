@@ -116,14 +116,23 @@ func (c *Containment) Run(ctx context.Context, spec platform.LaunchSpec, onSuper
 	defer func() { _ = dir.Close() }()
 	start := time.Now()
 	files := c.jobFiles(spec.Name)
-	plist, err := RenderPlist(spec.Name, spec.Argv, spec.Env, spec.Dir, files.out, files.out)
+	errPath := files.out
+	if spec.Stderr != nil {
+		errPath = files.errOut
+	}
+	plist, err := RenderPlist(spec.Name, spec.Argv, spec.Env, spec.Dir, files.out, errPath)
 	if err != nil {
 		return contract.CommandResult{}, err
 	}
-	// The output file is created here, 0600, so launchd never creates it
+	// The output files are created here, 0600, so launchd never creates them
 	// with a mode of its own choosing.
 	if err := c.writeDurable(dir, filepath.Base(files.out), nil); err != nil {
 		return contract.CommandResult{}, err
+	}
+	if spec.Stderr != nil {
+		if err := c.writeDurable(dir, filepath.Base(files.errOut), nil); err != nil {
+			return contract.CommandResult{}, err
+		}
 	}
 	if err := c.writeDurable(dir, filepath.Base(files.plist), plist); err != nil {
 		return contract.CommandResult{}, err
@@ -167,6 +176,9 @@ func (c *Containment) Run(ctx context.Context, spec platform.LaunchSpec, onSuper
 		return contract.CommandResult{}, fmt.Errorf("%w: job %s ended without an exit code", platform.ErrSupervisorState, target)
 	}
 	copyOutput(dir, filepath.Base(files.out), spec.Output)
+	if spec.Stderr != nil {
+		copyOutput(dir, filepath.Base(files.errOut), spec.Stderr)
+	}
 	return contract.CommandResult{ExitCode: st.exitCode, Duration: time.Since(start)}, nil
 }
 
@@ -365,12 +377,13 @@ func (c *Containment) sleep(ctx context.Context) error {
 	}
 }
 
-type jobFiles struct{ plist, out string }
+type jobFiles struct{ plist, out, errOut string }
 
 func (c *Containment) jobFiles(name string) jobFiles {
 	return jobFiles{
-		plist: filepath.Join(c.PlistDir, name+".plist"),
-		out:   filepath.Join(c.PlistDir, name+".log"),
+		plist:  filepath.Join(c.PlistDir, name+".plist"),
+		out:    filepath.Join(c.PlistDir, name+".log"),
+		errOut: filepath.Join(c.PlistDir, name+".err.log"),
 	}
 }
 
@@ -448,7 +461,7 @@ func (c *Containment) removeJobFiles(name string) error {
 	}
 	defer func() { _ = dir.Close() }()
 	f := c.jobFiles(name)
-	for _, p := range []string{f.plist, f.out} {
+	for _, p := range []string{f.plist, f.out, f.errOut} {
 		if err := unix.Unlinkat(int(dir.Fd()), filepath.Base(p), 0); err != nil && !errors.Is(err, unix.ENOENT) {
 			return fmt.Errorf("remove %q: %w", p, err)
 		}

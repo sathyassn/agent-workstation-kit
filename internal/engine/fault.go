@@ -18,6 +18,12 @@ const (
 	PointIntent Point = "intent.written"
 	// PointMutation: one target change is durable.
 	PointMutation Point = "tx.mutation"
+	// PointStateBackup: SetState has written the pre-Write state snapshot to
+	// disk and updated the manifest, before calling Write.
+	PointStateBackup Point = "tx.state-backup"
+	// PointStateWrite: SetState's Write returned cleanly, before recording the
+	// receipt row.
+	PointStateWrite Point = "tx.state-write"
 	// PointLaunch: the containment name is durable; the tool is not started.
 	PointLaunch Point = "tx.launch"
 	// PointCommandDone: a tool has ended.
@@ -35,6 +41,9 @@ const (
 	PointIdle Point = "record.idle"
 	// PointRestoreStart: the record says restoring.
 	PointRestoreStart Point = "restore.start"
+	// PointStateRestore: one state provider's Restore has completed during
+	// recovery, before post-restore verification.
+	PointStateRestore Point = "restore.state"
 	// PointRestoreEntry: one manifest entry is restored.
 	PointRestoreEntry Point = "restore.entry"
 	// PointRestored: the restore and its failed receipt are durable.

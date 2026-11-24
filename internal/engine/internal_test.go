@@ -1,7 +1,9 @@
 package engine
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -106,5 +108,93 @@ func TestLockWaitHonoursContext(t *testing.T) {
 	defer cancel()
 	if _, err := acquireLock(ctx, path, time.Millisecond); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("err = %v, want deadline exceeded", err)
+	}
+}
+
+// TestPackageDBPathGuard covers M4 across both darwin (case-insensitive APFS
+// and /System/Volumes/Data firmlinks) and linux.
+func TestPackageDBPathGuard(t *testing.T) {
+	tests := []struct {
+		path string
+		goos string
+		want bool
+	}{
+		{"/var/lib/dpkg/status", "linux", true},
+		{"/var/cache/debconf/config.dat", "linux", true},
+		{"/var/lib/ucf/hashfile", "linux", true},
+		{"/var/log/apt/history.log", "linux", true},
+		{"/Library/Apple/System/Library/Receipts/pkg.bom", "darwin", true},
+		{"/library/apple/system/library/receipts/pkg.bom", "darwin", true},
+		{"/opt/homebrew/cellar/zsh/5.9/bin/zsh", "darwin", true},
+		{"/OPT/HOMEBREW/CASKROOM/app", "darwin", true},
+		{"/System/Volumes/Data/opt/homebrew/Cellar/zsh/5.9/bin/zsh", "darwin", true},
+		{"/system/volumes/data/opt/homebrew/cellar/zsh/5.9/bin/zsh", "darwin", true},
+		{"/System/Volumes/Data/private/var/db/receipts/com.example.bom", "darwin", true},
+		{"/System/Volumes/Data/var/lib/dpkg/status", "linux", true},
+		{"/opt/homebrew/cellar/zsh/5.9/bin/zsh", "linux", false},
+		{"/etc/apt/sources.list.d/wskit.list", "linux", false},
+		{"/etc/apt/preferences.d/wskit", "linux", false},
+		{"/etc/wskit-test/a.conf", "darwin", false},
+	}
+	for _, tc := range tests {
+		if got := isPackageDBPathForOS(tc.path, tc.goos); got != tc.want {
+			t.Errorf("isPackageDBPathForOS(%q, %q) = %v, want %v", tc.path, tc.goos, got, tc.want)
+		}
+	}
+}
+
+// TestPackageDBGuardUnicodeCaseFold is H2 (macOS Unicode case folding):
+// U+017F (long s 'ſ') folds to 's' under Unicode case folding and must not
+// bypass the package-DB prefix guard on darwin.
+func TestPackageDBGuardUnicodeCaseFold(t *testing.T) {
+	tests := []struct {
+		path string
+		goos string
+		want bool
+	}{
+		{"/u\u017fr/local/Cellar/zsh/5.9/bin/zsh", "darwin", true},
+		{"/Library/Receipt\u017f/example.bom", "darwin", true},
+		{"/\u017fystem/Volume\u017f/Data/opt/homebrew/Cellar/zsh/5.9/bin/zsh", "darwin", true},
+		{"/u\u017fr/local/Cellar/zsh/5.9/bin/zsh", "linux", false},
+	}
+	for _, tc := range tests {
+		if got := isPackageDBPathForOS(tc.path, tc.goos); got != tc.want {
+			t.Errorf("isPackageDBPathForOS(%q, %q) = %v, want %v", tc.path, tc.goos, got, tc.want)
+		}
+	}
+}
+
+// TestManifestRoundTripsNonUTF8XattrName is M4: non-UTF-8 extended attribute
+// names must survive manifest JSON marshalling and unmarshalling losslessly.
+func TestManifestRoundTripsNonUTF8XattrName(t *testing.T) {
+	rawName := []byte("user.\xff\xfe")
+	rawVal := []byte("payload\x00\xff")
+	in := Manifest{
+		RunID: "rnonutf8",
+		Unit:  contract.UnitShell,
+		Entries: []ManifestEntry{{
+			Path:         "/etc/wskit-test/a.conf",
+			Kind:         KindFile,
+			XattrsStatus: MetadataCaptured,
+			Xattrs:       []XattrEntry{{Name: rawName, Value: rawVal}},
+		}},
+	}
+	data, err := json.Marshal(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out Manifest
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Entries) != 1 || len(out.Entries[0].Xattrs) != 1 {
+		t.Fatalf("unexpected decoded manifest: %+v", out)
+	}
+	gotName := out.Entries[0].Xattrs[0].Name
+	if !bytes.Equal(gotName, rawName) {
+		t.Fatalf("round-tripped xattr name = %x, want %x", gotName, rawName)
+	}
+	if !bytes.Equal(out.Entries[0].Xattrs[0].Value, rawVal) {
+		t.Fatalf("round-tripped xattr value = %x, want %x", out.Entries[0].Xattrs[0].Value, rawVal)
 	}
 }

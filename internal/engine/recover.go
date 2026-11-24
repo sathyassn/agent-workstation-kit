@@ -264,14 +264,16 @@ func (e *Engine) recoverLocked(ctx context.Context, l *locks, self platform.Proc
 	if receipt == nil || rec.Status != StatusRestored {
 		m, err := e.readManifest(rec.RunID)
 		if err != nil {
-			return res, err
+			_ = k.stopRenewing()
+			return res, errors.Join(fmt.Errorf("%w: %w", ErrRestoreFailed, err), e.dropClaim(bk, l, rec.RunID, self))
 		}
 		rec.RestoreOnly = rec.RestoreOnly || o.RestoreOnly
 		if err := k.err(); err != nil {
 			return res, err
 		}
 		if err := e.restoreRun(bk, l, rec, m, next); err != nil {
-			return res, err
+			_ = k.stopRenewing()
+			return res, errors.Join(err, e.dropClaim(bk, l, rec.RunID, self))
 		}
 	}
 	res.Action = ResumeRestored
@@ -280,7 +282,7 @@ func (e *Engine) recoverLocked(ctx context.Context, l *locks, self platform.Proc
 		return res, err
 	}
 	if next == StatusIdle {
-		rec.Claim = nil
+		rec.Status, rec.Claim = StatusIdle, nil
 		return res, l.withJournal(bk, func() error { return e.writeRecord(rec) })
 	}
 
@@ -288,18 +290,62 @@ func (e *Engine) recoverLocked(ctx context.Context, l *locks, self platform.Proc
 	if err != nil {
 		return res, fmt.Errorf("resolve %s for reapply: %w", rec.Unit, err)
 	}
-	if p.Digest != rec.PlanDigest {
-		rec.Status, rec.Claim = StatusIdle, nil
-		return res, errors.Join(
-			fmt.Errorf("%w: %s plan %s, run %s had %s", ErrPlanChanged, rec.Unit, p.Digest, rec.RunID, rec.PlanDigest),
-			l.withJournal(bk, func() error { return e.writeRecord(rec) }))
-	}
 	desc, err := u.Describe(ctx)
 	if err != nil {
 		return res, fmt.Errorf("describe %s: %w", rec.Unit, err)
 	}
 	if desc.Unit != rec.Unit || u.ID() != rec.Unit || p.Unit != rec.Unit {
 		return res, fmt.Errorf("%w: resolver returned %q for %q", ErrUnitMismatch, u.ID(), rec.Unit)
+	}
+	// Always re-inspect declared targets for OS-protected dropped attributes
+	// (such as com.apple.macl) across every digest kind. Seeding p.CannotUndo
+	// with plan-time PlanDroppedNotes ensures an already-approved attribute
+	// that vanished after the pre-crash replace does not trigger a false
+	// ErrPlanChanged, while any attribute appearing now that was not in
+	// PlanDroppedNotes always refuses with ErrPlanChanged.
+	candidate := p
+	candidate.CannotUndo = mergePlanDroppedNotes(p.CannotUndo, rec.PlanDroppedNotes)
+	finalised, warnings, err := e.finalisePlan(ctx, desc, candidate)
+	if err != nil {
+		return res, fmt.Errorf("finalise plan %s for reapply: %w", rec.Unit, err)
+	}
+	if hasUnrecordedDroppedXattr(warnings, rec.PlanDroppedNotes) {
+		rec.Status, rec.Claim = StatusIdle, nil
+		return res, errors.Join(
+			fmt.Errorf("%w: %s target gained unapproved OS-protected extended attribute since run %s", ErrPlanChanged, rec.Unit, rec.RunID),
+			l.withJournal(bk, func() error { return e.writeRecord(rec) }))
+	}
+	// Compare digests using the explicit digest kind recorded in the intent
+	// record (never guessing from string shape).
+	switch rec.PlanDigestKind {
+	case PlanDigestCanonical:
+		if finalised.Digest != rec.PlanDigest {
+			rec.Status, rec.Claim = StatusIdle, nil
+			return res, errors.Join(
+				fmt.Errorf("%w: %s plan %s, run %s had %s", ErrPlanChanged, rec.Unit, finalised.Digest, rec.RunID, rec.PlanDigest),
+				l.withJournal(bk, func() error { return e.writeRecord(rec) }))
+		}
+		p = finalised
+	case PlanDigestVerbatim:
+		if p.Digest == "" || p.Digest != rec.PlanDigest {
+			rec.Status, rec.Claim = StatusIdle, nil
+			return res, errors.Join(
+				fmt.Errorf("%w: %s plan %s, run %s had %s", ErrPlanChanged, rec.Unit, p.Digest, rec.RunID, rec.PlanDigest),
+				l.withJournal(bk, func() error { return e.writeRecord(rec) }))
+		}
+	default:
+		// Backward compatibility for v1 records written before plan_digest_kind
+		// existed: accept either a canonical match or a verbatim digest match.
+		switch {
+		case finalised.Digest == rec.PlanDigest:
+			p = finalised
+		case p.Digest != "" && p.Digest == rec.PlanDigest:
+		default:
+			rec.Status, rec.Claim = StatusIdle, nil
+			return res, errors.Join(
+				fmt.Errorf("%w: %s plan %s, run %s had %s", ErrPlanChanged, rec.Unit, finalised.Digest, rec.RunID, rec.PlanDigest),
+				l.withJournal(bk, func() error { return e.writeRecord(rec) }))
+		}
 	}
 	if err := e.runApply(ctx, l, self, u, desc, p); err != nil {
 		return res, err

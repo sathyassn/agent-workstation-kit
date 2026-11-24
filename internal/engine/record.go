@@ -17,14 +17,15 @@ import (
 )
 
 const (
-	recordVersion = 1
-	recordFile    = "record.json"
-	journalLock   = "journal.lock"
-	receiptsDir   = "receipts"
-	backupsDir    = "backups"
-	manifestFile  = "manifest.json"
-	privateMode   = 0o700
-	jsonExt       = ".json"
+	recordVersionV1 = 1
+	recordVersion   = 2
+	recordFile      = "record.json"
+	journalLock     = "journal.lock"
+	receiptsDir     = "receipts"
+	backupsDir      = "backups"
+	manifestFile    = "manifest.json"
+	privateMode     = 0o700
+	jsonExt         = ".json"
 )
 
 // Operation names what a record is for (SPC-001 "Intent, recovery and
@@ -80,20 +81,48 @@ type Claim struct {
 	Expires  time.Time                `json:"expires"`
 }
 
+// PlanDigestKind records how Record.PlanDigest was computed when an apply
+// started so Resume compares on the exact same basis instead of guessing from
+// the digest string's shape.
+type PlanDigestKind string
+
+// Plan digest kinds.
+const (
+	// PlanDigestVerbatim means PlanDigest came verbatim from the caller's
+	// contract.Plan (for example a unit or test calling Apply without
+	// Engine.Plan).
+	PlanDigestVerbatim PlanDigestKind = "verbatim"
+	// PlanDigestCanonical means PlanDigest is the RFC 8785 SHA-256 canonical
+	// digest produced by Engine.Plan.
+	PlanDigestCanonical PlanDigestKind = "canonical"
+)
+
+func (k PlanDigestKind) valid() bool {
+	switch k {
+	case "", PlanDigestVerbatim, PlanDigestCanonical:
+		return true
+	default:
+		return false
+	}
+}
+
 // Record is the journal's intent record.
 type Record struct {
-	Version     int                      `json:"version"`
-	Op          Operation                `json:"op"`
-	Status      Status                   `json:"status"`
-	RunID       contract.RunID           `json:"run_id"`
-	Unit        contract.UnitID          `json:"unit"`
-	PlanID      contract.PlanID          `json:"plan_id"`
-	PlanDigest  contract.Digest          `json:"plan_digest"`
-	Scope       contract.Scope           `json:"scope"`
-	Executor    platform.ProcessIdentity `json:"executor"`
-	Command     *CommandRecord           `json:"command,omitempty"`
-	Claim       *Claim                   `json:"claim,omitempty"`
-	RestoreOnly bool                     `json:"restore_only,omitempty"`
+	Version          int                      `json:"version"`
+	Op               Operation                `json:"op"`
+	Status           Status                   `json:"status"`
+	RunID            contract.RunID           `json:"run_id"`
+	Unit             contract.UnitID          `json:"unit"`
+	PlanID           contract.PlanID          `json:"plan_id"`
+	PlanDigest       contract.Digest          `json:"plan_digest"`
+	PlanDigestKind   PlanDigestKind           `json:"plan_digest_kind,omitempty"`
+	PlanDroppedNotes []string                 `json:"plan_dropped_notes,omitempty"`
+	Scope            contract.Scope           `json:"scope"`
+	Executor         platform.ProcessIdentity `json:"executor"`
+	CmdSeq           int                      `json:"cmd_seq,omitempty"`
+	Command          *CommandRecord           `json:"command,omitempty"`
+	Claim            *Claim                   `json:"claim,omitempty"`
+	RestoreOnly      bool                     `json:"restore_only,omitempty"`
 }
 
 func (r *Record) unfinished() bool { return r != nil && r.Status != StatusIdle }
@@ -115,7 +144,7 @@ func (e *Engine) readRecord() (*Record, error) {
 	if err != nil || !found {
 		return nil, err
 	}
-	if r.Version != recordVersion || r.Op != OpApply || !r.Status.valid() || platform.ValidateRunID(r.RunID) != nil {
+	if (r.Version != recordVersionV1 && r.Version != recordVersion) || r.Op != OpApply || !r.Status.valid() || !r.PlanDigestKind.valid() || platform.ValidateRunID(r.RunID) != nil {
 		return nil, fmt.Errorf("%w: %q", ErrCorruptRecord, e.recordPath())
 	}
 	return &r, nil

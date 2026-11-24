@@ -436,7 +436,7 @@ func TestRefusesWritableAncestors(t *testing.T) {
 	}
 	w := worldAt(base)
 	opts := func(journal, lock string) engine.Options {
-		return engine.Options{JournalDir: journal, HostLock: lock, Scope: contract.ScopeUser, Containment: w.cont, Inspector: w.table.Inspector(w.table.Spawn())}
+		return engine.Options{JournalDir: journal, HostLock: lock, Root: base, Scope: contract.ScopeUser, Containment: w.cont, Inspector: w.table.Inspector(w.table.Spawn())}
 	}
 	for name, o := range map[string]engine.Options{
 		"journal below a writable folder":   opts(filepath.Join(shared, "journal"), filepath.Join(base, "host.lock")),
