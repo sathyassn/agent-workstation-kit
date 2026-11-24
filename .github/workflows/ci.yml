@@ -1,3 +1,8 @@
+# CI runs pull-request head code (Makefile, unit tests, and self-checks).
+# Privacy and public-safety steps in this workflow are non-authoritative
+# self-tests only and MUST NOT be used as the required privacy gate: the
+# authoritative base-revision privacy verdict comes solely from
+# `.github/workflows/public-scan.yml` (`public-scan / result`).
 name: CI
 
 on:
@@ -102,6 +107,9 @@ jobs:
         run: sudo /usr/bin/python3 -I -B tests/verify_macos_host_lock.py
 
   macos-public-scan:
+    # Non-authoritative head-code self-test on macOS; authoritative privacy
+    # verdict is `public-scan / result` in `.github/workflows/public-scan.yml`.
+    name: macos-public-scan (non-authoritative head self-test)
     runs-on: macos-latest
     timeout-minutes: 10
     steps:
@@ -110,8 +118,16 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Run deterministic public-release scan on macOS
+      - name: Run deterministic public-release scan on macOS (non-authoritative)
         run: python3 -I -B tests/check_public_release.py
 
       - name: Run public-scan unit and hardening tests on macOS
-        run: python3 -I -B -m unittest tests/test_public_release.py tests/test_public_scan_hardening.py
+        run: |
+          set -euo pipefail
+          set +e
+          out=$(python3 -B -m unittest discover -s tests -p 'test_public_*.py' -v 2>&1)
+          status=$?
+          set -e
+          printf '%s\n' "$out"
+          test "$status" -eq 0
+          printf '%s\n' "$out" | grep -Eq '^Ran [1-9][0-9]* tests? in '

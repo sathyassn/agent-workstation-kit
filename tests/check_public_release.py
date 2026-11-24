@@ -99,8 +99,11 @@ MAX_TREE_ENTRIES = 100_000
 MAX_TREE_BYTES = 512 * 1024 * 1024
 MAX_LISTING_BYTES = 64 * 1024 * 1024
 MAX_FINDINGS = 10_000
+MAX_RANGE_COMMITS = 5_000
+MAX_DECODE_PASSES = 4
 CACHE_LINE_CHARS = 2048
 CACHE_LINES = 4096
+SCAN_VERIFIED_MARKER = "PUBLIC_SCAN_VERIFIED=1"
 
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 COMMIT_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
@@ -185,6 +188,9 @@ ALLOWED_PHONES = frozenset({
     "+15555550100",
     "+15555550101",
     "+15555550199",
+    "15555550100",
+    "15555550101",
+    "15555550199",
     "5555550100",
     "5555550101",
     "5555550199",
@@ -296,7 +302,7 @@ EMAIL_RE = re.compile(
     r"([A-Za-z0-9](?:[A-Za-z0-9._%+-]{0,62}[A-Za-z0-9])?"
     r"@"
     r"(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,24})"
-    r"(?![A-Za-z0-9.-])"
+    r"(?![A-Za-z0-9-])(?!\.[A-Za-z0-9-])"
 )
 
 PHONE_E164_RE = re.compile(
@@ -310,6 +316,27 @@ PHONE_PAREN_RE = re.compile(
 )
 PHONE_SEP_RE = re.compile(
     r"(?<![A-Za-z0-9.-])(\d{3}([-. ])\d{3}\2\d{4})(?![A-Za-z0-9.-])"
+)
+PHONE_CONTEXT_DIGITS_RE = re.compile(
+    r"\b(?:phone|tel|telephone|mobile|cell|fax|sms|whatsapp|call|contact)"
+    r"(?:[ \t_-]*(?:number|no|num|line))?[\"']?[ \t]*[:=]?[ \t]*[\"']?"
+    r"(\+?1?\d{10}|\+[1-9]\d{7,14})(?!\d)",
+    re.IGNORECASE,
+)
+PHONE_TEL_URI_RE = re.compile(
+    r"\btel:(\+?1?\d{10}|\+[1-9]\d{7,14})(?!\d)",
+    re.IGNORECASE,
+)
+PHONE_CONTEXT_KEYWORDS = (
+    "phone",
+    "tel",
+    "mobile",
+    "cell",
+    "fax",
+    "sms",
+    "whatsapp",
+    "call",
+    "contact",
 )
 
 DOTTED_DECIMAL_RE = re.compile(
@@ -341,7 +368,8 @@ MAC_CISCO_RE = re.compile(
 HOME_PATH_RE = re.compile(
     r"(?<![A-Za-z0-9._-])"
     r"(?:/(Users|home)/([A-Za-z0-9._-]{2,64})(?=/|$|[\s\"'`<>()\[\]{},;:])"
-    r"|[A-Za-z]:[\\/](Users)[\\/]([A-Za-z0-9._-]{2,64})(?=[\\/]|$|[\s\"'`<>()\[\]{},;:]))"
+    r"|[A-Za-z]:[\\/](Users)[\\/]([A-Za-z0-9._-]{2,64})(?=[\\/]|$|[\s\"'`<>()\[\]{},;:]))",
+    re.IGNORECASE,
 )
 
 PRIVATE_DNS_RE = re.compile(
@@ -362,11 +390,11 @@ AWS_ECR_RE = re.compile(
     re.IGNORECASE,
 )
 AWS_ACCOUNT_KV_RE = re.compile(
-    r"\b(?:aws[_-]?account(?:[_-]?id)?|account[_-]?id)[ \t]*[:=][ \t]*[\"']?(\d{12})[\"']?(?!\d)",
+    r"\b(?:aws[_-]?account(?:[_-]?id)?|account[_-]?id)[\"']?[ \t]*[:=][ \t]*[\"']?(\d{12})[\"']?(?!\d)",
     re.IGNORECASE,
 )
 GCP_PROJECT_KV_RE = re.compile(
-    r"\b(?:gcp[_-]?project(?:[_-]?id)?|google[_-]?cloud[_-]?project)[ \t]*[:=][ \t]*[\"']?([a-z][a-z0-9-]{4,28}[a-z0-9])[\"']?",
+    r"\b(?:gcp[_-]?project(?:[_-]?id)?|google[_-]?cloud[_-]?project)[\"']?[ \t]*[:=][ \t]*[\"']?([a-z][a-z0-9-]{4,28}[a-z0-9])[\"']?",
     re.IGNORECASE,
 )
 GCP_URL_PROJECT_RE = re.compile(
@@ -381,11 +409,11 @@ AZURE_SUB_URL_RE = re.compile(
     re.IGNORECASE,
 )
 AZURE_KV_RE = re.compile(
-    r"\b(?:azure[_-]?(?:subscription|tenant)[_-]?id|subscription[_-]?id|tenant[_-]?id)[ \t]*[:=][ \t]*[\"']?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})[\"']?",
+    r"\b(?:azure[_-]?(?:subscription|tenant)[_-]?id|subscription[_-]?id|tenant[_-]?id)[\"']?[ \t]*[:=][ \t]*[\"']?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})[\"']?",
     re.IGNORECASE,
 )
 CF_ACCOUNT_RE = re.compile(
-    r"\bcloudflare[_-]?account[_-]?id[ \t]*[:=][ \t]*[\"']?([0-9a-f]{32})[\"']?",
+    r"\bcloudflare[_-]?account[_-]?id[\"']?[ \t]*[:=][ \t]*[\"']?([0-9a-f]{32})[\"']?",
     re.IGNORECASE,
 )
 
@@ -398,8 +426,8 @@ ATLASSIAN_ACCOUNT_RE = re.compile(
 )
 CHAT_TRACKER_KV_RE = re.compile(
     r"\b(?:slack|discord|jira|atlassian|linear|telegram|mattermost|teams|tracker|chat)"
-    r"[_-]?(?:account|user|member|workspace|team)[_-]?id"
-    r"[ \t]*[:=][ \t]*[\"']?([A-Za-z0-9:._-]{5,64})[\"']?",
+    r"[_-]?(?:account|user|member|workspace|team)(?:[_-]?id)?"
+    r"[\"']?[ \t]*[:=][ \t]*[\"']?([A-Za-z0-9:._-]{5,64})[\"']?",
     re.IGNORECASE,
 )
 
@@ -446,6 +474,16 @@ class ExemptionRecord:
     @property
     def key(self) -> tuple[str, str, str]:
         return (self.path, self.rule, self.digest)
+
+
+@dataclass(frozen=True)
+class ExemptionInventoryEntry:
+    path: str
+    rule: str
+    digest_prefix: str
+    expires: str
+    status: str  # "valid" | "expired" | "invalid"
+    record: ExemptionRecord | None = None
 
 
 @dataclass(frozen=True)
@@ -523,6 +561,13 @@ def _normalize_text_cached(text: str, separate: bool, decode_url: bool) -> str:
     return _normalize_text(text, separate, decode_url)
 
 
+def _decode_escapes_once(text: str, *, decode_url: bool) -> str:
+    decoded = _decode_json_escapes(text)
+    if decode_url:
+        decoded = _decode_url_escapes(decoded)
+    return decoded
+
+
 def _normalize_text(text: str, separate: bool, decode_url: bool) -> str:
     if (
         text.isascii()
@@ -531,9 +576,15 @@ def _normalize_text(text: str, separate: bool, decode_url: bool) -> str:
         and (not decode_url or "%" not in text)
     ):
         return text
-    decoded = _decode_json_escapes(text)
-    if decode_url:
-        decoded = _decode_url_escapes(decoded)
+    decoded = text
+    for _ in range(MAX_DECODE_PASSES):
+        next_decoded = _decode_escapes_once(decoded, decode_url=decode_url)
+        if next_decoded == decoded:
+            break
+        decoded = next_decoded
+    else:
+        if _decode_escapes_once(decoded, decode_url=decode_url) != decoded:
+            raise ScanConfigError("nested escape encoding exceeds maximum decode depth")
     if not decoded.isascii():
         decoded = unicodedata.normalize("NFKD", decoded)
         if separate:
@@ -642,7 +693,10 @@ def detect_phone(text: str) -> list[str]:
     has_plus = "+" in text
     has_paren = "(" in text
     has_sep = "-" in text or "." in text or " " in text
-    if not (has_plus or has_paren or has_sep):
+    lower = text.casefold()
+    has_ctx = ":" in text or "=" in text or " " in text
+    has_phone_kw = has_ctx and any(kw in lower for kw in PHONE_CONTEXT_KEYWORDS)
+    if not (has_plus or has_paren or has_sep or has_phone_kw):
         return []
     patterns: list[re.Pattern[str]] = []
     if has_plus and PHONE_E164_HINT_RE.search(text) is not None:
@@ -653,6 +707,10 @@ def detect_phone(text: str) -> list[str]:
         patterns.append(PHONE_PAREN_RE)
     if has_sep and DIGIT_RE.search(text) is not None:
         patterns.append(PHONE_SEP_RE)
+    if has_phone_kw and DIGIT_RE.search(text) is not None:
+        if "tel:" in lower:
+            patterns.append(PHONE_TEL_URI_RE)
+        patterns.append(PHONE_CONTEXT_DIGITS_RE)
     if not patterns:
         return []
     seen: set[str] = set()
@@ -666,9 +724,11 @@ def detect_phone(text: str) -> list[str]:
                     continue
                 folded = "+" + digits
             else:
-                if len(digits) != 10:
+                if len(digits) not in (10, 11):
                     continue
-                if digits == "0" * 10:
+                if len(digits) == 11 and not digits.startswith("1"):
+                    continue
+                if digits == "0" * len(digits):
                     continue
                 folded = digits
             if folded in ALLOWED_PHONES:
@@ -855,7 +915,7 @@ def detect_chat_tracker_id(text: str) -> list[str]:
     if ":" in text and ATLASSIAN_HINT_RE.search(text) is not None:
         patterns.append(ATLASSIAN_ACCOUNT_RE)
     lower = text.casefold()
-    if "_id" in lower or "-id" in lower:
+    if ":" in text or "=" in text:
         if any(
             needle in lower
             for needle in (
@@ -975,12 +1035,17 @@ def load_modes(path: Path) -> dict[str, str]:
     return modes
 
 
-def load_exemptions(
+def load_exemptions_inventory(
     path: Path,
     *,
     today: datetime.date | None = None,
-) -> tuple[ExemptionRecord, ...]:
-    """Load and strictly validate tracked digest-bound exemption records."""
+) -> tuple[tuple[ExemptionRecord, ...], tuple[ExemptionInventoryEntry, ...], list[str]]:
+    """Load tracked exemptions, returning (active_records, full_inventory, errors).
+
+    An expired or malformed record fails closed via `errors`, while preserving
+    every configured record in `full_inventory` so the output never wipes the
+    inventory when one record expires.
+    """
     data = _read_config_json(path, "exemption file")
     if not isinstance(data, dict) or set(data.keys()) != {"schema_version", "exemptions"}:
         raise ScanConfigError("exemption file must contain only schema_version and exemptions")
@@ -992,13 +1057,49 @@ def load_exemptions(
 
     current_date = datetime.date.today() if today is None else today
     required_keys = {"path", "rule", "digest", "reason", "approved_by", "expires"}
-    records: list[ExemptionRecord] = []
+    active_records: list[ExemptionRecord] = []
+    inventory: list[ExemptionInventoryEntry] = []
+    errors: list[str] = []
     seen: set[tuple[str, str, str]] = set()
+
     for index, entry in enumerate(raw_entries):
-        if not isinstance(entry, dict) or set(entry.keys()) != required_keys:
-            raise ScanConfigError(
-                f"exemption record #{index + 1} is incomplete or has unexpected fields"
+        if not isinstance(entry, dict):
+            errors.append(f"exemption record #{index + 1} is incomplete or has unexpected fields")
+            inventory.append(
+                ExemptionInventoryEntry(
+                    path=f"<record-{index + 1}>",
+                    rule="unknown",
+                    digest_prefix="invalid",
+                    expires="invalid",
+                    status="invalid",
+                )
             )
+            continue
+
+        raw_path = entry.get("path")
+        raw_rule = entry.get("rule")
+        raw_digest = entry.get("digest")
+        raw_expires = entry.get("expires")
+        safe_path = raw_path if _valid_relative_path(raw_path) else f"<record-{index + 1}>"
+        safe_rule = raw_rule if isinstance(raw_rule, str) and raw_rule in DETECTOR_IDS else "unknown"
+        safe_digest_prefix = (
+            raw_digest[:12]
+            if isinstance(raw_digest, str) and SHA256_RE.fullmatch(raw_digest)
+            else "invalid"
+        )
+        safe_expires = (
+            raw_expires
+            if isinstance(raw_expires, str) and ISO_DATE_RE.fullmatch(raw_expires)
+            else "invalid"
+        )
+
+        if set(entry.keys()) != required_keys:
+            errors.append(f"exemption record #{index + 1} is incomplete or has unexpected fields")
+            inventory.append(
+                ExemptionInventoryEntry(safe_path, safe_rule, safe_digest_prefix, safe_expires, "invalid")
+            )
+            continue
+
         rel_path = entry["path"]
         rule = entry["rule"]
         digest = entry["digest"]
@@ -1006,33 +1107,51 @@ def load_exemptions(
         approved_by = entry["approved_by"]
         expires = entry["expires"]
 
+        record_error: str | None = None
         if not _valid_relative_path(rel_path):
-            raise ScanConfigError(f"exemption record #{index + 1} has an invalid path")
-        if not isinstance(rule, str) or rule not in DETECTOR_IDS:
-            raise ScanConfigError(f"exemption record #{index + 1} has an unknown rule")
-        if not isinstance(digest, str) or not SHA256_RE.fullmatch(digest):
-            raise ScanConfigError(
-                f"exemption record #{index + 1} digest must be lowercase 64-hex SHA-256"
-            )
-        if not isinstance(reason, str) or not reason.strip():
-            raise ScanConfigError(f"exemption record #{index + 1} is missing a reason")
-        if not isinstance(approved_by, str) or not approved_by.strip():
-            raise ScanConfigError(f"exemption record #{index + 1} is missing approved_by")
-        if not isinstance(expires, str) or not ISO_DATE_RE.fullmatch(expires):
-            raise ScanConfigError(
+            record_error = f"exemption record #{index + 1} has an invalid path"
+        elif not isinstance(rule, str) or rule not in DETECTOR_IDS:
+            record_error = f"exemption record #{index + 1} has an unknown rule"
+        elif not isinstance(digest, str) or not SHA256_RE.fullmatch(digest):
+            record_error = f"exemption record #{index + 1} digest must be lowercase 64-hex SHA-256"
+        elif not isinstance(reason, str) or not reason.strip():
+            record_error = f"exemption record #{index + 1} is missing a reason"
+        elif not isinstance(approved_by, str) or not approved_by.strip():
+            record_error = f"exemption record #{index + 1} is missing approved_by"
+        elif not isinstance(expires, str) or not ISO_DATE_RE.fullmatch(expires):
+            record_error = (
                 f"exemption record #{index + 1} has a missing or malformed expires date (expected YYYY-MM-DD)"
             )
-        try:
-            expires_date = datetime.date.fromisoformat(expires)
-        except ValueError as exc:
-            raise ScanConfigError(
-                f"exemption record #{index + 1} has an invalid calendar expires date"
-            ) from exc
-        if expires_date < current_date:
-            raise ScanConfigError(
-                f"exemption record #{index + 1} for {escape_for_display(rel_path)} "
-                f"rule '{rule}' digest {digest[:12]} expired on {expires}"
+        else:
+            try:
+                expires_date = datetime.date.fromisoformat(expires)
+            except ValueError:
+                record_error = f"exemption record #{index + 1} has an invalid calendar expires date"
+            else:
+                if expires_date < current_date:
+                    shown = display_path(rel_path)
+                    errors.append(
+                        f"exemption record #{index + 1} for {shown} "
+                        f"rule '{rule}' digest {digest[:12]} expired on {expires}"
+                    )
+                    inventory.append(
+                        ExemptionInventoryEntry(
+                            path=rel_path,
+                            rule=rule,
+                            digest_prefix=digest[:12],
+                            expires=expires,
+                            status="expired",
+                        )
+                    )
+                    continue
+
+        if record_error is not None:
+            errors.append(record_error)
+            inventory.append(
+                ExemptionInventoryEntry(safe_path, safe_rule, safe_digest_prefix, safe_expires, "invalid")
             )
+            continue
+
         record = ExemptionRecord(
             path=rel_path,
             rule=rule,
@@ -1042,10 +1161,36 @@ def load_exemptions(
             expires=expires,
         )
         if record.key in seen:
-            raise ScanConfigError(f"exemption record #{index + 1} is a duplicate")
+            errors.append(f"exemption record #{index + 1} is a duplicate")
+            inventory.append(
+                ExemptionInventoryEntry(rel_path, rule, digest[:12], expires, "invalid")
+            )
+            continue
         seen.add(record.key)
-        records.append(record)
-    return tuple(records)
+        active_records.append(record)
+        inventory.append(
+            ExemptionInventoryEntry(
+                path=rel_path,
+                rule=rule,
+                digest_prefix=digest[:12],
+                expires=expires,
+                status="valid",
+                record=record,
+            )
+        )
+    return tuple(active_records), tuple(inventory), errors
+
+
+def load_exemptions(
+    path: Path,
+    *,
+    today: datetime.date | None = None,
+) -> tuple[ExemptionRecord, ...]:
+    """Load and strictly validate tracked digest-bound exemption records."""
+    records, _inventory, errors = load_exemptions_inventory(path, today=today)
+    if errors:
+        raise ScanConfigError(errors[0])
+    return records
 
 
 def load_binary_exceptions(path: Path) -> dict[str, BinaryException]:
@@ -1320,16 +1465,21 @@ def _stream_tree(
     except OSError as exc:
         raise ScanConfigError("Git could not be executed") from exc
     assert process.stdin is not None and process.stdout is not None
+    finished = False
     try:
         for sha, users in by_object.items():
             process.stdin.write(f"{sha}\n".encode("ascii"))
             process.stdin.flush()
             header = process.stdout.readline().rstrip(b"\n").split(b" ")
+            try:
+                header_size = int(header[2]) if len(header) == 3 else -1
+            except ValueError:
+                header_size = -1
             if (
                 len(header) != 3
                 or header[0].decode("ascii", "replace") != sha
                 or header[1] != b"blob"
-                or int(header[2]) != sizes[sha]
+                or header_size != sizes[sha]
             ):
                 raise ScanConfigError("Git returned a malformed object stream")
             content = process.stdout.read(sizes[sha])
@@ -1337,35 +1487,98 @@ def _stream_tree(
                 raise ScanConfigError("Git returned a truncated object stream")
             for mode, path in users:
                 yield SourceFile(path, content, symlink=(mode == "120000"), object_id=sha)
+        finished = True
     finally:
         process.stdin.close()
         process.stdout.close()
-        process.wait()
+        if not finished:
+            process.kill()
+        rc = process.wait()
+        if finished and rc != 0:
+            raise ScanConfigError("Git cat-file failed while reading tree objects")
+
+
+def range_commits(root: Path, base: str, head: str) -> list[str]:
+    """Return all commits in base..head in chronological order, failing closed on gaps."""
+    if not COMMIT_RE.fullmatch(base) or not COMMIT_RE.fullmatch(head):
+        raise ScanConfigError("--range needs two full lowercase commit SHAs")
+    _git(root, ["cat-file", "-e", f"{base}^{{commit}}"])
+    _git(root, ["cat-file", "-e", f"{head}^{{commit}}"])
+    shallow = _git(root, ["rev-parse", "--is-shallow-repository"]).decode("ascii", "replace").strip()
+    if shallow == "true":
+        # Verify base is an ancestor of head; shallow clones with truncated history fail closed.
+        anc = subprocess.run(
+            ["git", "--no-optional-locks", "merge-base", "--is-ancestor", base, head],
+            cwd=root,
+            capture_output=True,
+            check=False,
+        )
+        if anc.returncode != 0:
+            raise ScanConfigError("repository history is shallow/incomplete for the requested range")
+    raw = _git(root, ["rev-list", "--reverse", f"{base}..{head}"])
+    commits = [line.decode("ascii") for line in raw.splitlines() if line]
+    if not commits:
+        raise ScanConfigError("commit range is empty")
+    if len(commits) > MAX_RANGE_COMMITS:
+        raise ScanConfigError(
+            f"commit range has more than {MAX_RANGE_COMMITS} commits; refusing to scan"
+        )
+    return commits
 
 
 # --- decoding and display safety --------------------------------------------
 
 
+_ALLOWED_TEXT_CONTROLS = frozenset({"\t", "\n", "\r", "\f", "\v"})
+
+
+def _is_printable_utf16_text(text: str) -> bool:
+    """Return True only when decoded BOM-less UTF-16 looks like genuine text."""
+    if not text or "\0" in text:
+        return False
+    printable = 0
+    for ch in text:
+        if ch in _ALLOWED_TEXT_CONTROLS:
+            printable += 1
+            continue
+        cat = unicodedata.category(ch)
+        if cat in ("Cc", "Cs", "Co", "Cn"):
+            return False
+        if ch.isprintable() or cat.startswith(("L", "M", "N", "P", "S", "Z")):
+            printable += 1
+    return (printable / len(text)) >= 0.95
+
+
 def _looks_utf16(data: bytes) -> str | None:
-    """Return a UTF-16 codec name when data looks like NUL-interleaved ASCII."""
-    sample = data[:4096]
-    if len(sample) < 4:
+    """Return a UTF-16 codec name only when data is genuine NUL-interleaved UTF-16 text."""
+    if len(data) < 4 or len(data) % 2 != 0:
         return None
+    sample = data[:4096]
     pairs = len(sample) // 2
     even_nuls = sum(1 for i in range(0, pairs * 2, 2) if sample[i] == 0)
     odd_nuls = sum(1 for i in range(1, pairs * 2, 2) if sample[i] == 0)
-    if odd_nuls >= pairs * 0.3 and even_nuls == 0:
-        return "utf-16-le"
-    if even_nuls >= pairs * 0.3 and odd_nuls == 0:
-        return "utf-16-be"
-    return None
+    codec: str | None = None
+    if odd_nuls >= pairs * 0.5 and even_nuls == 0:
+        codec = "utf-16-le"
+    elif even_nuls >= pairs * 0.5 and odd_nuls == 0:
+        codec = "utf-16-be"
+    if codec is None:
+        return None
+    try:
+        decoded = data.decode(codec)
+    except UnicodeDecodeError:
+        return None
+    if not _is_printable_utf16_text(decoded):
+        return None
+    return codec
 
 
 def decode_content(data: bytes) -> str:
     """Decode file content strictly, raising ScanConfigError when it is not text.
 
-    UTF-8 (with or without BOM) and UTF-16 (with BOM or NUL-interleaved ASCII)
-    are decoded. Any remaining NUL byte or decode error is refused as binary.
+    UTF-8 (with or without BOM) and genuine UTF-16 (with BOM or strictly
+    validated NUL-interleaved text) are decoded. Opaque NUL-bearing binary
+    data or decode errors are refused unless hash-excepted.
     """
     try:
         if data.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
@@ -1402,6 +1615,19 @@ def redacted_path_id(path: str) -> str:
     """Return an opaque id for a path that triggered a detector."""
     digest = hashlib.sha256(path.encode("utf-8")).hexdigest()[:12]
     return f"<redacted-{digest}>"
+
+
+def display_path(path: str) -> str:
+    """Return a safe display path, redacting any path that matches a detector."""
+    try:
+        variants = _line_variants(path)
+        for detector_fn in DETECTORS.values():
+            for variant in variants:
+                if detector_fn(variant):
+                    return redacted_path_id(path)
+    except Exception:  # noqa: BLE001 - fail safe by redacting path on any error
+        return redacted_path_id(path)
+    return escape_for_display(path)
 
 
 # --- scanner engine ---------------------------------------------------------
@@ -1519,7 +1745,10 @@ class Scanner:
 
     def _run_detectors_on_line(self, line: str) -> tuple[list[tuple[str, str]], list[str]]:
         """Run every enabled detector on one line, returning (hits, errors)."""
-        variants = _line_variants(line)
+        try:
+            variants = _line_variants(line)
+        except ScanConfigError as exc:
+            return [], [f"decode failed ({exc}); failing closed"]
         hits: list[tuple[str, str]] = []
         errors: list[str] = []
         executed: set[str] = set()
@@ -1559,7 +1788,10 @@ class Scanner:
         unified = text.replace("\r\n", "\n").replace("\r", "\n")
         if not unified:
             return None, [], False
-        file_variants = self._text_variants(unified)
+        try:
+            file_variants = self._text_variants(unified)
+        except ScanConfigError as exc:
+            return f"decode failed ({exc}); failing closed", [], False
         triggered: list[tuple[str, Callable[[str], list[str]]]] = []
         executed: set[str] = set()
         for rule_id, _mode, detector_fn in self.active_detectors:
@@ -1583,7 +1815,10 @@ class Scanner:
         for number, line in enumerate(lines, start=1):
             if not line:
                 continue
-            line_variants = _line_variants(line)
+            try:
+                line_variants = _line_variants(line)
+            except ScanConfigError as exc:
+                return f"decode failed ({exc}); failing closed", [], False
             for rule_id, detector_fn in triggered:
                 det_hits, err = self._run_detector_checked(rule_id, detector_fn, line_variants)
                 if err is not None:
@@ -1609,7 +1844,11 @@ class Scanner:
             if not self._is_exempt(source.path, rule_id, value):
                 unexempt_path_hits.append((rule_id, value))
 
-        shown = redacted_path_id(source.path) if path_hits else escape_for_display(source.path)
+        shown = (
+            redacted_path_id(source.path)
+            if (path_hits or path_errors)
+            else display_path(source.path)
+        )
 
         for err in path_errors:
             failures.append(f"{shown}:0: {err}")
@@ -1749,6 +1988,31 @@ def scan_tracked_files(
 # --- repository metadata checks ---------------------------------------------
 
 
+def tracked_path_failures(
+    tracked: Iterable[str] | None,
+    *,
+    root: Path | None = None,
+) -> list[str]:
+    """Fail closed on empty listings or tracked private, generated, or retired paths."""
+    failures: list[str] = []
+    tracked_list = list(tracked) if tracked is not None else None
+    if not tracked_list:
+        failures.append("tracked file listing is missing or empty")
+        return failures
+    for name in tracked_list:
+        if (
+            name.endswith(".local.toml")
+            or name.startswith("reports/")
+            or name.startswith("artifacts/")
+            or name.startswith(".secrets/")
+        ):
+            failures.append(f"private/generated path is tracked: {display_path(name)}")
+        if name.startswith("skills/setup-agent-dev-machine/"):
+            if root is None or (root / name).exists():
+                failures.append(f"retired skill path is tracked: {display_path(name)}")
+    return failures
+
+
 def deterministic_failures(
     root: Path,
     *,
@@ -1823,21 +2087,7 @@ def deterministic_failures(
         if any(fragment not in dependabot_text for fragment in DEPENDABOT_COMMIT_POLICY):
             failures.append("Dependabot must emit conventional build(scope) commit subjects")
 
-    tracked_list = list(tracked) if tracked is not None else None
-    if not tracked_list:
-        failures.append("tracked file listing is missing or empty")
-    else:
-        for name in tracked_list:
-            if (
-                name.endswith(".local.toml")
-                or name.startswith("reports/")
-                or name.startswith("artifacts/")
-                or name.startswith(".secrets/")
-            ):
-                failures.append(f"private/generated path is tracked: {name}")
-            if name.startswith("skills/setup-agent-dev-machine/") and (root / name).exists():
-                failures.append(f"retired skill path is tracked: {name}")
-
+    failures.extend(tracked_path_failures(tracked, root=root))
     return failures
 
 
@@ -1855,19 +2105,29 @@ def _print_non_default_modes(modes: Mapping[str, str] | None) -> None:
 
 
 def _print_exemptions(
-    exemptions: Sequence[ExemptionRecord],
+    exemptions: Sequence[ExemptionRecord | ExemptionInventoryEntry],
     applied: frozenset[tuple[str, str, str]],
 ) -> None:
     if not exemptions:
         print("Configured exemptions: none")
         return
     print("Configured exemptions:")
-    for record in exemptions:
-        status = "applied" if record.key in applied else "unused"
-        shown = escape_for_display(record.path)
-        print(
-            f"- [{status}] {shown} rule={record.rule} digest={record.digest[:12]} expires={record.expires}"
-        )
+    for item in exemptions:
+        if isinstance(item, ExemptionInventoryEntry):
+            if item.status == "valid" and item.record is not None:
+                status = "applied" if item.record.key in applied else "unused"
+            else:
+                status = item.status
+            shown = display_path(item.path)
+            print(
+                f"- [{status}] {shown} rule={item.rule} digest={item.digest_prefix} expires={item.expires}"
+            )
+        else:
+            status = "applied" if item.key in applied else "unused"
+            shown = display_path(item.path)
+            print(
+                f"- [{status}] {shown} rule={item.rule} digest={item.digest[:12]} expires={item.expires}"
+            )
 
 
 def _report(
@@ -1875,9 +2135,10 @@ def _report(
     failures: list[str],
     warnings: list[str],
     modes: Mapping[str, str] | None,
-    exemptions: Sequence[ExemptionRecord],
+    exemptions: Sequence[ExemptionRecord | ExemptionInventoryEntry],
     applied_exemptions: frozenset[tuple[str, str, str]],
     passed_message: str,
+    emit_verified_marker: bool = False,
 ) -> int:
     _print_non_default_modes(modes)
     _print_exemptions(exemptions, applied_exemptions)
@@ -1890,6 +2151,8 @@ def _report(
         for failure in failures:
             print(f"- {failure}")
         return 1
+    if emit_verified_marker:
+        print(SCAN_VERIFIED_MARKER)
     print(passed_message)
     return 0
 
@@ -1916,9 +2179,80 @@ def _run_exemption_digest(rule_id: str) -> int:
     return 0
 
 
+def _scan_commit_trees(
+    root: Path,
+    commits: Sequence[str],
+    *,
+    modes: Mapping[str, str] | None,
+    exemptions: Sequence[ExemptionRecord],
+    binary_exceptions: Mapping[str, BinaryException],
+) -> tuple[list[str], list[str], frozenset[tuple[str, str, str]]]:
+    """Scan one or more commits as git objects, reusing blob scan cache across commits."""
+    failures: list[str] = []
+    warnings: list[str] = []
+    if not commits:
+        return ["commit list is empty"], warnings, frozenset()
+    if len(commits) > MAX_RANGE_COMMITS:
+        return [f"commit list has more than {MAX_RANGE_COMMITS} commits; refusing to scan"], warnings, frozenset()
+
+    scanner = (
+        Scanner(modes=modes, exemptions=exemptions, binary_exceptions=binary_exceptions)
+        if modes is not None
+        else None
+    )
+    multi = len(commits) > 1
+    for commit in commits:
+        try:
+            tree_paths, sources = tree_sources(root, commit)
+        except ScanConfigError as exc:
+            failures.append(f"tree listing failed: {exc}")
+            continue
+        path_issues = tracked_path_failures(tree_paths)
+        if multi:
+            failures.extend(f"{item} (commit {commit[:12]})" for item in path_issues)
+        else:
+            failures.extend(path_issues)
+        if scanner is None or not tree_paths:
+            continue
+        count = 0
+        try:
+            for source in sources:
+                count += 1
+                src_failures, src_warnings = scanner.scan_source(source)
+                if multi:
+                    failures.extend(f"{item} (commit {commit[:12]})" for item in src_failures)
+                    warnings.extend(f"{item} (commit {commit[:12]})" for item in src_warnings)
+                else:
+                    failures.extend(src_failures)
+                    warnings.extend(src_warnings)
+                if len(failures) > MAX_FINDINGS:
+                    del failures[MAX_FINDINGS:]
+                    failures.append(
+                        f"more than {MAX_FINDINGS} findings; the scan stopped after {count} entries"
+                    )
+                    if hasattr(sources, "close"):
+                        sources.close()
+                    return failures, warnings, frozenset(scanner.applied_exemptions)
+        except ScanConfigError as exc:
+            failures.append(f"tree read failed: {exc}")
+            continue
+        if count == 0:
+            failures.append("tracked file listing is missing or empty")
+    applied = frozenset(scanner.applied_exemptions) if scanner is not None else frozenset()
+    return failures, warnings, applied
+
+
 def _run(args: argparse.Namespace) -> int:
     if args.exemption_digest is not None:
         return _run_exemption_digest(args.exemption_digest)
+
+    selected_modes = sum(
+        1 for opt in (args.tree is not None, args.range is not None, args.commits is not None) if opt
+    )
+    if selected_modes > 1:
+        print("Public release checks failed:")
+        print("- specify at most one of --tree, --range, or --commits")
+        return 1
 
     root = args.root.resolve()
     modes_path = args.modes_file if args.modes_file is not None else root / DEFAULT_MODES_PATH
@@ -1935,6 +2269,7 @@ def _run(args: argparse.Namespace) -> int:
     warnings: list[str] = []
     modes: dict[str, str] | None = None
     exemptions: tuple[ExemptionRecord, ...] = ()
+    exemption_inventory: tuple[ExemptionInventoryEntry, ...] = ()
     binary_exceptions: dict[str, BinaryException] = {}
     applied_exemptions: frozenset[tuple[str, str, str]] = frozenset()
 
@@ -1944,45 +2279,51 @@ def _run(args: argparse.Namespace) -> int:
         failures.append(str(exc))
 
     try:
-        exemptions = load_exemptions(exemptions_path)
+        exemptions, exemption_inventory, exemption_errors = load_exemptions_inventory(exemptions_path)
     except ScanConfigError as exc:
         failures.append(str(exc))
+    else:
+        failures.extend(exemption_errors)
 
     try:
         binary_exceptions = load_binary_exceptions(binary_path)
     except ScanConfigError as exc:
         failures.append(str(exc))
 
-    if args.tree is not None:
-        # Scan a commit's tree as git objects using the trusted checkout's
-        # scanner, detectors, modes, exemptions, and binary exceptions.
-        tree_paths: list[str] | None = None
-        sources: Iterable[SourceFile] = []
-        try:
-            tree_paths, sources = tree_sources(root, args.tree)
-        except ScanConfigError as exc:
-            failures.append(f"tree listing failed: {exc}")
-        if modes is not None and tree_paths:
+    if args.tree is not None or args.range is not None or args.commits is not None:
+        commits_to_scan: list[str] = []
+        if args.tree is not None:
+            commits_to_scan = [args.tree]
+        elif args.range is not None:
             try:
-                result = scan_sources(
-                    sources,
-                    modes=modes,
-                    exemptions=exemptions,
-                    binary_exceptions=binary_exceptions,
-                )
+                commits_to_scan = range_commits(root, args.range[0], args.range[1])
             except ScanConfigError as exc:
-                failures.append(f"tree read failed: {exc}")
-            else:
-                failures.extend(result.failures)
-                warnings.extend(result.warnings)
-                applied_exemptions = result.applied_exemptions
+                failures.append(f"commit range failed: {exc}")
+        elif args.commits is not None:
+            commits_to_scan = list(args.commits)
+        if commits_to_scan:
+            tree_failures, tree_warnings, applied_exemptions = _scan_commit_trees(
+                root,
+                commits_to_scan,
+                modes=modes,
+                exemptions=exemptions,
+                binary_exceptions=binary_exceptions,
+            )
+            failures.extend(tree_failures)
+            warnings.extend(tree_warnings)
+        label = (
+            f"Deterministic public-safety scan of {len(commits_to_scan)} commit(s) passed."
+            if (args.range is not None or args.commits is not None)
+            else "Deterministic public-safety scan of the tree passed."
+        )
         return _report(
             failures=failures,
             warnings=warnings,
             modes=modes,
-            exemptions=exemptions,
+            exemptions=exemption_inventory,
             applied_exemptions=applied_exemptions,
-            passed_message="Deterministic public-safety scan of the tree passed.",
+            passed_message=label,
+            emit_verified_marker=True,
         )
 
     tracked, git_error = tracked_files(root)
@@ -2022,9 +2363,10 @@ def _run(args: argparse.Namespace) -> int:
         failures=failures,
         warnings=warnings,
         modes=modes,
-        exemptions=exemptions,
+        exemptions=exemption_inventory,
         applied_exemptions=applied_exemptions,
         passed_message=passed_message,
+        emit_verified_marker=True,
     )
 
 
@@ -2045,7 +2387,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--tree",
         default=None,
         metavar="COMMIT_SHA",
-        help="scan this commit's tree as git objects (no checkout); skips metadata checks",
+        help="scan this commit's tree as git objects (no checkout); checks tracked paths and content",
+    )
+    parser.add_argument(
+        "--range",
+        nargs=2,
+        default=None,
+        metavar=("BASE_SHA", "HEAD_SHA"),
+        help="scan every commit in BASE_SHA..HEAD_SHA as git objects (fails closed on empty/incomplete history)",
+    )
+    parser.add_argument(
+        "--commits",
+        nargs="+",
+        default=None,
+        metavar="COMMIT_SHA",
+        help="scan each named commit SHA as git objects",
     )
     parser.add_argument(
         "--modes-file",

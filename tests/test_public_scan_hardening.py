@@ -775,7 +775,7 @@ class TimingSelfScanAndJourneyTests(unittest.TestCase):
             (repo / "templates/private-fleet/kit.lock").write_text("1.0.0\n", encoding="utf-8")
             (repo / ".github/dependabot.yml").write_text("".join(scan.DEPENDABOT_COMMIT_POLICY), encoding="utf-8")
             (repo / "Makefile").write_text(
-                f"ci-check:\n\t@{sys.executable} -I -B tests/check_public_release.py --allow-missing-license\n",
+                "ci-check:\n\t@python3 -I -B tests/check_public_release.py --allow-missing-license\n",
                 encoding="utf-8",
             )
 
@@ -803,10 +803,22 @@ class TimingSelfScanAndJourneyTests(unittest.TestCase):
             remote_refs = git(remote, "for-each-ref", "refs/heads/feat/contributor-notes").stdout.strip()
             self.assertEqual("", remote_refs)
 
-            # Contributor replaces with documentation values and pushes again.
+            # A follow-up commit fixing only the tip must STILL fail push because
+            # the earlier unpushed commit in the pushed range still holds the leak.
             notes.write_text("Contact: alice@example.com\nHost: 192.0.2.10\n", encoding="utf-8")
             git(repo, "add", "docs/contributor-notes.md")
             git(repo, "commit", "-q", "-m", "docs: use documentation placeholders")
+
+            push_dirty_history = git(repo, "push", "origin", "feat/contributor-notes", check=False)
+            transcript_dirty = push_dirty_history.stdout + push_dirty_history.stderr
+            self.assertNotEqual(0, push_dirty_history.returncode, transcript_dirty)
+            self.assertIn("docs/contributor-notes.md:1: matched rule 'email'", transcript_dirty)
+            self.assertNotIn(bad_email, transcript_dirty)
+            self.assertNotIn(bad_ip, transcript_dirty)
+
+            # Replacing history with only a clean commit passes and updates remote.
+            git(repo, "reset", "--soft", "main")
+            git(repo, "commit", "-q", "-m", "docs: add clean contributor notes")
 
             push_ok = git(repo, "push", "origin", "feat/contributor-notes", check=False)
             transcript_ok = push_ok.stdout + push_ok.stderr
@@ -814,6 +826,256 @@ class TimingSelfScanAndJourneyTests(unittest.TestCase):
             self.assertIn("Deterministic public-release draft checks passed", transcript_ok)
             remote_refs_after = git(remote, "for-each-ref", "refs/heads/feat/contributor-notes").stdout.strip()
             self.assertIn("refs/heads/feat/contributor-notes", remote_refs_after)
+
+
+class Round1ReviewRegressionTests(unittest.TestCase):
+    """Regression tests for PR #42 round 1 review findings (H1-H4, M1-M7)."""
+
+    def test_h1_range_mode_scans_every_commit_and_public_scan_fetches_range(self) -> None:
+        leak_email = join("jdoe", "@", "acme-corp", ".com")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_scan_configs(root)
+            git(root, "init", "-q", "-b", "main")
+            (root / "README.md").write_text("clean\n", encoding="utf-8")
+            git(root, "add", "-A")
+            git(root, "commit", "-q", "-m", "chore: base")
+            base = git(root, "rev-parse", "HEAD").stdout.strip()
+
+            git(root, "checkout", "-q", "-b", "feat/history-leak")
+            (root / "notes.txt").write_text(leak_email + "\n", encoding="utf-8")
+            git(root, "add", "notes.txt")
+            git(root, "commit", "-q", "-m", "docs: leaky commit")
+            (root / "notes.txt").write_text("alice@example.com\n", encoding="utf-8")
+            git(root, "add", "notes.txt")
+            git(root, "commit", "-q", "-m", "docs: redact tip")
+            head = git(root, "rev-parse", "HEAD").stdout.strip()
+
+            git(root, "checkout", "-q", base)
+            code, out, err = run_main(["--root", str(root), "--range", base, head])
+            self.assertEqual(1, code, out + err)
+            self.assertIn("notes.txt:1: matched rule 'email'", out)
+            self.assertNotIn(leak_email, out + err)
+
+        workflow = (ROOT / ".github/workflows/public-scan.yml").read_text(encoding="utf-8")
+        self.assertIn("--range", workflow)
+        self.assertNotIn("git fetch --no-tags --depth=1", workflow)
+
+    def test_h2_ci_workflow_and_docs_mark_head_jobs_non_authoritative(self) -> None:
+        ci_yml = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        checklist = (ROOT / "docs/13-public-release-checklist.md").read_text(encoding="utf-8")
+        self.assertIn("non-authoritative", ci_yml.lower())
+        self.assertIn("non-authoritative", checklist.lower())
+        self.assertIn("no required privacy", checklist.lower())
+
+    def test_h3_required_check_name_aligned_and_tsk040_documented(self) -> None:
+        workflow = (ROOT / ".github/workflows/public-scan.yml").read_text(encoding="utf-8")
+        checklist = (ROOT / "docs/13-public-release-checklist.md").read_text(encoding="utf-8")
+        self.assertIn("name: public-scan / result", workflow)
+        self.assertIn("public-scan / result", checklist)
+        self.assertIn("TSK-040", checklist)
+        self.assertIn("absent", checklist.lower())
+
+    def test_h4_email_trailing_period_digits_only_phone_and_quoted_json_keys(self) -> None:
+        # 1) Email followed by a sentence-final period.
+        sent_email = join("Reach jdoe", "@", "acme-corp", ".com.")
+        self.assertEqual(["docs/sample.txt:1: matched rule 'email'"], scan_line(sent_email).failures)
+        self.assertEqual([], scan_line("Reach alice@example.com.").failures)
+
+        # 2) Domestic digits-only phone numbers in phone context.
+        for hit_line in (
+            join("phone: ", "415", "867", "5309"),
+            join('{"mobile": "', "415", "867", "5309", '"}'),
+            join("tel:", "415", "867", "5309"),
+        ):
+            with self.subTest(phone_hit=hit_line[:12]):
+                self.assertEqual(["docs/sample.txt:1: matched rule 'phone'"], scan_line(hit_line).failures)
+        for clean_line in (
+            "phone: 5555550100",
+            "timestamp = 1700000000",
+            "build_id = 2026112301",
+        ):
+            with self.subTest(phone_clean=clean_line):
+                self.assertEqual([], scan_line(clean_line).failures)
+
+        # 3) Quoted JSON keys for cloud and chat/tracker IDs.
+        aws_json = join('{"account_id": "', "987654", "321098", '"}')
+        gcp_json = join('{"gcp_project_id": "', "prod-analytics", "-42", '"}')
+        slack_json = join('{"slack_user": "', "u04xyz", "9876", '"}')
+        jira_json = join('{"jira_account_id": "', "557058:", "11111111-2222-3333-4444-555555555555", '"}')
+        self.assertEqual(["docs/sample.txt:1: matched rule 'cloud-id'"], scan_line(aws_json).failures)
+        self.assertEqual(["docs/sample.txt:1: matched rule 'cloud-id'"], scan_line(gcp_json).failures)
+        self.assertEqual(["docs/sample.txt:1: matched rule 'chat-tracker-id'"], scan_line(slack_json).failures)
+        self.assertEqual(["docs/sample.txt:1: matched rule 'chat-tracker-id'"], scan_line(jira_json).failures)
+        self.assertEqual([], scan_line('{"account_id": "123456789012", "slack_user": "u00000000"}').failures)
+
+    def test_m1_case_insensitive_home_paths(self) -> None:
+        for hit in (
+            join("/users", "/jdoe", "/work"),
+            join("/HOME", "/jdoe", "/work"),
+            join("C:\\users", "\\jdoe", "\\work"),
+        ):
+            with self.subTest(hit=hit[:8]):
+                self.assertEqual(["docs/sample.txt:1: matched rule 'home-path'"], scan_line(hit).failures)
+        for allowed in (
+            join("/users", "/alice", "/work"),
+            join("/HOME", "/ALICE", "/work"),
+            join("C:\\users", "\\alice", "\\work"),
+        ):
+            with self.subTest(allowed=allowed[:8]):
+                self.assertEqual([], scan_line(allowed).failures)
+
+    def test_m2_tree_mode_rejects_private_and_generated_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_scan_configs(root)
+            git(root, "init", "-q", "-b", "main")
+            (root / "README.md").write_text("clean\n", encoding="utf-8")
+            git(root, "add", "-A")
+            git(root, "commit", "-q", "-m", "chore: base")
+            base = git(root, "rev-parse", "HEAD").stdout.strip()
+
+            git(root, "checkout", "-q", "-b", "feat/private-path")
+            (root / ".secrets").mkdir()
+            (root / ".secrets/token.txt").write_text("clean\n", encoding="utf-8")
+            (root / "config").mkdir()
+            (root / "config/node.local.toml").write_text("clean\n", encoding="utf-8")
+            git(root, "add", "-f", ".secrets/token.txt", "config/node.local.toml")
+            git(root, "commit", "-q", "-m", "chore: add private paths")
+            head = git(root, "rev-parse", "HEAD").stdout.strip()
+
+            git(root, "checkout", "-q", base)
+            code, out, err = run_main(["--root", str(root), "--tree", head])
+            self.assertEqual(1, code, out + err)
+            self.assertIn("private/generated path is tracked: .secrets/token.txt", out)
+            self.assertIn("private/generated path is tracked: config/node.local.toml", out)
+
+    def test_m3_public_scan_workflow_verifies_positive_marker_and_never_skips_branches(self) -> None:
+        workflow = (ROOT / ".github/workflows/public-scan.yml").read_text(encoding="utf-8")
+        self.assertIn("PUBLIC_SCAN_VERIFIED=1", workflow)
+        self.assertIn("scan_verified", workflow)
+        self.assertNotIn("Not a pull request into", workflow)
+
+    def test_m4_iterative_decoding_and_strict_utf16_heuristic(self) -> None:
+        # URL-wrapped JSON escape (%5Cu0040 -> \u0040 -> @)
+        url_json = join("jdoe", "%5Cu0040", "acme-corp", ".com")
+        self.assertEqual(["docs/sample.txt:1: matched rule 'email'"], scan_line(url_json).failures)
+
+        # JSON-wrapped URL escape (\u002540 -> %40 -> @)
+        json_url = join("jdoe", "\\u002540", "acme-corp", ".com")
+        self.assertEqual(["docs/sample.txt:1: matched rule 'email'"], scan_line(json_url).failures)
+
+        # Deeply nested escape fails closed instead of silently stopping undecoded.
+        deep = "jdoe" + "%" + ("25" * 5) + "40" + "acme-corp" + ".com"
+        res_deep = scan_line(deep)
+        self.assertTrue(res_deep.failures, "deeply nested escape must fail closed")
+        self.assertNotIn("acme-corp", "\n".join(res_deep.failures))
+
+        # Opaque NUL-bearing binary data (e.g. 16-bit LE integers/controls) must be refused as binary.
+        opaque_nul = b"\x01\x00\x02\x00\x03\x00\x04\x00\x05\x00\x7f\x00\x1b\x00\x00\x00"
+        opaque_res = scan_bytes(opaque_nul, "docs/table.bin")
+        self.assertTrue(
+            any("binary" in f or "not valid UTF-8 or UTF-16" in f for f in opaque_res.failures),
+            opaque_res.failures,
+        )
+        # Even without double-NUL, control-byte NUL-interleaved binary is refused.
+        opaque_ctrl = b"\x01\x00\x02\x00\x03\x00\x04\x00\x05\x00\x06\x00\x07\x00\x08\x00"
+        ctrl_res = scan_bytes(opaque_ctrl, "docs/ctrl.bin")
+        self.assertTrue(
+            any("binary" in f or "not valid UTF-8 or UTF-16" in f for f in ctrl_res.failures),
+            ctrl_res.failures,
+        )
+
+    def test_m5_redacted_paths_everywhere_and_expired_exemption_preserves_inventory(self) -> None:
+        secret_email = join("jdoe", "@", "acme-corp", ".com")
+        valid_ip = ip("100", "64", "0", "10")
+        expired_ip = ip("100", "64", "0", "11")
+        sensitive_path = f".secrets/{secret_email}.local.toml"
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_scan_configs(
+                root,
+                exemptions=[
+                    {
+                        "path": "docs/valid.txt",
+                        "rule": "ipv4",
+                        "digest": scan.compute_exemption_digest("ipv4", valid_ip),
+                        "reason": "valid fixture",
+                        "approved_by": "@owner",
+                        "expires": "2027-06-01",
+                    },
+                    {
+                        "path": f"people/{secret_email}/note.txt",
+                        "rule": "ipv4",
+                        "digest": scan.compute_exemption_digest("ipv4", expired_ip),
+                        "reason": "expired fixture",
+                        "approved_by": "@owner",
+                        "expires": "2020-01-01",
+                    },
+                ],
+            )
+            git(root, "init", "-q", "-b", "main")
+            (root / "docs").mkdir()
+            (root / "docs/valid.txt").write_text(valid_ip + "\n", encoding="utf-8")
+            (root / ".secrets").mkdir()
+            (root / sensitive_path).write_text("clean\n", encoding="utf-8")
+            git(root, "add", "-f", "-A")
+            git(root, "commit", "-q", "-m", "chore: m5 fixture")
+            head = git(root, "rev-parse", "HEAD").stdout.strip()
+
+            code, out, err = run_main(["--root", str(root), "--tree", head])
+            combined = out + err
+            self.assertEqual(1, code, combined)
+            # Sensitive email in generated path and exemption path must NEVER appear in output.
+            self.assertNotIn(secret_email, combined)
+            self.assertNotIn("acme-corp", combined)
+            self.assertIn("<redacted-", combined)
+            # Expired record must NOT wipe the exemption inventory.
+            self.assertNotIn("Configured exemptions: none", combined)
+            self.assertIn("- [applied] docs/valid.txt rule=ipv4", combined)
+            self.assertIn("- [expired] <redacted-", combined)
+
+    def test_m6_cat_file_nonzero_exit_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            git(root, "init", "-q", "-b", "main")
+            (root / "README.md").write_text("clean\n", encoding="utf-8")
+            git(root, "add", "-A")
+            git(root, "commit", "-q", "-m", "chore: base")
+            head = git(root, "rev-parse", "HEAD").stdout.strip()
+            _, sources = scan.tree_sources(root, head)
+
+            real_popen = scan.subprocess.Popen
+
+            class FailingCatFile:
+                def __init__(self, proc):
+                    self._proc = proc
+                    self.stdin = proc.stdin
+                    self.stdout = proc.stdout
+
+                def wait(self) -> int:
+                    self._proc.wait()
+                    return 128
+
+                def kill(self) -> None:
+                    self._proc.kill()
+
+            def wrapped_popen(cmd, *args, **kwargs):
+                proc = real_popen(cmd, *args, **kwargs)
+                if "cat-file" in cmd:
+                    return FailingCatFile(proc)
+                return proc
+
+            with mock.patch.object(scan.subprocess, "Popen", side_effect=wrapped_popen):
+                with self.assertRaisesRegex(scan.ScanConfigError, "cat-file"):
+                    list(sources)
+
+    def test_m7_ci_macos_public_scan_avoids_isolated_unittest_and_checks_count(self) -> None:
+        ci_yml = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        self.assertNotIn("python3 -I -B -m unittest", ci_yml)
+        self.assertIn("unittest discover -s tests -p 'test_public_*.py'", ci_yml)
+        self.assertIn("Ran [1-9]", ci_yml)
 
 
 if __name__ == "__main__":

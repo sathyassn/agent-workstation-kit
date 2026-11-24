@@ -174,17 +174,34 @@ Hash-bound binary exceptions live in `tests/public_scan_binary_exceptions.json`:
 
 ### Trusted base-revision CI and code ownership
 
-- `.github/workflows/public-scan.yml` runs on `pull_request_target` and pushes
-  to `main` across `ubuntu-24.04` and `macos-latest` with no secret. It checks
-  out the trusted default branch commit (`github.sha`) for the scanner,
-  detectors, mode configuration, exemptions, and binary exceptions, fetches the
-  pull request head only as git objects, and scans it with `--tree`. Head code
+- `.github/workflows/public-scan.yml` is the sole authoritative CI privacy
+  gate. It runs on `pull_request_target` (targeting any branch) and pushes to
+  `main` across both `ubuntu-24.04` and `macos-latest` with no secret. It checks
+  out the trusted default branch commit (`github.sha`) with full history for the
+  scanner, detectors, mode configuration, exemptions, and binary exceptions,
+  fetches the pull request head purely as git objects, and scans every commit in
+  `base..head` with `--range` (failing closed on incomplete history). Head code
   never runs, and head edits to exemptions, modes, binary exceptions, or the
   scanner do not take effect until reviewed and merged.
-- Require the `public-scan / result` status check on `main`, next to the
-  existing required checks, and require code-owner review so `.github/CODEOWNERS`
-  gates changes to the scanner, mode config, exemptions, binary exceptions, scan
-  workflows, and `.github/CODEOWNERS` itself.
+- Both platform jobs (`scan-linux` and `scan-macos`) require exit 0 and the
+  positive completion marker `PUBLIC_SCAN_VERIFIED=1` before setting
+  `scan_verified=true`. The aggregator job publishes the exact GitHub check
+  context `public-scan / result` (via `name: public-scan / result`) and fails
+  closed unless both Linux and macOS succeeded and reported `scan_verified=true`.
+- Head-run jobs in `.github/workflows/ci.yml` (`repository-validation`,
+  `macos-public-scan (non-authoritative head self-test)`) execute pull-request
+  head code and are non-authoritative self-tests only: no required privacy or
+  identity verdict comes from `.github/workflows/ci.yml`.
+- Require `public-scan / result` on `main`, next to the existing required
+  checks. Repository protection setup must fail closed if `public-scan / result`
+  is absent rather than silently skipping it. Enforcement of code-owner review
+  for `.github/CODEOWNERS` (covering the scanner, mode config, exemptions,
+  binary exceptions, scan workflows, and `.github/CODEOWNERS` itself) depends on
+  the repository protection setup in `TSK-040`.
+- Locally, the `pre-push` hook runs `make ci-check` (worktree check) and scans
+  every new commit in the pushed range via `tests/check_public_release.py --commits`,
+  so a leak in an earlier unpushed commit is blocked even if a later commit
+  redacted the tip.
 
 ## Private fleet repositories
 

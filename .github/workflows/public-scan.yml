@@ -1,19 +1,21 @@
-# public-scan: deterministic privacy and public-safety scan from the trusted base.
+# public-scan: authoritative deterministic privacy scan from the trusted base.
 #
-# Runs on `pull_request_target` so GitHub executes this workflow and checks out
-# the default branch's commit (`github.sha`), never the pull request's code.
-# That trusted base commit supplies the scanner, detectors, mode configuration,
-# digest-bound exemptions, and hash-bound binary exceptions. The pull request's
-# head commit is fetched only as git objects and scanned with `--tree`; head
-# code never runs and head edits to the scanner, modes, exemptions, or binary
-# exceptions cannot weaken the check that judges it.
+# Runs on `pull_request_target` (for pull requests targeting any branch) and
+# pushes to `main`. GitHub executes this workflow from the default branch and
+# checks out the trusted base commit (`github.sha`) for the scanner, detectors,
+# mode configuration, digest-bound exemptions, and hash-bound binary exceptions.
+# Head commits are fetched purely as git objects and every commit in `base..head`
+# is scanned with `--range` (or `--tree` on initial push); head code never runs
+# and head edits cannot disable or exempt the checks that judge it.
 #
 # No secret is required, so fork and same-repository pull requests run the exact
 # same blocking checks on both Linux and macOS.
 #
-# The required status check is "public-scan / result". It always runs (never
-# skipped) and fails unless the scan succeeded on both Linux and macOS for a
-# pull request into the default branch or a push to it.
+# Both platform jobs (`scan-linux` and `scan-macos`) emit a positive verification
+# output only when `tests/check_public_release.py` exits 0 and prints
+# `PUBLIC_SCAN_VERIFIED=1`. The required status check is `public-scan / result`
+# (the exact job `name:` published to GitHub Checks), which always runs and fails
+# closed unless BOTH Linux and macOS succeeded and emitted `scan_verified=true`.
 name: public-scan
 
 on:
@@ -30,77 +32,181 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request_target' }}
 
 jobs:
-  scan:
-    name: public scan (${{ matrix.os }})
-    if: >-
-      (github.event_name == 'pull_request_target' && github.event.pull_request.base.ref == github.event.repository.default_branch) ||
-      (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-24.04, macos-latest]
-    runs-on: ${{ matrix.os }}
+  scan-linux:
+    name: public scan (ubuntu-24.04)
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
+    outputs:
+      scan_verified: ${{ steps.run_scan.outputs.verified }}
     steps:
-      - name: Check out the trusted base commit
+      - name: Check out the trusted base commit with full history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
-          fetch-depth: 1
+          fetch-depth: 0
           persist-credentials: false
 
-      - name: Fetch the commit to scan as git data
+      - name: Fetch commit range to scan as git data
         id: target
         env:
           EVENT_NAME: ${{ github.event_name }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
           if [ "$EVENT_NAME" = "pull_request_target" ]; then
-            git fetch --no-tags --depth=1 "https://github.com/${REPOSITORY}.git" "+refs/pull/${PR_NUMBER}/head:refs/scan/head"
+            git fetch --no-tags "https://github.com/${REPOSITORY}.git" "+refs/pull/${PR_NUMBER}/head:refs/scan/head"
             fetched=$(git rev-parse refs/scan/head)
             if [ "$fetched" != "$HEAD_SHA" ]; then
               echo "::error::pull request head moved since this event; a newer run will scan it"
               exit 1
             fi
-            echo "sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+            if ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+              git fetch --no-tags "https://github.com/${REPOSITORY}.git" "$BASE_SHA"
+            fi
+            git cat-file -e "${BASE_SHA}^{commit}"
+            echo "mode=range" >> "$GITHUB_OUTPUT"
+            echo "base=$BASE_SHA" >> "$GITHUB_OUTPUT"
+            echo "head=$HEAD_SHA" >> "$GITHUB_OUTPUT"
           else
-            echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            head_sha=$(git rev-parse HEAD)
+            if [ -n "$PUSH_BEFORE" ] && [ "$PUSH_BEFORE" != "0000000000000000000000000000000000000000" ]; then
+              git cat-file -e "${PUSH_BEFORE}^{commit}"
+              echo "mode=range" >> "$GITHUB_OUTPUT"
+              echo "base=$PUSH_BEFORE" >> "$GITHUB_OUTPUT"
+              echo "head=$head_sha" >> "$GITHUB_OUTPUT"
+            else
+              echo "mode=tree" >> "$GITHUB_OUTPUT"
+              echo "head=$head_sha" >> "$GITHUB_OUTPUT"
+            fi
           fi
 
-      - name: Run deterministic privacy scan on the tree
+      - name: Run deterministic privacy scan on every commit
+        id: run_scan
         env:
-          TARGET_SHA: ${{ steps.target.outputs.sha }}
-        run: python3 -I -B tests/check_public_release.py --tree "$TARGET_SHA"
+          SCAN_MODE: ${{ steps.target.outputs.mode }}
+          BASE_SHA: ${{ steps.target.outputs.base }}
+          HEAD_SHA: ${{ steps.target.outputs.head }}
+        run: |
+          set -euo pipefail
+          set +e
+          if [ "$SCAN_MODE" = "range" ]; then
+            out=$(python3 -I -B tests/check_public_release.py --range "$BASE_SHA" "$HEAD_SHA" 2>&1)
+            status=$?
+          elif [ "$SCAN_MODE" = "tree" ]; then
+            out=$(python3 -I -B tests/check_public_release.py --tree "$HEAD_SHA" 2>&1)
+            status=$?
+          else
+            echo "::error::unexpected scan mode"
+            exit 1
+          fi
+          set -e
+          printf '%s\n' "$out"
+          test "$status" -eq 0
+          printf '%s\n' "$out" | grep -qx 'PUBLIC_SCAN_VERIFIED=1'
+          echo "verified=true" >> "$GITHUB_OUTPUT"
+
+  scan-macos:
+    name: public scan (macos-latest)
+    runs-on: macos-latest
+    timeout-minutes: 10
+    outputs:
+      scan_verified: ${{ steps.run_scan.outputs.verified }}
+    steps:
+      - name: Check out the trusted base commit with full history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch commit range to scan as git data
+        id: target
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "pull_request_target" ]; then
+            git fetch --no-tags "https://github.com/${REPOSITORY}.git" "+refs/pull/${PR_NUMBER}/head:refs/scan/head"
+            fetched=$(git rev-parse refs/scan/head)
+            if [ "$fetched" != "$HEAD_SHA" ]; then
+              echo "::error::pull request head moved since this event; a newer run will scan it"
+              exit 1
+            fi
+            if ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+              git fetch --no-tags "https://github.com/${REPOSITORY}.git" "$BASE_SHA"
+            fi
+            git cat-file -e "${BASE_SHA}^{commit}"
+            echo "mode=range" >> "$GITHUB_OUTPUT"
+            echo "base=$BASE_SHA" >> "$GITHUB_OUTPUT"
+            echo "head=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+          else
+            head_sha=$(git rev-parse HEAD)
+            if [ -n "$PUSH_BEFORE" ] && [ "$PUSH_BEFORE" != "0000000000000000000000000000000000000000" ]; then
+              git cat-file -e "${PUSH_BEFORE}^{commit}"
+              echo "mode=range" >> "$GITHUB_OUTPUT"
+              echo "base=$PUSH_BEFORE" >> "$GITHUB_OUTPUT"
+              echo "head=$head_sha" >> "$GITHUB_OUTPUT"
+            else
+              echo "mode=tree" >> "$GITHUB_OUTPUT"
+              echo "head=$head_sha" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+      - name: Run deterministic privacy scan on every commit
+        id: run_scan
+        env:
+          SCAN_MODE: ${{ steps.target.outputs.mode }}
+          BASE_SHA: ${{ steps.target.outputs.base }}
+          HEAD_SHA: ${{ steps.target.outputs.head }}
+        run: |
+          set -euo pipefail
+          set +e
+          if [ "$SCAN_MODE" = "range" ]; then
+            out=$(python3 -I -B tests/check_public_release.py --range "$BASE_SHA" "$HEAD_SHA" 2>&1)
+            status=$?
+          elif [ "$SCAN_MODE" = "tree" ]; then
+            out=$(python3 -I -B tests/check_public_release.py --tree "$HEAD_SHA" 2>&1)
+            status=$?
+          else
+            echo "::error::unexpected scan mode"
+            exit 1
+          fi
+          set -e
+          printf '%s\n' "$out"
+          test "$status" -eq 0
+          printf '%s\n' "$out" | grep -qx 'PUBLIC_SCAN_VERIFIED=1'
+          echo "verified=true" >> "$GITHUB_OUTPUT"
 
   result:
-    name: result
-    needs: scan
+    name: public-scan / result
+    needs: [scan-linux, scan-macos]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Require deterministic privacy scan for the default branch
+      - name: Require verified deterministic privacy scan on Linux and macOS
         env:
-          EVENT_NAME: ${{ github.event_name }}
-          BASE_REF: ${{ github.event.pull_request.base.ref }}
-          PUSH_REF: ${{ github.ref }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          SCAN_RESULT: ${{ needs.scan.result }}
+          LINUX_RESULT: ${{ needs.scan-linux.result }}
+          LINUX_VERIFIED: ${{ needs.scan-linux.outputs.scan_verified }}
+          MACOS_RESULT: ${{ needs.scan-macos.result }}
+          MACOS_VERIFIED: ${{ needs.scan-macos.outputs.scan_verified }}
         run: |
           set -euo pipefail
-          if [ "$EVENT_NAME" = "pull_request_target" ] && [ "$BASE_REF" != "$DEFAULT_BRANCH" ]; then
-            echo "Not a pull request into $DEFAULT_BRANCH; the public scan runs when it targets $DEFAULT_BRANCH."
-            exit 0
-          fi
-          if [ "$EVENT_NAME" = "push" ] && [ "$PUSH_REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
-            echo "::error::unexpected push ref"
+          if [ "$LINUX_RESULT" != "success" ] || [ "$LINUX_VERIFIED" != "true" ]; then
+            echo "::error::Linux public scan did not complete with verification (result=$LINUX_RESULT verified=$LINUX_VERIFIED)"
             exit 1
           fi
-          if [ "$SCAN_RESULT" != "success" ]; then
-            echo "::error::the public scan did not succeed on all platforms (result: $SCAN_RESULT)"
+          if [ "$MACOS_RESULT" != "success" ] || [ "$MACOS_VERIFIED" != "true" ]; then
+            echo "::error::macOS public scan did not complete with verification (result=$MACOS_RESULT verified=$MACOS_VERIFIED)"
             exit 1
           fi
-          echo "Deterministic public scan passed on Linux and macOS."
+          echo "Deterministic public scan verified on Linux and macOS."

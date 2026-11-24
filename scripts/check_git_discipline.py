@@ -429,9 +429,19 @@ def _protected_sync_head(branch: str) -> str:
     return git("rev-parse", "--verify", upstream, check=False).strip()
 
 
+def _pushed_commits(local_oid: str, remote_oid: str) -> list[str]:
+    """Return every new commit being pushed for one non-delete ref update."""
+    if not _is_zero_oid(remote_oid):
+        raw = git("rev-list", "--reverse", f"{remote_oid}..{local_oid}")
+    else:
+        raw = git("rev-list", "--reverse", local_oid, "--not", "--remotes")
+    return [item for item in raw.splitlines() if item]
+
+
 def run_pre_push(stdin: TextIO, policy: Policy) -> None:
     """Validate ref updates from Git's pre-push protocol, then run the full gate."""
     updates = [line.split() for line in stdin if line.strip()]
+    non_delete_updates: list[tuple[str, str]] = []
     for fields in updates:
         if len(fields) != 4:
             raise DisciplineError("unexpected pre-push input")
@@ -448,6 +458,7 @@ def run_pre_push(stdin: TextIO, policy: Policy) -> None:
             continue
         if not _is_zero_oid(remote_oid) and not _is_ancestor(remote_oid, local_oid):
             raise DisciplineError(f"force push is blocked: {branch}")
+        non_delete_updates.append((local_oid, remote_oid))
     if updates:
         gate_env = os.environ.copy()
         for inherited_git_key in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
@@ -466,6 +477,31 @@ def run_pre_push(stdin: TextIO, policy: Policy) -> None:
             ) from exc
         if result.returncode != 0:
             raise DisciplineError("pre-push repository gate failed")
+
+        scanner = ROOT / "tests/check_public_release.py"
+        if non_delete_updates and scanner.is_file():
+            commits: list[str] = []
+            seen: set[str] = set()
+            for local_oid, remote_oid in non_delete_updates:
+                for sha in _pushed_commits(local_oid, remote_oid):
+                    if sha not in seen:
+                        seen.add(sha)
+                        commits.append(sha)
+            if commits:
+                try:
+                    scan_result = subprocess.run(
+                        [sys.executable, "-I", "-B", str(scanner), "--commits", *commits],
+                        cwd=ROOT,
+                        check=False,
+                        timeout=600,
+                        env=gate_env,
+                    )
+                except subprocess.TimeoutExpired as exc:
+                    raise DisciplineError(
+                        "pre-push commit-range privacy scan exceeded 10 minutes"
+                    ) from exc
+                if scan_result.returncode != 0:
+                    raise DisciplineError("pre-push commit-range privacy scan failed")
 
 
 def run_reference_transaction(stage: str, stdin: TextIO, policy: Policy) -> None:
