@@ -67,12 +67,12 @@ skill-check:
 	@$(PYTHON) tests/check_skill.py
 
 unit-non-privacy-check: bash-check
-	@$(PYTHON) -c 'import pathlib, subprocess, sys; files = sorted(str(p) for p in pathlib.Path("tests").glob("test_*.py") if not p.name.startswith("test_public_")); sys.exit(subprocess.call([sys.executable, "-B", "-m", "unittest", *files]))'
+	@$(PYTHON) -B -c 'import os, pathlib, sys, unittest; tdir = os.path.abspath("tests"); sys.path.insert(0, tdir); loader = unittest.TestLoader(); suite = unittest.TestSuite(loader.discover(tdir, pattern=p.name, top_level_dir=tdir) for p in sorted(pathlib.Path(tdir).glob("test_*.py")) if not p.name.startswith("test_public_")); res = unittest.TextTestRunner().run(suite); sys.exit(0 if res.wasSuccessful() and res.testsRun > 0 else 1)'
 	@"$(BASH_BIN)" tests/test_shell_behaviour.sh
 	@"$(BASH_BIN)" tests/test_resource_policy.sh
 
 unit-public-scan-check:
-	@$(PYTHON) -B -m unittest discover -s tests -p 'test_public_*.py'
+	@$(PYTHON) -B -m unittest discover -s tests -t tests -p 'test_public_*.py'
 
 unit-check: unit-non-privacy-check unit-public-scan-check
 

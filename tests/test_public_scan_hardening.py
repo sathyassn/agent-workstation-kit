@@ -1475,8 +1475,8 @@ class Round3ReviewRegressionTests(unittest.TestCase):
             with self.subTest(clean=clean_line[:22]):
                 self.assertEqual([], scan_line(clean_line).failures)
 
-        # ReDoS guard: 50,000-character identifier with no phone number finishes well under 50ms.
-        long_ident = ("hotel_x" * 7200) + "_1234567890"
+        # ReDoS guard: 50,000-character identifier with separator reaches PHONE_KEY_RE and finishes under 50ms.
+        long_ident = ("hotel_x" * 7200) + " = 1234567890"
         t0 = time.perf_counter()
         self.assertEqual([], scan.detect_phone(long_ident))
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
@@ -1524,6 +1524,215 @@ class Round3ReviewRegressionTests(unittest.TestCase):
             self.assertIn("matched rule 'email'", combined_tag)
             self.assertNotIn(leak_email, combined_tag)
             self.assertEqual("", git(public_remote, "for-each-ref", "refs/tags/v0.0.2-tagmsg").stdout.strip())
+
+
+class Round4ReviewRegressionTests(unittest.TestCase):
+    """Regression tests for PR #42 round 4 review findings (U1-U5)."""
+
+    def _make_pre_push_repo(self, base: Path) -> tuple[Path, Path]:
+        return Round2ReviewRegressionTests()._make_pre_push_repo(base)
+
+    def test_u1_nested_annotated_tag_messages_are_scanned_and_redacted(self) -> None:
+        leak_email = join("jdoe", "@", "acme-corp", ".com")
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            repo, public_remote = self._make_pre_push_repo(base)
+
+            # Create an inner annotated tag whose message leaks, then an outer
+            # annotated tag pointing to the inner tag with a clean message.
+            git(repo, "tag", "-a", "v0.0.3-inner", "main", "-m", f"Inner release note for {leak_email}")
+            git(repo, "tag", "-a", "v0.0.3-outer", "v0.0.3-inner", "-m", "Clean outer release tag")
+            git(repo, "config", "core.hooksPath", ".codeflow/git-hooks")
+
+            res = git(repo, "push", "origin", "v0.0.3-outer", check=False)
+            combined = res.stdout + res.stderr
+            self.assertNotEqual(0, res.returncode, combined)
+            self.assertIn("matched rule 'email'", combined)
+            self.assertNotIn(leak_email, combined)
+            self.assertEqual(
+                "",
+                git(public_remote, "for-each-ref", "refs/tags/v0.0.3-outer").stdout.strip(),
+            )
+
+    def test_u2_phone_camelcase_trailing_space_and_yaml_block_list(self) -> None:
+        digits = join("415", "867", "5309")
+        dashed = join("415", "-", "867", "-", "5309")
+        spaced = join("415", " ", "867", " ", "5309")
+        for hit_line in (
+            f"phoneNumber: {digits}",
+            f'{{"phoneNumber": "{digits}"}}',
+            f"homePhoneNumber = {digits}",
+            f"phone {digits}   ",
+            f"phone number {digits}   ",
+            f"{spaced}   ",
+        ):
+            with self.subTest(hit=hit_line[:24]):
+                self.assertEqual(
+                    ["docs/sample.txt:1: matched rule 'phone'"],
+                    scan_line(hit_line).failures,
+                )
+
+        # YAML block lists (both formatted and digits-only) must flag the item line.
+        yaml_formatted = f"phones:\n  - {dashed}\n"
+        self.assertEqual(
+            ["docs/sample.txt:2: matched rule 'phone'"],
+            scan_line(yaml_formatted).failures,
+        )
+        yaml_digits = f"phones:\n  - 5555550100\n  - {digits}\n"
+        self.assertEqual(
+            ["docs/sample.txt:3: matched rule 'phone'"],
+            scan_line(yaml_digits).failures,
+        )
+        self.assertEqual([], scan_line("phones:\n  - 5555550100\n").failures)
+
+        # Non-hits remain clean.
+        for clean_line in (
+            f"hotel_id = {digits}",
+            f"intel_serial = {digits}",
+            f"cancellation_id = {digits}",
+        ):
+            with self.subTest(clean=clean_line[:24]):
+                self.assertEqual([], scan_line(clean_line).failures)
+
+    def test_u3_phone_timing_guard_reaches_regex_and_stays_fast(self) -> None:
+        # Verify the timing test input in test_s3 actually enters PHONE_KEY_RE.finditer
+        # (does not short-circuit at the separator/context gate) and runs in < 50 ms.
+        import inspect
+        s3_source = inspect.getsource(
+            Round3ReviewRegressionTests.test_s3_phone_labels_syntax_redos_and_non_hits
+        )
+        self.assertIn('("hotel_x" * 7200) + " = 1234567890"', s3_source)
+
+        long_ident = ("hotel_x" * 7200) + " = 1234567890"
+        calls = 0
+        real_re = scan.PHONE_KEY_RE
+
+        class CountingPattern:
+            def finditer(self, text: str, *args):
+                nonlocal calls
+                calls += 1
+                return real_re.finditer(text, *args)
+
+        with mock.patch.object(scan, "PHONE_KEY_RE", CountingPattern()):
+            t0 = time.perf_counter()
+            self.assertEqual([], scan.detect_phone(long_ident))
+            elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        self.assertEqual(1, calls, "timing input must actually reach PHONE_KEY_RE.finditer")
+        self.assertLess(elapsed_ms, 50.0, f"detect_phone took {elapsed_ms:.1f}ms on long identifier")
+
+    def test_u4_multiple_fetch_urls_scan_full_history(self) -> None:
+        leak_email = join("jdoe", "@", "acme-corp", ".com")
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            repo, fetch_remote = self._make_pre_push_repo(base)
+            second_remote = base / "public-second.git"
+            subprocess.run(["git", "init", "--bare", "-q", str(second_remote)], check=True)
+            git(repo, "push", "-q", str(second_remote), "main")
+
+            # Push a leaking branch with a clean tip to the first fetch URL so
+            # refs/remotes/origin/feat/multi-url knows the leak commit.
+            git(repo, "checkout", "-q", "-b", "feat/multi-url")
+            (repo / "notes.txt").write_text(leak_email + "\n", encoding="utf-8")
+            git(repo, "add", "notes.txt")
+            git(repo, "commit", "-q", "-m", "docs: leak on first url")
+            (repo / "notes.txt").write_text("alice@example.com\n", encoding="utf-8")
+            git(repo, "add", "notes.txt")
+            git(repo, "commit", "-q", "-m", "docs: clean tip")
+            git(repo, "push", "-q", "origin", "feat/multi-url")
+
+            # Add a second remote.origin.url entry (git fetches from the first,
+            # pushes to both); pre-push must NOT trust refs/remotes/origin/ when
+            # multiple remote.origin.url entries exist.
+            git(repo, "config", "--add", "remote.origin.url", str(second_remote))
+            git(repo, "config", "core.hooksPath", ".codeflow/git-hooks")
+            res = git(repo, "push", "origin", "feat/multi-url", check=False)
+            combined = res.stdout + res.stderr
+            self.assertNotEqual(0, res.returncode, combined)
+            self.assertIn("notes.txt:1: matched rule 'email'", combined)
+            self.assertNotIn(leak_email, combined)
+            self.assertEqual(
+                "",
+                git(second_remote, "for-each-ref", "refs/heads/feat/multi-url").stdout.strip(),
+            )
+
+    def test_u5_makefile_unit_discovery_resists_shadowed_tests_package(self) -> None:
+        makefile_lines = (ROOT / "Makefile").read_text(encoding="utf-8").splitlines()
+        recipes: dict[str, list[str]] = {}
+        cur: str | None = None
+        for line in makefile_lines:
+            if line.startswith("\t"):
+                if cur is not None:
+                    recipes.setdefault(cur, []).append(line.strip())
+            elif ":" in line and not line.startswith("."):
+                lhs = line.split(":", 1)[0].strip()
+                cur = lhs if (" " not in lhs and "=" not in lhs) else None
+
+        non_priv_cmd = next(
+            (r for r in recipes.get("unit-non-privacy-check", []) if "$(PYTHON)" in r),
+            "",
+        )
+        pub_cmd = next(
+            (r for r in recipes.get("unit-public-scan-check", []) if "$(PYTHON)" in r),
+            "",
+        )
+        self.assertTrue(non_priv_cmd, "unit-non-privacy-check Python recipe missing")
+        self.assertTrue(pub_cmd, "unit-public-scan-check Python recipe missing")
+        self.assertIn("-t tests", pub_cmd)
+
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            poison = base / "site_packages_poison"
+            (poison / "tests").mkdir(parents=True)
+            (poison / "tests" / "__init__.py").write_text(
+                'raise RuntimeError("SHADOWED_TESTS_PACKAGE")\n',
+                encoding="utf-8",
+            )
+
+            checkout = base / "checkout"
+            (checkout / "tests").mkdir(parents=True)
+            (checkout / "tests" / "test_smoke.py").write_text(
+                "import pathlib, unittest\n"
+                "class Smoke(unittest.TestCase):\n"
+                "    def test_from_checkout(self):\n"
+                "        self.assertEqual(pathlib.Path(__file__).resolve().parent.name, 'tests')\n",
+                encoding="utf-8",
+            )
+            (checkout / "tests" / "test_public_smoke.py").write_text(
+                "import unittest\n"
+                "class PubSmoke(unittest.TestCase):\n"
+                "    def test_pub(self):\n"
+                "        self.assertTrue(True)\n",
+                encoding="utf-8",
+            )
+
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(poison)
+
+            shell_non_priv = non_priv_cmd.lstrip("@").replace("$(PYTHON)", sys.executable)
+            r1 = subprocess.run(
+                shell_non_priv,
+                shell=True,
+                cwd=checkout,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(0, r1.returncode, r1.stdout + r1.stderr)
+            self.assertIn("Ran 1 test", r1.stdout + r1.stderr)
+            self.assertNotIn("SHADOWED_TESTS_PACKAGE", r1.stdout + r1.stderr)
+
+            shell_pub = pub_cmd.lstrip("@").replace("$(PYTHON)", sys.executable)
+            r2 = subprocess.run(
+                shell_pub,
+                shell=True,
+                cwd=checkout,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(0, r2.returncode, r2.stdout + r2.stderr)
+            self.assertIn("Ran 1 test", r2.stdout + r2.stderr)
+            self.assertNotIn("SHADOWED_TESTS_PACKAGE", r2.stdout + r2.stderr)
 
 
 if __name__ == "__main__":

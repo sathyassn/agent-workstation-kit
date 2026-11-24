@@ -440,21 +440,60 @@ def _peel_commit(oid: str, ref_label: str) -> str:
     )
 
 
+def _collect_tag_objects(oid: str, *, max_depth: int = 16) -> list[str]:
+    """Return every annotated tag object OID in a (possibly nested) tag chain.
+
+    Fails closed on cycles, malformed tag headers, or chains deeper than max_depth.
+    """
+    tags: list[str] = []
+    seen: set[str] = set()
+    current = oid
+    while True:
+        obj_type = git("cat-file", "-t", current, check=False).strip()
+        if obj_type != "tag":
+            break
+        if current in seen:
+            raise DisciplineError(f"cyclic annotated tag chain at {current}")
+        if len(tags) >= max_depth:
+            raise DisciplineError(
+                f"annotated tag chain exceeded maximum depth ({max_depth})"
+            )
+        seen.add(current)
+        tags.append(current)
+        raw = git("cat-file", "tag", current)
+        header = raw.split("\n\n", 1)[0]
+        target = ""
+        for line in header.splitlines():
+            if line.startswith("object "):
+                target = line.split(" ", 1)[1].strip()
+                break
+        if not target:
+            raise DisciplineError(f"malformed annotated tag object: {current}")
+        current = target
+    return tags
+
+
 def _destination_has_tracking_refs(
     remote_name: str | None,
     remote_location: str | None = None,
 ) -> bool:
     """Return True only when local refs/remotes/<remote_name>/ represents the push target.
 
-    If remote.<name>.pushurl or the destination URL passed to pre-push differs
-    from remote.<name>.url (or the fetch URL is unknown), local remote-tracking
-    refs describe the fetch repo, not the push target, so we must NOT exclude them.
+    If a remote has multiple fetch URLs, or remote.<name>.pushurl or the
+    destination URL passed to pre-push differs from the single remote.<name>.url
+    (or the fetch URL is unknown), local remote-tracking refs describe a
+    different repo, so we must NOT exclude them.
     """
     if not remote_name or "/" in remote_name or ":" in remote_name or "\\" in remote_name:
         return False
-    fetch_url = git("config", "--get", f"remote.{remote_name}.url", check=False).strip()
-    if not fetch_url:
+    fetch_urls = [
+        line.strip()
+        for line in git("config", "--get-all", f"remote.{remote_name}.url", check=False).splitlines()
+        if line.strip()
+    ]
+    if len(fetch_urls) != 1:
         return False
+    fetch_url = fetch_urls[0]
     push_urls = [
         line.strip()
         for line in git("config", "--get-all", f"remote.{remote_name}.pushurl", check=False).splitlines()
@@ -542,10 +581,10 @@ def run_pre_push(
             tag_objects: list[str] = []
             seen_tags: set[str] = set()
             for local_oid, remote_oid, remote_ref in non_delete_updates:
-                obj_type = git("cat-file", "-t", local_oid, check=False).strip()
-                if obj_type == "tag" and local_oid not in seen_tags:
-                    seen_tags.add(local_oid)
-                    tag_objects.append(local_oid)
+                for tag_oid in _collect_tag_objects(local_oid):
+                    if tag_oid not in seen_tags:
+                        seen_tags.add(tag_oid)
+                        tag_objects.append(tag_oid)
                 for sha in _pushed_commits(
                     local_oid,
                     remote_oid,

@@ -323,11 +323,13 @@ PHONE_KEY_RE = re.compile(
     r"(?:"
     r"(?<![A-Za-z])(?:[cC][eE][lL][lL][pP][hH][oO][nN][eE]|[sS][mM][aA][rR][tT][pP][hH][oO][nN][eE]|[tT][eE][lL][eE][pP][hH][oO][nN][eE]|[pP][hH][oO][nN][eE]|[mM][oO][bB][iI][lL][eE]|[tT][eE][lL]|[cC][eE][lL][lL]|[fF][aA][xX]|[sS][mM][sS]|[wW][hH][aA][tT][sS][aA][pP][pP])[sS]?(?![a-z])"
     r"|(?<=[a-z])(?:Phone|Mobile|Tel|Cell|Fax|Sms|Whatsapp)[sS]?(?![a-z])"
-    r"|(?<![A-Za-z0-9_])(?:[cC][oO][nN][tT][aA][cC][tT]|[cC][aA][lL][lL])[sS]?(?![A-Za-z0-9_])"
+    r"|(?<![A-Za-z0-9_])(?:[cC][oO][nN][tT][aA][cC][tT]|[cC][aA][lL][lL])[sS]?(?![a-z])"
     r")"
-    r"(?:[ \t._-]{1,2}[A-Za-z0-9]{1,20}){0,2}"
-    r"[\"']?[ \t]*(?:=>|[:=]|[ \t]+)[ \t]*"
+    r"(?:[._-]{1,2}[A-Za-z0-9]{1,20}|[ \t]{1,2}[A-Za-z][A-Za-z0-9]{0,19}|[A-Z][A-Za-z0-9]{0,19}|[0-9]{1,2}(?![0-9])){0,2}"
+    r"[\"']?(?:[ \t]*(?:=>|[:=])[ \t]*|[ \t]+)"
 )
+PHONE_KEY_ANCHOR_RE = re.compile(r"(?:=>|[:=]|[ \t]+)[ \t]*(?=[\"'+\(\d\[\n])")
+YAML_LIST_ITEM_RE = re.compile(r"[ \t]*-[ \t]+")
 PHONE_VALUE_AT_RE = re.compile(
     r"[\"']?(\+?1?\d{10}|\+[1-9]\d{7,14}|(?:1[ \t.-]?)?\(?\d{3}\)?[ \t.-]?\d{3}[ \t.-]\d{4})(?![A-Za-z0-9])"
 )
@@ -782,8 +784,17 @@ def detect_phone(text: str) -> list[str]:
             record(match.group(1))
 
     if has_phone_kw:
-        for key_match in PHONE_KEY_RE.finditer(text):
-            pos = key_match.end()
+        for anchor in PHONE_KEY_ANCHOR_RE.finditer(text):
+            end_pos = anchor.end()
+            window_start = max(0, anchor.start() - 72)
+            key_match: re.Match[str] | None = None
+            for cand in PHONE_KEY_RE.finditer(text, window_start, end_pos):
+                if cand.end() == end_pos:
+                    key_match = cand
+                    break
+            if key_match is None:
+                continue
+            pos = end_pos
             if pos >= len(text):
                 continue
             if text[pos] == "[":
@@ -792,6 +803,25 @@ def detect_phone(text: str) -> list[str]:
                 stop = end_bracket if end_bracket != -1 else (end_nl if end_nl != -1 else pos + 256)
                 for item in PHONE_LIST_ITEM_RE.finditer(text, pos + 1, stop):
                     record(item.group(1))
+            elif text[pos] == "\n" and ":" in key_match.group(0):
+                line_start = pos + 1
+                for _ in range(64):
+                    if line_start >= len(text):
+                        break
+                    line_end = text.find("\n", line_start)
+                    if line_end == -1:
+                        line_end = len(text)
+                    item_line = text[line_start:line_end]
+                    if not item_line.strip():
+                        line_start = line_end + 1
+                        continue
+                    item_m = YAML_LIST_ITEM_RE.match(item_line)
+                    if item_m is None:
+                        break
+                    val_m = PHONE_VALUE_AT_RE.match(item_line, item_m.end())
+                    if val_m is not None:
+                        record(val_m.group(1))
+                    line_start = line_end + 1
             else:
                 val_match = PHONE_VALUE_AT_RE.match(text, pos)
                 if val_match is not None:
@@ -1854,6 +1884,8 @@ class Scanner:
 
         raw_hits: list[tuple[int, str, str]] = []
         lines = unified.split("\n")
+        phone_triggered = any(rule_id == "phone" for rule_id, _ in triggered)
+        yaml_phone_indent: int | None = None
         for number, line in enumerate(lines, start=1):
             if not line:
                 continue
@@ -1872,6 +1904,33 @@ class Scanner:
                         raw_hits.append((number, rule_id, value))
                         if len(raw_hits) > MAX_FINDINGS:
                             return None, raw_hits[:MAX_FINDINGS], True
+                if rule_id == "phone" and yaml_phone_indent is not None:
+                    stripped = line.lstrip(" \t")
+                    indent = len(line) - len(stripped)
+                    if stripped:
+                        item_m = YAML_LIST_ITEM_RE.match(line)
+                        if item_m is not None and indent >= yaml_phone_indent:
+                            for lv in line_variants:
+                                lm = YAML_LIST_ITEM_RE.match(lv)
+                                if lm is None:
+                                    continue
+                                vm = PHONE_VALUE_AT_RE.match(lv, lm.end())
+                                if vm is None:
+                                    continue
+                                folded = _normalize_phone_candidate(vm.group(1))
+                                if folded is not None and folded not in seen_values:
+                                    seen_values.add(folded)
+                                    raw_hits.append((number, "phone", folded))
+                                    if len(raw_hits) > MAX_FINDINGS:
+                                        return None, raw_hits[:MAX_FINDINGS], True
+                        elif indent <= yaml_phone_indent:
+                            yaml_phone_indent = None
+            if phone_triggered and line.rstrip(" \t").endswith(":"):
+                for lv in line_variants:
+                    km = PHONE_KEY_RE.search(lv)
+                    if km is not None and km.end() == len(lv) and ":" in km.group(0):
+                        yaml_phone_indent = len(line) - len(line.lstrip(" \t"))
+                        break
         return None, raw_hits, False
 
     def scan_source(self, source: SourceFile) -> tuple[list[str], list[str]]:
