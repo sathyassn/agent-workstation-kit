@@ -296,23 +296,23 @@ func (e *Engine) runApply(ctx context.Context, l *locks, self platform.ProcessId
 
 // step runs the unit's Apply and Verify.
 func (e *Engine) step(ctx context.Context, t *tx, u contract.Unit, p contract.Plan) error {
+	// A latched failure (a failed event write, or a containment not proven
+	// empty) is always joined to the unit's own result, so a unit error can
+	// never hide it and let a restore run over surviving processes.
 	err := u.Apply(ctx, t, p)
 	e.fault(PointApplied)
-	if err == nil {
-		err = t.sinkErr()
-	}
-	if err != nil {
+	if err = errors.Join(err, t.sinkErr()); err != nil {
 		return fmt.Errorf("apply %s: %w", u.ID(), err)
 	}
 	res, err := u.Verify(ctx, p)
 	e.fault(PointVerified)
-	if err != nil {
+	if err == nil && res.Outcome != contract.OutcomeVerified {
+		err = fmt.Errorf("%w: %s reported %q", ErrVerifyFailed, u.ID(), res.Outcome)
+	}
+	if err = errors.Join(err, t.sinkErr()); err != nil {
 		return fmt.Errorf("verify %s: %w", u.ID(), err)
 	}
-	if res.Outcome != contract.OutcomeVerified {
-		return fmt.Errorf("%w: %s reported %q", ErrVerifyFailed, u.ID(), res.Outcome)
-	}
-	return t.sinkErr()
+	return nil
 }
 
 // failRun restores a failed run and closes it with a failed receipt.

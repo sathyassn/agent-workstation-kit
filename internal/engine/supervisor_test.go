@@ -163,3 +163,36 @@ func TestRecoveryEmptyHasDeadline(t *testing.T) {
 		t.Fatal("recovery waited on a hung supervisor without a deadline")
 	}
 }
+
+// TestLatchedEmptinessFailureSurvivesUnitError is round 3, item 2: Run
+// latches ErrEmptinessUnknown, then the unit returns an error of its own.
+// The latched failure must still be seen: the apply exits 4 and restores
+// nothing over the process that could not be stopped.
+func TestLatchedEmptinessFailureSurvivesUnitError(t *testing.T) {
+	w := newWorld(t)
+	sd := platformtest.NewSystemd(w.table)
+	sd.SetTool(func(_ context.Context, s *platformtest.Scope) int {
+		s.Spawn(nil, true)
+		return 0
+	})
+	e, _ := w.engine(t, withSystemd(w, sd))
+	unitErr := errors.New("unit gave up")
+	u := &refusalUnit{testUnit: testUnit{root: w.root}, op: func(ctx context.Context, tx contract.Tx) error {
+		owner := contract.Owner{UID: os.Getuid(), GID: os.Getgid()}
+		if err := tx.WriteFile(ctx, pathA, []byte("new-a\n"), 0o644, owner); err != nil {
+			return err
+		}
+		_, _ = tx.Run(ctx, contract.Command{Argv: []string{"/usr/bin/true"}})
+		return unitErr // the unit's own error, ignoring Run's
+	}}
+	err := e.Apply(context.Background(), u, testPlan())
+	if !errors.Is(err, engine.ErrEmptinessUnknown) || engine.ExitCode(err) != contract.ExitRecoveryBlocks {
+		t.Fatalf("err = %v (exit %d), want ErrEmptinessUnknown and exit 4", err, engine.ExitCode(err))
+	}
+	if got := w.state(t)[pathA]; got == nil || *got != "new-a\n" {
+		t.Fatalf("path A = %v, want the change left in place, not restored", got)
+	}
+	if rec := w.record(t); rec.Status != engine.StatusApplying {
+		t.Fatalf("record = %+v, want applying", rec)
+	}
+}
