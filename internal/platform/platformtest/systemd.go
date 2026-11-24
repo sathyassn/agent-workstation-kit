@@ -28,10 +28,10 @@ import (
 // between starting systemd-run and the scope appearing: the supervisor then
 // stays alive and registers only on CompleteRegistrations, if still alive.
 type Systemd struct {
-	mu    sync.Mutex
-	table *ProcessTable
-	tool  func(ctx context.Context, s *Scope) int
-	hold  func(name string)
+	mu        sync.Mutex
+	table     *ProcessTable
+	tool      func(ctx context.Context, s *Scope) int
+	hold      func(name string)
 	late      func()
 	afterShow func(name string)
 	units     map[string]*unit
