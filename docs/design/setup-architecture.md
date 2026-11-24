@@ -359,7 +359,7 @@ This is a user decision (2026-11-21).
   - `validate` checks the schema and that company and machine files agree;
   - `host add|show|record|retire` manages machine records;
   - `check [--host]` is the doctor with fleet inputs;
-  - `privacy-lint` is the keyed identifier scan (section 12), generic;
+  - `privacy-lint` is the public-safety scan (section 12), generic, with the optional keyed list on for a private fleet;
   - `lock show|bump` shows and moves the kit pin, verified against the
     release checksum and signature;
   - `values get|set|explain` reads and writes company values with their
@@ -1387,9 +1387,11 @@ hours, while a guard that watched load and available memory stayed green.
   exists, measurement is informational, as TSK-034 ships it in the frozen
   script. Once the doctor has measured the non-agent p95 over time
   (`system.slice`, the desktop session and the agent manager's own app),
-  the fixed part becomes that p95 x 1.5, and the doctor reports a
-  mismatch between the reserve and that need. EPC-010 ports the TSK-034
-  formula to the Go unit.
+  the fixed part is max(role default, that p95 x 1.5) unless set
+  explicitly; the role default is the floor. The doctor reports a reserve
+  below the measured need (only an explicit value can cause it) and notes,
+  without flagging a fault, a reserve far above it. EPC-010 ports the
+  TSK-034 formula to the Go unit.
 - **One ceiling for all agent work, never on a person's desktop.** On Linux,
   the ceiling (`MemoryHigh` and `MemoryMax`, sized above) goes on a
   dedicated agent-work slice, per the topology table in section 2g: under
@@ -1414,6 +1416,28 @@ hours, while a guard that watched load and available memory stayed green.
   and package caches placed there use memory. The stage sets the policy: a
   disk-backed `/tmp`, or caches pointed at disk. The doctor reports tmpfs
   use.
+- **Learnings batch 4 (2026-11-23).**
+  - Measured reserve: count non-reclaimable use only (anonymous plus
+    kernel memory, never file cache), take the p95 rather than the peak,
+    multiply by 1.5; the fixed part is max(role default, that value) unless
+    set explicitly, the role default when no baseline exists, and on macOS
+    the same rule over the approximate measure, labelled approximate; `plan`
+    shows both numbers (TSK-045).
+  - At the limit, slow before killing: MemoryHigh is the working limit,
+    MemoryLow protects the desktop and the agent manager, heavy jobs run in
+    their own job scopes, systemd-oomd targets job scopes first, and every
+    kill (and on macOS every stop at critical pressure) is logged and
+    surfaced with the resume command; a pressure-based freeze is a setting,
+    off by default (TSK-045).
+  - Everything agents start stays inside the ceiling: the capped runner,
+    rootless Docker and Podman, and leak-prone desktop helpers under their
+    own per-service ceilings (TSK-044); a shell hook for login and
+    interactive non-login shells (a shell started with `--norc` is a stated
+    gap) and launchers
+    put agent work in the cap whatever terminal or app starts it
+    (`agent-placement`, TSK-046); the hook is on by default only for a
+    dedicated agent account, and offered in `plan` in the single-account
+    topology, so a person's own shells stay outside unless selected.
 - **The session side** is split at one boundary. The kit's resources unit
   ships the machine-wide controls and a small runner library and wrapper:
   the memory-pressure signal and the admission and stop policy (on macOS,
@@ -1543,6 +1567,11 @@ builds `registry/capabilities.toml` from it.
 | Processes outside the agent-work ceiling | counted per session or scope, with a restart hint | QoS check per agent terminal | no slice on macOS | QoS check (EPC-022 AC-8) |
 | mDNS | `mdns` setting: UFW 5353/udp and avahi `allow-interfaces` on non-mesh LAN interfaces only, `publish-workstation=no` | mDNSResponder stays on; the setting changes Application Firewall stealth mode and Bonjour incoming rules | mDNSResponder cannot be turned off without breaking the system, and macOS cannot limit mDNS to chosen interfaces | `off`: stealth mode and blocked incoming connections for Bonjour-advertising services; `on-interfaces` behaves as `on` and `plan` states the gap (EPC-015 AC-11) |
 | Agent terminal shell | `agent-work-shell`, set in the agent manager by hand-over | the agent-work wrapper, set the same way | the agent manager has no settings CLI on either OS | hand-over, a doctor check, and a recorded request for a CLI (EPC-010 AC-11, EPC-022 AC-9) |
+| Desktop-service ceilings | user-unit drop-ins with MemoryHigh, MemoryMax, CPUQuota and `Restart=on-failure` | none | launchd agents cannot be memory-capped | the doctor's runaway report (EPC-010, EPC-022) |
+| Agent jobs and containers in the ceiling | runner `--slice=agent-work.slice`; `Slice=` drop-ins for rootless Docker and Podman | runner applies the agent QoS | Docker Desktop and OrbStack run their own VMs | their VM memory setting recorded as the cap by a guided step (TSK-044) |
+| Agent placement | shell hook for login and interactive non-login shells into `agent-work.slice`; app launchers; scope move for running sessions | the same shell hook with `taskpolicy -c utility` and `nice 5`; launcher wrapper; `taskpolicy` and `renice` for running processes | no group memory ceiling on macOS; a shell started with `--norc` is not reached | QoS and nice only (TSK-046) |
+| Remote desktop | `physical` mode shares the console session; blanking without the fade effect and lock on disconnect | Screen Sharing and NoMachine share the physical session; curtain mode where available | Wayland blanking does not block local input | stated in `plan` (TSK-048) |
+| Keyring health | one gnome-keyring-daemon per user; login collection unlocked | login keychain unlocked and the default | a virtual remote desktop never unlocks the keyring | `physical` mode by default; the doctor reports it (TSK-047) |
 | Long-uptime swap | swapped-out desktop processes reported with a reboot-window hint | no per-process swap figure | macOS reports no per-process swap | uptime with the memory-pressure history (EPC-022 AC-10) |
 
 Open on macOS, and where each stands:
@@ -1773,8 +1802,8 @@ What revert cannot undo, listed in every revert preview:
   - the OS end-of-support date, from 90 days ahead;
   - a missing or unmanaged shell baseline, and the interactive-only guard
     (section 7);
-  - tmpfs use and the resource reserve (section 7a), including a reserve
-    below the measured need or far above it;
+  - tmpfs use and the resource reserve (section 7a): a reserve below the
+    measured need, and a note when it is far above it;
   - from the pilot hosts (EPC-022): project-level settings that override
     the user-level agent mode, repositories untrusted in a Codex home,
     Claude Code sandbox placeholders, agent CLI auth checked from the
@@ -1787,6 +1816,12 @@ What revert cannot undo, listed in every revert preview:
     terminal; new agent terminals inside the ceiling; and long uptime with
     swapped-out desktop processes on Linux, or with the memory-pressure
     history on macOS;
+  - from learnings batch 4 (EPC-022 AC-11 and AC-12, TSK-047): runaway
+    processes, more than one desktop, audio stack or keyring daemon per
+    user, keyring health, slow DNS (a warning at one second; the Codex
+    managed proxy fails lookups over two seconds as private addresses,
+    openai/codex#48766, diagnosed only with timing evidence),
+    and the read-only `reboot-plan`;
   - the earlier doctor items.
 
   `--admin` runs the root-only checks from the staged root and writes their
@@ -2004,19 +2039,39 @@ client hid this, because it routes everything.
   - the public-safety scan passes (hardened below);
   - the Go build and test jobs pass on Linux and macOS, and the frozen
     Python's jobs pass while it remains (from T1).
-- **Public-safety scan hardening** (its own security PR, with a
-  cross-lineage review; it does not depend on T1):
-  - personal names and private network names are matched by keyed HMAC, so
-    the rule file neither contains them nor lets them be guessed; the key
-    lives in an untracked local file and a CI secret;
-  - CI fails closed when the key is missing, and when the file listing fails
-    or is empty;
+- **Public-safety scan hardening** (its own security PRs, with a
+  cross-lineage review; it does not depend on T1). Re-scoped by operator
+  decision (2026-11-23, EPC-002): no hand-kept list of names.
+  - Deterministic detectors that need no list block in the pre-push check
+    and in CI: emails, phone numbers, IP and MAC addresses, real home paths,
+    private DNS names, cloud account and project IDs, chat and tracker user
+    IDs, and secrets; they need no secret and run in well under a second;
+  - the contributor's own identity (git identity, account and full name,
+    host and computer names, tailnet names) is read where the check runs,
+    never stored, and blocks; CI checks the commits' git identities;
+  - a person-name warning on changed prose runs locally only, warn-only and
+    time-boxed, and never in CI;
+  - the keyed HMAC list is an optional layer, off by default, for private
+    repositories such as the fleet;
+  - exemptions are tracked records (exact path, rule, a digest of the value
+    and never the value, reason, approver, expiry date), read from the base
+    revision only, invalid once expired, listed on every run without the
+    matched text, and changed only through a reviewed pull request with
+    code-owner review;
+  - every blocking layer fails closed: a failed or empty listing, a crashed
+    or skipped detector, a failed identity source, incomplete CI history or
+    exceeded caps is a failure, never a pass; in CI the base revision
+    supplies the scanner, detectors, mode configuration, exemptions, binary
+    exceptions and identity-check code, and judges the head as data only; a non-default mode is printed on
+    every run;
   - findings print only file, line and rule, never the matched text, so CI
     logs cannot leak what the scan exists to catch;
-  - the rule file and the scanner's own tests are scanned too, allowing only
-    listed synthetic values;
-  - obfuscations are caught: zero-padded octets, glued prefixes, and partial
-    private-range prefixes.
+  - the exemption records and the scanner's own tests are scanned too,
+    allowing only documented synthetic values;
+  - inputs are decoded and folded before detection (escapes, UTF-16, case,
+    confusable characters, zero-padded octets, glued and partial prefixes);
+    a file with NUL bytes is refused unless a hash-bound binary exception
+    names its content hash.
 - **Doc tests.** From T2 on, runbook command blocks run in preview mode
   against fixtures. Each block is marked `preview-tested` or `human-only`.
 - **Each PR's gate:** the engineering standard (`docs/standards/engineering.md`,
