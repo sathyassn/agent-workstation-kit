@@ -1,0 +1,106 @@
+# public-scan: deterministic privacy and public-safety scan from the trusted base.
+#
+# Runs on `pull_request_target` so GitHub executes this workflow and checks out
+# the default branch's commit (`github.sha`), never the pull request's code.
+# That trusted base commit supplies the scanner, detectors, mode configuration,
+# digest-bound exemptions, and hash-bound binary exceptions. The pull request's
+# head commit is fetched only as git objects and scanned with `--tree`; head
+# code never runs and head edits to the scanner, modes, exemptions, or binary
+# exceptions cannot weaken the check that judges it.
+#
+# No secret is required, so fork and same-repository pull requests run the exact
+# same blocking checks on both Linux and macOS.
+#
+# The required status check is "public-scan / result". It always runs (never
+# skipped) and fails unless the scan succeeded on both Linux and macOS for a
+# pull request into the default branch or a push to it.
+name: public-scan
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, edited]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.event_name == 'pull_request_target' && format('{0}-pr-{1}', github.workflow, github.event.pull_request.number) || format('{0}-run-{1}', github.workflow, github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request_target' }}
+
+jobs:
+  scan:
+    name: public scan (${{ matrix.os }})
+    if: >-
+      (github.event_name == 'pull_request_target' && github.event.pull_request.base.ref == github.event.repository.default_branch) ||
+      (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - name: Check out the trusted base commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Fetch the commit to scan as git data
+        id: target
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "pull_request_target" ]; then
+            git fetch --no-tags --depth=1 "https://github.com/${REPOSITORY}.git" "+refs/pull/${PR_NUMBER}/head:refs/scan/head"
+            fetched=$(git rev-parse refs/scan/head)
+            if [ "$fetched" != "$HEAD_SHA" ]; then
+              echo "::error::pull request head moved since this event; a newer run will scan it"
+              exit 1
+            fi
+            echo "sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+          else
+            echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run deterministic privacy scan on the tree
+        env:
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+        run: python3 -I -B tests/check_public_release.py --tree "$TARGET_SHA"
+
+  result:
+    name: result
+    needs: scan
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require deterministic privacy scan for the default branch
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PUSH_REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          SCAN_RESULT: ${{ needs.scan.result }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "pull_request_target" ] && [ "$BASE_REF" != "$DEFAULT_BRANCH" ]; then
+            echo "Not a pull request into $DEFAULT_BRANCH; the public scan runs when it targets $DEFAULT_BRANCH."
+            exit 0
+          fi
+          if [ "$EVENT_NAME" = "push" ] && [ "$PUSH_REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
+            echo "::error::unexpected push ref"
+            exit 1
+          fi
+          if [ "$SCAN_RESULT" != "success" ]; then
+            echo "::error::the public scan did not succeed on all platforms (result: $SCAN_RESULT)"
+            exit 1
+          fi
+          echo "Deterministic public scan passed on Linux and macOS."

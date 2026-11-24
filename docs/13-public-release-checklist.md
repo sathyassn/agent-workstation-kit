@@ -79,6 +79,113 @@ run hosted CI -> protect main -> delete bootstrap branch
 This one-time bootstrap preserves the reviewed history and never pushes directly
 to the protected local branch. It is only valid for a new, empty repository.
 
+## Deterministic public-safety scan
+
+`tests/check_public_release.py` scans every tracked file and every tracked path
+for personal and identifying details without any secret or name list. It runs
+in the pre-push hook (`make ci-check`), in `make public-check`, and in CI on
+both Linux and macOS.
+
+### Detectors and exact allow lists
+
+Every detector defaults to `block` mode in `tests/public_scan_modes.json`:
+
+| Rule | Detects | Exact allow list (matched only after folding) |
+|---|---|---|
+| `email` | Email addresses | Exact domains `example.com`, `example.org`, `example.net`, `example.invalid` |
+| `phone` | International E.164 and formatted phone numbers | Documented placeholder numbers (`+1-555-555-0100`, `+1-555-555-0101`, `+1-555-555-0199`, `+44 20 7946 0000`) |
+| `ipv4` | Private and public IPv4 addresses, plus partial private prefixes (RFC 1918, RFC 6598 CGNAT, RFC 3927 link-local) | Documentation ranges `192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`; loopback `127.0.0.1`, `127.0.1.1`; `0.0.0.0`, `255.255.255.255` |
+| `ipv6` | Private and public IPv6 addresses | Documentation range `2001:db8::/32`; loopback `::1`; unspecified `::` |
+| `mac-address` | Colon, hyphen, and dot-quad MAC addresses | RFC 7042 documentation range `00:00:5e:00:53:00` through `00:00:5e:00:53:ff`; null and broadcast |
+| `home-path` | `/Users/<name>`, `/home/<name>`, and Windows `Users\<name>` paths | Exact placeholder usernames (`alice`, `bob`, `agent`, `agent-01`, `admin`, `admin-01`, `operator`, `user`, `username`, `example`, `runner`, `ubuntu`, `dev`, `acme`, `lab`) |
+| `private-dns` | `*.ts.net`, `*.internal`, and `*.local` names | Exact placeholder hosts (`host-a.ts.net`, `host-a.internal`, `host-a.local`, `host-a.example.ts.net`, `example.ts.net`, `example.internal`, `example.local`, `localhost.local`) |
+| `cloud-id` | AWS ARNs/account IDs, GCP project/billing IDs, Azure subscription/tenant IDs, Cloudflare account IDs | Documented placeholder IDs (`123456789012`, `000000000000`, `111122223333`, `example-project`, `acme-example-project`, all-zero and all-one UUIDs) |
+| `chat-tracker-id` | Slack, Discord, Atlassian/Jira, and explicit chat/tracker user IDs | Documented placeholder IDs (`U00000000`, `U00EXAMPLE`, `000000000000000000`, `000000:00000000-0000-0000-0000-000000000000`) |
+| `secret` | Cloud access keys, GitHub/GitLab/Slack/Tailscale/Google tokens, private key headers | AWS documentation example access key ID |
+
+Before detection, inputs are decoded (UTF-8, UTF-16 with or without BOM, JSON
+`\u` and `\/` escapes, URL `%XX` escapes) and folded (NFKD/NFKC, format and
+combining marks, Cyrillic/Greek/punctuation lookalikes, case, zero-padded
+octets, and glued prefixes). Any file containing NUL bytes is refused as binary
+unless `tests/public_scan_binary_exceptions.json` names its exact path and
+SHA-256 content hash.
+
+Findings print only the file, line, and rule, never the matched text. If a file
+path itself triggers a detector, the entire path is printed as `<redacted-ID>`.
+Every blocking failure path fails closed (empty or failed file listing, a
+detector raising or skipped, decode errors, or exceeded file-size, entry-count,
+or finding caps).
+
+### Detector modes
+
+`tests/public_scan_modes.json` assigns every detector one of `block`, `warn`, or
+`off`. All detectors default to `block`. Any detector set to `warn` or `off` is
+printed on every run under `Non-default detector modes:`, so a disabled detector
+never produces a silent clean result.
+
+### Tracked digest-bound exemptions
+
+Legitimate synthetic fixtures that collide with a detector use tracked records
+in `tests/public_scan_exemptions.json` (never plaintext values):
+
+```json
+{
+  "schema_version": 1,
+  "exemptions": [
+    {
+      "path": "tests/example_fixture.py",
+      "rule": "ipv4",
+      "digest": "<64-lowercase-hex-sha256-of-folded-value>",
+      "reason": "synthetic fixture explanation",
+      "approved_by": "@owner",
+      "expires": "2027-06-01"
+    }
+  ]
+}
+```
+
+Compute a digest from stdin without putting the value on the command line:
+
+```bash
+printf '%s\n' '<value>' | python3 tests/check_public_release.py --exemption-digest ipv4
+```
+
+Every record requires all six fields (`path`, `rule`, `digest`, `reason`,
+`approved_by`, `expires` as `YYYY-MM-DD`). Any expired, undated, malformed, or
+incomplete record fails the scan. Every run lists all configured exemptions by
+path, rule, and 12-character digest prefix, marked `applied` or `unused`.
+Optional keyed-list exemptions (added separately for private repositories) use
+their keyed HMAC digest instead.
+
+Hash-bound binary exceptions live in `tests/public_scan_binary_exceptions.json`:
+
+```json
+{
+  "schema_version": 1,
+  "binary": [
+    {
+      "path": "docs/diagram.png",
+      "sha256": "<64-lowercase-hex-sha256-of-file-bytes>",
+      "reason": "reviewed documentation diagram"
+    }
+  ]
+}
+```
+
+### Trusted base-revision CI and code ownership
+
+- `.github/workflows/public-scan.yml` runs on `pull_request_target` and pushes
+  to `main` across `ubuntu-24.04` and `macos-latest` with no secret. It checks
+  out the trusted default branch commit (`github.sha`) for the scanner,
+  detectors, mode configuration, exemptions, and binary exceptions, fetches the
+  pull request head only as git objects, and scans it with `--tree`. Head code
+  never runs, and head edits to exemptions, modes, binary exceptions, or the
+  scanner do not take effect until reviewed and merged.
+- Require the `public-scan / result` status check on `main`, next to the
+  existing required checks, and require code-owner review so `.github/CODEOWNERS`
+  gates changes to the scanner, mode config, exemptions, binary exceptions, scan
+  workflows, and `.github/CODEOWNERS` itself.
+
 ## Private fleet repositories
 
 - [ ] Create personal and/or organization fleet repositories as private.

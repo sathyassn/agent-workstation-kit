@@ -1,0 +1,405 @@
+{
+  "schema_version": 1,
+  "exemptions": [
+    {
+      "path": ".claude/settings.json",
+      "rule": "ipv4",
+      "digest": "0d37fc9bbd8683776b900996d3f6f41f64fa42a113b78e5e6a05df0c7b5518bc",
+      "reason": "sandbox network deny list of private ranges",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
+      "path": ".claude/settings.json",
+      "rule": "ipv4",
+      "digest": "1a3f6504614aec581d4c3f8ee907327cad699da6a02397097ea58030e6af2400",
+      "reason": "sandbox network deny list of private ranges",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
+      "path": ".claude/settings.json",
+      "rule": "ipv4",
+      "digest": "1c2d517c977b6705eeb3bf57f0b1786e3cb9f766a5e7bff9579d04b8fc46ebcd",
+      "reason": "sandbox network deny list of private ranges",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
+      "path": ".claude/settings.json",
+      "rule": "ipv4",
+      "digest": "2ee65f45dab89138a681324bfbc2e914dd03ffad6d88509eb3e6d081201565b7",
+      "reason": "sandbox network deny list of private ranges",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
+      "path": ".claude/settings.json",
+      "rule": "ipv4",
+      "digest": "2f8b6412f90ef7cd45bf7ceadfb410b0cb61b12c89aebe37b78d9d38b3f58135",
+      "reason": "sandbox network deny list of private ranges",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
+      "path": ".claude/settings.json",
+      "rule": "ipv4",
+      "digest": "30f6653aa2e9e2e69ac7508c4c6718b9586073006eef1085baf02db246f20cc7",
+      "reason": "sandbox network deny list of private ranges",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
+      "path": ".claude/settings.json",
+      "rule": "ipv4",
+      "digest": "5b02ea3e210a30291b6d82337f27b46e7bee65675985eba5b173e53f8a3c25d5",
+      "reason": "sandbox network deny list of private ranges",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
+      "path": ".claude/settings.json",
+      "rule": "ipv4",
+      "digest": "7914b541d831e09933e1013f6bb9d304bdf09df3adf22d2c93fbfa0851fc19f2",
+      "reason": "sandbox network deny list of private ranges",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
+      "path": ".claude/settings.json",
+      "rule": "ipv4",
+      "digest": "9453c5f49423f011e91b47fc12e1948a3d5bd01ff9cf1b9321abb8dc6be5c9f0",
+      "reason": "sandbox network deny list of private ranges",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
+      "path": ".claude/settings.json",
+      "rule": "ipv4",
+      "digest": "9bfcccaac8a3b91b1cc04df8b35699821251b7a3ec3d571f07be01aac3ec0959",
+      "reason": "sandbox network deny list of private ranges",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
+      "path": ".claude/settings.json",
+      "rule": "ipv4",
+      "digest": "a479a60a16d1e4e3d4a92f67228e0f4653e81bfc3261adce07186192720e23f6",
+      "reason": "sandbox network deny list of private ranges",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
+      "path": ".claude/settings.json",
+      "rule": "ipv4",
+      "digest": "ba922be196559100527ab22b15e9bab291744cb3350c92a94df839c0c38685c8",
+      "reason": "sandbox network deny list of private ranges",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
+      "path": ".claude/settings.json",
+      "rule": "ipv4",
+      "digest": "c0bb238099b3e15732d971566d733ccd84fc9e40f7f559419e07f8918d8be111",
+      "reason": "sandbox network deny list of private ranges",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
+      "path": ".claude/settings.json",
+      "rule": "ipv4",
+      "digest": "d74517c0ab9f74837ea4be26ab5861e53b507c439e15ba0c0a89cf8cad080c58",
+      "reason": "sandbox network deny list of private ranges",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
+      "path": ".claude/settings.json",
+      "rule": "ipv4",
+      "digest": "e0d896684d2c9642d3aeadaa0c52cf72e43f6203e0a969680b28641c743b85ea",
+      "reason": "sandbox network deny list of private ranges",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
+      "path": ".claude/settings.json",
+      "rule": "ipv4",
+      "digest": "e8622c3765d50d5542b4460951903333096e504984ef8e2116081e5d66aef6bf",
+      "reason": "sandbox network deny list of private ranges",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
+      "path": ".claude/settings.json",
+      "rule": "ipv4",
+      "digest": "fc8e4d2ad0364254ee1f4b46248365b0c94f3d63944f30a4df9ccacf17244c12",
+      "reason": "sandbox network deny list of private ranges",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
+      "path": ".claude/settings.json",
+      "rule": "ipv4",
+      "digest": "fe4732bffa33fbcd5d1ad250b220a83a11f9d6a3fd529742493febc979a5db4b",
+      "reason": "sandbox network deny list of private ranges",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
+      "path": ".codeflow/.baseline/.claude/settings.json",
+      "rule": "ipv4",
+      "digest": "0d37fc9bbd8683776b900996d3f6f41f64fa42a113b78e5e6a05df0c7b5518bc",
+      "reason": "CodeFlow baseline copy of sandbox network deny list",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
+      "path": ".codeflow/.baseline/.claude/settings.json",
+      "rule": "ipv4",
+      "digest": "1a3f6504614aec581d4c3f8ee907327cad699da6a02397097ea58030e6af2400",
+      "reason": "CodeFlow baseline copy of sandbox network deny list",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
+      "path": ".codeflow/.baseline/.claude/settings.json",
+      "rule": "ipv4",
+      "digest": "1c2d517c977b6705eeb3bf57f0b1786e3cb9f766a5e7bff9579d04b8fc46ebcd",
+      "reason": "CodeFlow baseline copy of sandbox network deny list",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
+      "path": ".codeflow/.baseline/.claude/settings.json",
+      "rule": "ipv4",
+      "digest": "2ee65f45dab89138a681324bfbc2e914dd03ffad6d88509eb3e6d081201565b7",
+      "reason": "CodeFlow baseline copy of sandbox network deny list",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
+      "path": ".codeflow/.baseline/.claude/settings.json",
+      "rule": "ipv4",
+      "digest": "2f8b6412f90ef7cd45bf7ceadfb410b0cb61b12c89aebe37b78d9d38b3f58135",
+      "reason": "CodeFlow baseline copy of sandbox network deny list",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
+      "path": ".codeflow/.baseline/.claude/settings.json",
+      "rule": "ipv4",
+      "digest": "30f6653aa2e9e2e69ac7508c4c6718b9586073006eef1085baf02db246f20cc7",
+      "reason": "CodeFlow baseline copy of sandbox network deny list",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
+      "path": ".codeflow/.baseline/.claude/settings.json",
+      "rule": "ipv4",
+      "digest": "5b02ea3e210a30291b6d82337f27b46e7bee65675985eba5b173e53f8a3c25d5",
+      "reason": "CodeFlow baseline copy of sandbox network deny list",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
+      "path": ".codeflow/.baseline/.claude/settings.json",
+      "rule": "ipv4",
+      "digest": "7914b541d831e09933e1013f6bb9d304bdf09df3adf22d2c93fbfa0851fc19f2",
+      "reason": "CodeFlow baseline copy of sandbox network deny list",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
+      "path": ".codeflow/.baseline/.claude/settings.json",
+      "rule": "ipv4",
+      "digest": "9453c5f49423f011e91b47fc12e1948a3d5bd01ff9cf1b9321abb8dc6be5c9f0",
+      "reason": "CodeFlow baseline copy of sandbox network deny list",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
+      "path": ".codeflow/.baseline/.claude/settings.json",
+      "rule": "ipv4",
+      "digest": "9bfcccaac8a3b91b1cc04df8b35699821251b7a3ec3d571f07be01aac3ec0959",
+      "reason": "CodeFlow baseline copy of sandbox network deny list",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
+      "path": ".codeflow/.baseline/.claude/settings.json",
+      "rule": "ipv4",
+      "digest": "a479a60a16d1e4e3d4a92f67228e0f4653e81bfc3261adce07186192720e23f6",
+      "reason": "CodeFlow baseline copy of sandbox network deny list",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
+      "path": ".codeflow/.baseline/.claude/settings.json",
+      "rule": "ipv4",
+      "digest": "ba922be196559100527ab22b15e9bab291744cb3350c92a94df839c0c38685c8",
+      "reason": "CodeFlow baseline copy of sandbox network deny list",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
+      "path": ".codeflow/.baseline/.claude/settings.json",
+      "rule": "ipv4",
+      "digest": "c0bb238099b3e15732d971566d733ccd84fc9e40f7f559419e07f8918d8be111",
+      "reason": "CodeFlow baseline copy of sandbox network deny list",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
+      "path": ".codeflow/.baseline/.claude/settings.json",
+      "rule": "ipv4",
+      "digest": "d74517c0ab9f74837ea4be26ab5861e53b507c439e15ba0c0a89cf8cad080c58",
+      "reason": "CodeFlow baseline copy of sandbox network deny list",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
+      "path": ".codeflow/.baseline/.claude/settings.json",
+      "rule": "ipv4",
+      "digest": "e0d896684d2c9642d3aeadaa0c52cf72e43f6203e0a969680b28641c743b85ea",
+      "reason": "CodeFlow baseline copy of sandbox network deny list",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
+      "path": ".codeflow/.baseline/.claude/settings.json",
+      "rule": "ipv4",
+      "digest": "e8622c3765d50d5542b4460951903333096e504984ef8e2116081e5d66aef6bf",
+      "reason": "CodeFlow baseline copy of sandbox network deny list",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
+      "path": ".codeflow/.baseline/.claude/settings.json",
+      "rule": "ipv4",
+      "digest": "fc8e4d2ad0364254ee1f4b46248365b0c94f3d63944f30a4df9ccacf17244c12",
+      "reason": "CodeFlow baseline copy of sandbox network deny list",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
+      "path": ".codeflow/.baseline/.claude/settings.json",
+      "rule": "ipv4",
+      "digest": "fe4732bffa33fbcd5d1ad250b220a83a11f9d6a3fd529742493febc979a5db4b",
+      "reason": "CodeFlow baseline copy of sandbox network deny list",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
+      "path": "scripts/lib/phase_verification.py",
+      "rule": "ipv4",
+      "digest": "9fee1dbd126b61ad5eb62f3d8f5e212f23c9b2e198dc972306821b4b2b9df745",
+      "reason": "synthetic CGNAT address in parser example",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
+      "path": "tests/test_fleetctl.py",
+      "rule": "ipv4",
+      "digest": "1bed174da5ca2c5dd8bc4df3b2109b1305e5141a3c874a9e0007abffa0e34eac",
+      "reason": "synthetic CGNAT test fixture address",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
+      "path": "tests/test_git_discipline.py",
+      "rule": "email",
+      "digest": "1c939d069387dc23bf4d3c19babd3b32cc05e079801ce2d8e2417a839b77e8ce",
+      "reason": "synthetic Dependabot commit trailer fixture",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
+      "path": "tests/test_machine_identity.py",
+      "rule": "ipv4",
+      "digest": "1bed174da5ca2c5dd8bc4df3b2109b1305e5141a3c874a9e0007abffa0e34eac",
+      "reason": "synthetic CGNAT test fixture address",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
+      "path": "tests/test_machine_identity.py",
+      "rule": "ipv4",
+      "digest": "79cafebb7f8dd6eb124c3135efd74eedc5ac495f42865a7d7c7b709bb52d09cb",
+      "reason": "synthetic CGNAT test fixture address",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
+      "path": "tests/test_machine_identity.py",
+      "rule": "ipv4",
+      "digest": "bf2fe403a5966539cb9925ee00ff73bada136ec82dcda0f63df139a26b96cb5e",
+      "reason": "synthetic CGNAT test fixture address",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
+      "path": "tests/test_machine_identity.py",
+      "rule": "private-dns",
+      "digest": "9f882c983e4127c59ef96bfeaff6f2634965a95f1e379d2014279e9689861ab5",
+      "reason": "synthetic hosts-conflict fixture hostname",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
+      "path": "tests/test_phase_verification.py",
+      "rule": "ipv4",
+      "digest": "9fee1dbd126b61ad5eb62f3d8f5e212f23c9b2e198dc972306821b4b2b9df745",
+      "reason": "synthetic CGNAT test fixture address",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
+      "path": "tests/test_phase_verification.py",
+      "rule": "ipv4",
+      "digest": "df2ba6cea151686393e645ee44a7d226baa1d36f2d7f342c8cc67519cfa4a37d",
+      "reason": "synthetic CGNAT test fixture address",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
+      "path": "tests/test_shell_behaviour.sh",
+      "rule": "email",
+      "digest": "2f92fb0d3ff61a584144544f4d829ea1c5dabd76636feeddc0a15eebc3e4b808",
+      "reason": "OpenSSH authorized_keys key-type identifier fixture",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
+      "path": "tests/test_shell_behaviour.sh",
+      "rule": "email",
+      "digest": "571f8ff4c960d22d9d8bb0137ce8c01238ec95cb8a846ff63e3d0b639ba7f6a0",
+      "reason": "OpenSSH authorized_keys key-type identifier fixture",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
+      "path": "tests/test_shell_behaviour.sh",
+      "rule": "email",
+      "digest": "9621b539252016e6dfca1c07d5f17929cac8b92786543fd6f12b21df5ba9503a",
+      "reason": "OpenSSH authorized_keys key-type identifier fixture",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
+      "path": "tests/test_shell_behaviour.sh",
+      "rule": "email",
+      "digest": "9855948d54208a21f766848db444cd2e24ccb22bbe0e908df18557ae5baa0b40",
+      "reason": "OpenSSH authorized_keys key-type identifier fixture",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
+      "path": "tests/test_shell_behaviour.sh",
+      "rule": "email",
+      "digest": "ddf9da722304f009605a6ac17990dceabee7f4b4992184b36c9dfcfc89806eee",
+      "reason": "OpenSSH authorized_keys key-type identifier fixture",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    }
+  ]
+}

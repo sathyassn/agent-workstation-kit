@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import os
 import re
@@ -587,6 +588,62 @@ def scan_repository_files(root: Path) -> list[str]:
     return failures
 
 
+CODEOWNERS_REQUIRED_PATHS = (
+    "tests/check_public_release.py",
+    "tests/public_scan_modes.json",
+    "tests/public_scan_exemptions.json",
+    "tests/public_scan_binary_exceptions.json",
+    ".github/workflows/public-scan.yml",
+    ".github/workflows/ci.yml",
+    ".github/CODEOWNERS",
+)
+CODEOWNER_TOKEN = re.compile(r"^@[A-Za-z0-9](?:[A-Za-z0-9-]|/[A-Za-z0-9_-])*$")
+
+
+def _codeowners_match(pattern: str, rel_path: str) -> bool:
+    """Match a CODEOWNERS pattern against a repository-relative POSIX path."""
+    anchored = pattern.startswith("/")
+    clean = pattern.lstrip("/")
+    if not clean:
+        return False
+    if clean.endswith("/"):
+        prefix = clean
+        if anchored:
+            return rel_path.startswith(prefix)
+        return rel_path.startswith(prefix) or f"/{prefix}" in f"/{rel_path}"
+    if anchored or "/" in clean:
+        return fnmatch.fnmatchcase(rel_path, clean)
+    return fnmatch.fnmatchcase(Path(rel_path).name, clean) or fnmatch.fnmatchcase(rel_path, clean)
+
+
+def codeowners_issues(root: Path) -> list[str]:
+    """Verify .github/CODEOWNERS covers every scan, config, workflow, and CODEOWNERS path."""
+    codeowners = root / ".github/CODEOWNERS"
+    if not codeowners.is_file():
+        return ["missing .github/CODEOWNERS covering public-safety scan and workflow files"]
+    rules: list[tuple[str, list[str]]] = []
+    for raw_line in codeowners.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        pattern = parts[0]
+        owners = [token for token in parts[1:] if not token.startswith("#")]
+        rules.append((pattern, owners))
+    issues: list[str] = []
+    for required in CODEOWNERS_REQUIRED_PATHS:
+        matched_owners: list[str] | None = None
+        for pattern, owners in rules:
+            if _codeowners_match(pattern, required):
+                matched_owners = owners
+        if not matched_owners:
+            issues.append(f".github/CODEOWNERS does not assign an owner to {required}")
+            continue
+        if not any(CODEOWNER_TOKEN.fullmatch(owner) for owner in matched_owners):
+            issues.append(f".github/CODEOWNERS has no valid owner handle for {required}")
+    return issues
+
+
 def main() -> int:
     failures: list[str] = scan_repository_files(ROOT)
 
@@ -661,6 +718,7 @@ def main() -> int:
         failures.append("hosted secret scan does not use the supported Gitleaks git command")
 
     failures.extend(workflow_action_pin_issues(ROOT))
+    failures.extend(codeowners_issues(ROOT))
     failures.extend(agents_manual_issues(ROOT))
     failures.extend(fleetctl_run_apply_issues(ROOT))
 
