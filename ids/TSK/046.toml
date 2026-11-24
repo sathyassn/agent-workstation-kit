@@ -1,0 +1,11 @@
+id = "TSK-046"
+uid = "2e0ab553-82e8-40a1-af66-2c3b9e131a60"
+kind = "TSK"
+title = "Agent placement for every terminal and app"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-24T00:30:51Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
