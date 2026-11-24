@@ -2018,13 +2018,16 @@ client hid this, because it routes everything.
     time-boxed, and never in CI;
   - the keyed HMAC list is an optional layer, off by default, for private
     repositories such as the fleet;
-  - exemptions are tracked records (exact path, exact value, reason,
-    approver, expiry date), read from the base revision only, invalid once
-    expired, and listed on every run;
+  - exemptions are tracked records (exact path, rule, a digest of the value
+    and never the value, reason, approver, expiry date), read from the base
+    revision only, invalid once expired, listed on every run without the
+    matched text, and changed only through a reviewed pull request with
+    code-owner review;
   - every blocking layer fails closed: a failed or empty listing, a crashed
     or skipped detector, a failed identity source, incomplete CI history or
-    exceeded caps is a failure, never a pass; in CI the base revision's
-    scanner judges the head as data only; a non-default mode is printed on
+    exceeded caps is a failure, never a pass; in CI the base revision
+    supplies the scanner, detectors, mode configuration, exemptions, binary
+    exceptions and identity-check code, and judges the head as data only; a non-default mode is printed on
     every run;
   - findings print only file, line and rule, never the matched text, so CI
     logs cannot leak what the scan exists to catch;
