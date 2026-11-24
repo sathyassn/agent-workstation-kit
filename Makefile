@@ -2,12 +2,17 @@ SHELL := /bin/sh
 PYTHON ?= python3
 BASH_BIN ?= bash
 
-.PHONY: bash-check check ci-check git-discipline-check go-check public-check public-draft-check repo-check skill-check shell-check unit-check python-check
+.PHONY: bash-check check ci-check git-discipline-check go-check public-check public-draft-check repo-check repo-ci-check repo-non-privacy-check skill-check shell-check unit-check unit-non-privacy-check unit-public-scan-check python-check
 
 check: bash-check shell-check python-check unit-check skill-check repo-check git-discipline-check public-draft-check
 
 ci-check: REQUIRE_SHELLCHECK=1
 ci-check: check
+
+# Non-privacy repository gate for required PR-head CI (`repository-validation`).
+# The authoritative privacy verdict comes solely from `.github/workflows/public-scan.yml`.
+repo-ci-check: REQUIRE_SHELLCHECK=1
+repo-ci-check: bash-check shell-check python-check unit-non-privacy-check skill-check repo-non-privacy-check git-discipline-check
 
 public-check:
 	@$(PYTHON) tests/check_public_release.py
@@ -61,10 +66,19 @@ shell-check: bash-check
 skill-check:
 	@$(PYTHON) tests/check_skill.py
 
-unit-check: bash-check
-	@$(PYTHON) -m unittest discover -s tests -p 'test_*.py'
+unit-non-privacy-check: bash-check
+	@$(PYTHON) -B -c 'import os, pathlib, sys, unittest; tdir = os.path.abspath("tests"); sys.path.insert(0, tdir); loader = unittest.TestLoader(); suite = unittest.TestSuite(loader.discover(tdir, pattern=p.name, top_level_dir=tdir) for p in sorted(pathlib.Path(tdir).glob("test_*.py")) if not p.name.startswith("test_public_")); res = unittest.TextTestRunner().run(suite); sys.exit(0 if res.wasSuccessful() and res.testsRun > 0 else 1)'
 	@"$(BASH_BIN)" tests/test_shell_behaviour.sh
 	@"$(BASH_BIN)" tests/test_resource_policy.sh
+
+unit-public-scan-check:
+	@$(PYTHON) -B -m unittest discover -s tests -t tests -p 'test_public_*.py'
+
+unit-check: unit-non-privacy-check unit-public-scan-check
+
+repo-non-privacy-check:
+	@$(PYTHON) tests/check_repository.py --skip-privacy-checks
+	@$(PYTHON) tests/catalog_tables.py
 
 repo-check:
 	@$(PYTHON) tests/check_repository.py

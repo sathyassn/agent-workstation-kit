@@ -1,3 +1,8 @@
+# CI runs pull-request head code (Makefile, unit tests, and self-checks).
+# Privacy and public-safety steps in this workflow are non-authoritative
+# self-tests only and MUST NOT be used as the required privacy gate: the
+# authoritative base-revision privacy verdict comes solely from
+# `.github/workflows/public-scan.yml` (`public-scan / result`).
 name: CI
 
 on:
@@ -28,14 +33,11 @@ jobs:
       - name: Install shell analysis
         run: sudo apt-get update && sudo apt-get install --yes shellcheck
 
-      - name: Run independent repository gate
+      - name: Run non-privacy repository gate
         env:
           # The pull request's base, so the changelog check sees the whole change.
           CHANGELOG_BASE: ${{ github.event.pull_request.base.sha }}
-        run: make ci-check
-
-      - name: Run public-release gate
-        run: make public-check
+        run: make repo-ci-check
 
       - name: Validate Git discipline policy
         run: python3 scripts/check_git_discipline.py policy
@@ -100,3 +102,47 @@ jobs:
 
       - name: Verify macOS root host apply lock contention
         run: sudo /usr/bin/python3 -I -B tests/verify_macos_host_lock.py
+
+  linux-public-scan:
+    # Non-authoritative head-code self-test on Linux; authoritative privacy
+    # verdict is `public-scan / result` in `.github/workflows/public-scan.yml`.
+    name: linux-public-scan (non-authoritative head self-test)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run deterministic public-release scan on Linux (non-authoritative)
+        run: make public-check
+
+      - name: Run public-scan unit and hardening tests on Linux (non-authoritative)
+        run: make unit-public-scan-check
+
+  macos-public-scan:
+    # Non-authoritative head-code self-test on macOS; authoritative privacy
+    # verdict is `public-scan / result` in `.github/workflows/public-scan.yml`.
+    name: macos-public-scan (non-authoritative head self-test)
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run deterministic public-release scan on macOS (non-authoritative)
+        run: python3 -I -B tests/check_public_release.py
+
+      - name: Run public-scan unit and hardening tests on macOS
+        run: |
+          set -euo pipefail
+          set +e
+          out=$(python3 -B -m unittest discover -s tests -p 'test_public_*.py' -v 2>&1)
+          status=$?
+          set -e
+          printf '%s\n' "$out"
+          test "$status" -eq 0
+          printf '%s\n' "$out" | grep -Eq '^Ran [1-9][0-9]* tests? in '

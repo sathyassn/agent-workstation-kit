@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import argparse
+import fnmatch
 import json
 import os
 import re
@@ -527,7 +529,7 @@ def workflow_action_pin_issues(root: Path) -> list[str]:
     return issues
 
 
-def scan_repository_files(root: Path) -> list[str]:
+def scan_repository_files(root: Path, *, include_privacy: bool = True) -> list[str]:
     """Scan Git-listed repository files for forbidden files, secrets, paths, links and markers."""
     files, list_errors = repo_files(root)
     failures: list[str] = list(list_errors)
@@ -545,10 +547,11 @@ def scan_repository_files(root: Path) -> list[str]:
             failures.append(f"cannot read repository file {path.relative_to(root)}: {exc.strerror or exc}")
             continue
         relative = path.relative_to(root).as_posix()
-        if unexpected_matches(SECRET_LIKE, content, relative):
-            failures.append(f"secret-like value in {path.relative_to(root)}")
-        if unexpected_matches(PERSONAL_PATH, content, relative):
-            failures.append(f"personal absolute path in {path.relative_to(root)}")
+        if include_privacy:
+            if unexpected_matches(SECRET_LIKE, content, relative):
+                failures.append(f"secret-like value in {path.relative_to(root)}")
+            if unexpected_matches(PERSONAL_PATH, content, relative):
+                failures.append(f"personal absolute path in {path.relative_to(root)}")
         non_neutral = non_neutral_hostname_examples(content)
         if non_neutral:
             failures.append(
@@ -587,8 +590,71 @@ def scan_repository_files(root: Path) -> list[str]:
     return failures
 
 
-def main() -> int:
-    failures: list[str] = scan_repository_files(ROOT)
+CODEOWNERS_REQUIRED_PATHS = (
+    "tests/check_public_release.py",
+    "tests/public_scan_modes.json",
+    "tests/public_scan_exemptions.json",
+    "tests/public_scan_binary_exceptions.json",
+    ".github/workflows/public-scan.yml",
+    ".github/workflows/ci.yml",
+    ".github/CODEOWNERS",
+)
+CODEOWNER_TOKEN = re.compile(r"^@[A-Za-z0-9](?:[A-Za-z0-9-]|/[A-Za-z0-9_-])*$")
+
+
+def _codeowners_match(pattern: str, rel_path: str) -> bool:
+    """Match a CODEOWNERS pattern against a repository-relative POSIX path."""
+    anchored = pattern.startswith("/")
+    clean = pattern.lstrip("/")
+    if not clean:
+        return False
+    if clean.endswith("/"):
+        prefix = clean
+        if anchored:
+            return rel_path.startswith(prefix)
+        return rel_path.startswith(prefix) or f"/{prefix}" in f"/{rel_path}"
+    if anchored or "/" in clean:
+        return fnmatch.fnmatchcase(rel_path, clean)
+    return fnmatch.fnmatchcase(Path(rel_path).name, clean) or fnmatch.fnmatchcase(rel_path, clean)
+
+
+def codeowners_issues(root: Path) -> list[str]:
+    """Verify .github/CODEOWNERS covers every scan, config, workflow, and CODEOWNERS path."""
+    codeowners = root / ".github/CODEOWNERS"
+    if not codeowners.is_file():
+        return ["missing .github/CODEOWNERS covering public-safety scan and workflow files"]
+    rules: list[tuple[str, list[str]]] = []
+    for raw_line in codeowners.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        pattern = parts[0]
+        owners = [token for token in parts[1:] if not token.startswith("#")]
+        rules.append((pattern, owners))
+    issues: list[str] = []
+    for required in CODEOWNERS_REQUIRED_PATHS:
+        matched_owners: list[str] | None = None
+        for pattern, owners in rules:
+            if _codeowners_match(pattern, required):
+                matched_owners = owners
+        if not matched_owners:
+            issues.append(f".github/CODEOWNERS does not assign an owner to {required}")
+            continue
+        if not any(CODEOWNER_TOKEN.fullmatch(owner) for owner in matched_owners):
+            issues.append(f".github/CODEOWNERS has no valid owner handle for {required}")
+    return issues
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--skip-privacy-checks",
+        action="store_true",
+        help="omit head-run secret/home-path scans (enforced by trusted-base public-scan.yml and secret-scan)",
+    )
+    args = parser.parse_args(argv)
+    failures: list[str] = scan_repository_files(ROOT, include_privacy=not args.skip_privacy_checks)
 
     required_executables = [
         *ROOT.glob("scripts/*.sh"),
@@ -653,14 +719,15 @@ def main() -> int:
 
     workflow = ROOT / ".github/workflows/ci.yml"
     workflow_text = workflow.read_text(encoding="utf-8") if workflow.is_file() else ""
-    if "run: make ci-check" not in workflow_text:
-        failures.append("hosted CI has no independent make ci-check gate")
+    if "run: make repo-ci-check" not in workflow_text:
+        failures.append("hosted CI has no independent make repo-ci-check gate")
     if "sathyassn" + "/codeflow" in workflow_text:
         failures.append("hosted CI depends on a private Codeflow release")
     if "./gitleaks git" not in workflow_text:
         failures.append("hosted secret scan does not use the supported Gitleaks git command")
 
     failures.extend(workflow_action_pin_issues(ROOT))
+    failures.extend(codeowners_issues(ROOT))
     failures.extend(agents_manual_issues(ROOT))
     failures.extend(fleetctl_run_apply_issues(ROOT))
 

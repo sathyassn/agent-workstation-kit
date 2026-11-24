@@ -429,25 +429,132 @@ def _protected_sync_head(branch: str) -> str:
     return git("rev-parse", "--verify", upstream, check=False).strip()
 
 
-def run_pre_push(stdin: TextIO, policy: Policy) -> None:
+def _peel_commit(oid: str, ref_label: str) -> str:
+    """Dereference a commit or annotated tag OID to its commit SHA, failing closed otherwise."""
+    peeled = git("rev-parse", "--verify", f"{oid}^{{commit}}", check=False).strip()
+    if peeled:
+        return peeled
+    obj_type = git("cat-file", "-t", oid, check=False).strip() or "unknown"
+    raise DisciplineError(
+        f"refusing to push non-commit object ({obj_type}) to {ref_label}"
+    )
+
+
+def _collect_tag_objects(oid: str, *, max_depth: int = 16) -> list[str]:
+    """Return every annotated tag object OID in a (possibly nested) tag chain.
+
+    Fails closed on cycles, malformed tag headers, or chains deeper than max_depth.
+    """
+    tags: list[str] = []
+    seen: set[str] = set()
+    current = oid
+    while True:
+        obj_type = git("cat-file", "-t", current, check=False).strip()
+        if obj_type != "tag":
+            break
+        if current in seen:
+            raise DisciplineError(f"cyclic annotated tag chain at {current}")
+        if len(tags) >= max_depth:
+            raise DisciplineError(
+                f"annotated tag chain exceeded maximum depth ({max_depth})"
+            )
+        seen.add(current)
+        tags.append(current)
+        raw = git("cat-file", "tag", current)
+        header = raw.split("\n\n", 1)[0]
+        target = ""
+        for line in header.splitlines():
+            if line.startswith("object "):
+                target = line.split(" ", 1)[1].strip()
+                break
+        if not target:
+            raise DisciplineError(f"malformed annotated tag object: {current}")
+        current = target
+    return tags
+
+
+def _destination_has_tracking_refs(
+    remote_name: str | None,
+    remote_location: str | None = None,
+) -> bool:
+    """Return True only when local refs/remotes/<remote_name>/ represents the push target.
+
+    If a remote has multiple fetch URLs, or remote.<name>.pushurl or the
+    destination URL passed to pre-push differs from the single remote.<name>.url
+    (or the fetch URL is unknown), local remote-tracking refs describe a
+    different repo, so we must NOT exclude them.
+    """
+    if not remote_name or "/" in remote_name or ":" in remote_name or "\\" in remote_name:
+        return False
+    fetch_urls = [
+        line.strip()
+        for line in git("config", "--get-all", f"remote.{remote_name}.url", check=False).splitlines()
+        if line.strip()
+    ]
+    if len(fetch_urls) != 1:
+        return False
+    fetch_url = fetch_urls[0]
+    push_urls = [
+        line.strip()
+        for line in git("config", "--get-all", f"remote.{remote_name}.pushurl", check=False).splitlines()
+        if line.strip()
+    ]
+    if push_urls and any(url != fetch_url for url in push_urls):
+        return False
+    if remote_location and remote_location.strip() != fetch_url:
+        return False
+    refs = git("for-each-ref", "--format=%(refname)", f"refs/remotes/{remote_name}/", check=False)
+    return bool(refs.strip())
+
+
+def _pushed_commits(
+    local_oid: str,
+    remote_oid: str,
+    *,
+    remote_name: str | None = None,
+    remote_location: str | None = None,
+    ref_label: str = "ref",
+) -> list[str]:
+    """Return every new commit being pushed to the destination remote."""
+    commit_oid = _peel_commit(local_oid, ref_label)
+    if not _is_zero_oid(remote_oid):
+        remote_commit = _peel_commit(remote_oid, ref_label)
+        raw = git("rev-list", "--reverse", f"{remote_commit}..{commit_oid}")
+    elif _destination_has_tracking_refs(remote_name, remote_location):
+        raw = git("rev-list", "--reverse", commit_oid, "--not", f"--remotes={remote_name}")
+    else:
+        raw = git("rev-list", "--reverse", commit_oid)
+    return [item for item in raw.splitlines() if item]
+
+
+def run_pre_push(
+    stdin: TextIO,
+    policy: Policy,
+    *,
+    remote_name: str | None = None,
+    remote_location: str | None = None,
+) -> None:
     """Validate ref updates from Git's pre-push protocol, then run the full gate."""
     updates = [line.split() for line in stdin if line.strip()]
+    non_delete_updates: list[tuple[str, str, str]] = []
     for fields in updates:
         if len(fields) != 4:
             raise DisciplineError("unexpected pre-push input")
         local_ref, local_oid, remote_ref, remote_oid = fields
-        if not remote_ref.startswith("refs/heads/"):
-            continue
-        branch = remote_ref.removeprefix("refs/heads/")
-        if branch in policy.protected_branches:
-            raise DisciplineError(
-                f"direct push to protected branch is blocked: {branch}"
-            )
-        validate_branch(branch, policy)
+        if remote_ref.startswith("refs/heads/"):
+            branch = remote_ref.removeprefix("refs/heads/")
+            if branch in policy.protected_branches:
+                raise DisciplineError(
+                    f"direct push to protected branch is blocked: {branch}"
+                )
+            validate_branch(branch, policy)
+            if _is_zero_oid(local_oid):
+                continue
+            if not _is_zero_oid(remote_oid) and not _is_ancestor(remote_oid, local_oid):
+                raise DisciplineError(f"force push is blocked: {branch}")
         if _is_zero_oid(local_oid):
             continue
-        if not _is_zero_oid(remote_oid) and not _is_ancestor(remote_oid, local_oid):
-            raise DisciplineError(f"force push is blocked: {branch}")
+        non_delete_updates.append((local_oid, remote_oid, remote_ref))
     if updates:
         gate_env = os.environ.copy()
         for inherited_git_key in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
@@ -466,6 +573,48 @@ def run_pre_push(stdin: TextIO, policy: Policy) -> None:
             ) from exc
         if result.returncode != 0:
             raise DisciplineError("pre-push repository gate failed")
+
+        scanner = ROOT / "tests/check_public_release.py"
+        if non_delete_updates and scanner.is_file():
+            commits: list[str] = []
+            seen_commits: set[str] = set()
+            tag_objects: list[str] = []
+            seen_tags: set[str] = set()
+            for local_oid, remote_oid, remote_ref in non_delete_updates:
+                for tag_oid in _collect_tag_objects(local_oid):
+                    if tag_oid not in seen_tags:
+                        seen_tags.add(tag_oid)
+                        tag_objects.append(tag_oid)
+                for sha in _pushed_commits(
+                    local_oid,
+                    remote_oid,
+                    remote_name=remote_name,
+                    remote_location=remote_location,
+                    ref_label=remote_ref,
+                ):
+                    if sha not in seen_commits:
+                        seen_commits.add(sha)
+                        commits.append(sha)
+            if commits or tag_objects:
+                cmd = [sys.executable, "-I", "-B", str(scanner)]
+                if commits:
+                    cmd.extend(["--commits", *commits])
+                if tag_objects:
+                    cmd.extend(["--tag-objects", *tag_objects])
+                try:
+                    scan_result = subprocess.run(
+                        cmd,
+                        cwd=ROOT,
+                        check=False,
+                        timeout=600,
+                        env=gate_env,
+                    )
+                except subprocess.TimeoutExpired as exc:
+                    raise DisciplineError(
+                        "pre-push commit-range privacy scan exceeded 10 minutes"
+                    ) from exc
+                if scan_result.returncode != 0:
+                    raise DisciplineError("pre-push commit-range privacy scan failed")
 
 
 def run_reference_transaction(stage: str, stdin: TextIO, policy: Policy) -> None:
@@ -522,8 +671,12 @@ def command_pre_merge(_args: argparse.Namespace, policy: Policy) -> None:
 
 
 def command_pre_push(args: argparse.Namespace, policy: Policy) -> None:
-    del args
-    run_pre_push(sys.stdin, policy)
+    run_pre_push(
+        sys.stdin,
+        policy,
+        remote_name=getattr(args, "remote_name", None),
+        remote_location=getattr(args, "remote_location", None),
+    )
 
 
 def command_reference(args: argparse.Namespace, policy: Policy) -> None:

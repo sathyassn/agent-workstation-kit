@@ -1,0 +1,11 @@
+# Changes to CI, the public-safety scan, its configuration, and CODEOWNERS
+# require code-owner review. Branch protection must require code-owner review
+# for this to take effect.
+/.github/CODEOWNERS @sathyassn
+/.github/workflows/public-scan.yml @sathyassn
+/.github/workflows/ci.yml @sathyassn
+/.github/ @sathyassn
+/tests/check_public_release.py @sathyassn
+/tests/public_scan_modes.json @sathyassn
+/tests/public_scan_exemptions.json @sathyassn
+/tests/public_scan_binary_exceptions.json @sathyassn

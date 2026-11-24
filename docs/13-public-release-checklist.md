@@ -79,6 +79,144 @@ run hosted CI -> protect main -> delete bootstrap branch
 This one-time bootstrap preserves the reviewed history and never pushes directly
 to the protected local branch. It is only valid for a new, empty repository.
 
+## Deterministic public-safety scan
+
+`tests/check_public_release.py` scans every tracked file and every tracked path
+for personal and identifying details without any secret or name list. It runs
+in the pre-push hook (`make ci-check`), in `make public-check`, and in CI on
+both Linux and macOS.
+
+### Detectors and exact allow lists
+
+Every detector defaults to `block` mode in `tests/public_scan_modes.json`:
+
+| Rule | Detects | Exact allow list (matched only after folding) |
+|---|---|---|
+| `email` | Email addresses | Exact domains `example.com`, `example.org`, `example.net`, `example.invalid` |
+| `phone` | International E.164, formatted phone numbers, and digits-only phone values under phone/mobile/tel/cell or `contact number` keys | Documented placeholder numbers (`+1-555-555-0100`, `+1-555-555-0101`, `+1-555-555-0199`, `+44 20 7946 0000`) |
+| `ipv4` | Private and public IPv4 addresses, plus partial private prefixes (RFC 1918, RFC 6598 CGNAT, RFC 3927 link-local) | Documentation ranges `192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`; loopback `127.0.0.1`, `127.0.1.1`; `0.0.0.0`, `255.255.255.255` |
+| `ipv6` | Private and public IPv6 addresses | Documentation range `2001:db8::/32`; loopback `::1`; unspecified `::` |
+| `mac-address` | Colon, hyphen, and dot-quad MAC addresses | RFC 7042 documentation range `00:00:5e:00:53:00` through `00:00:5e:00:53:ff`; null and broadcast |
+| `home-path` | `/Users/<name>`, `/home/<name>`, and Windows `Users\<name>` paths | Exact placeholder usernames (`alice`, `bob`, `agent`, `agent-01`, `admin`, `admin-01`, `operator`, `user`, `username`, `example`, `runner`, `ubuntu`, `dev`, `acme`, `lab`) |
+| `private-dns` | `*.ts.net`, `*.internal`, and `*.local` names | Exact placeholder hosts (`host-a.ts.net`, `host-a.internal`, `host-a.local`, `host-a.example.ts.net`, `example.ts.net`, `example.internal`, `example.local`, `localhost.local`) |
+| `cloud-id` | AWS ARNs/account IDs, GCP project/billing IDs, Azure subscription/tenant IDs, Cloudflare account IDs | Documented placeholder IDs (`123456789012`, `000000000000`, `111122223333`, `example-project`, `acme-example-project`, all-zero and all-one UUIDs) |
+| `chat-tracker-id` | Slack, Discord, Atlassian/Jira, and explicit chat/tracker user IDs | Documented placeholder IDs (`U00000000`, `U00EXAMPLE`, `000000000000000000`, `000000:00000000-0000-0000-0000-000000000000`) |
+| `secret` | Cloud access keys, GitHub/GitLab/Slack/Tailscale/Google tokens, private key headers | AWS documentation example access key ID |
+
+Before detection, inputs are decoded (UTF-8, UTF-16 with BOM or strictly
+validated printable UTF-16 text, JSON `\u` and `\/` escapes, URL `%XX` escapes)
+across original, every intermediate stage, and final decoded forms up to 4 levels
+deep, and folded (NFKD/NFKC, format and combining marks,
+Cyrillic/Greek/punctuation lookalikes, case, zero-padded octets, and glued
+prefixes). Accepted limits: bare digit runs with no phone context (no `+`,
+phone separators, or phone/mobile/tel/cell key) are out of scope to avoid false
+positives on timestamps and numeric IDs; harmless text nested deeper than 4 levels
+of escape encoding fails closed. Any file containing NUL bytes is refused
+as binary unless `tests/public_scan_binary_exceptions.json` names its exact path
+and SHA-256 content hash.
+
+Findings print only the file, line, and rule, never the matched text. If a file
+path itself triggers a detector, the entire path is printed as `<redacted-ID>`.
+Every blocking failure path fails closed (empty or failed file listing, a
+detector raising or skipped, decode errors, or exceeded file-size, entry-count,
+or finding caps).
+
+### Detector modes
+
+`tests/public_scan_modes.json` assigns every detector one of `block`, `warn`, or
+`off`. All detectors default to `block`. Any detector set to `warn` or `off` is
+printed on every run under `Non-default detector modes:`, so a disabled detector
+never produces a silent clean result.
+
+### Tracked digest-bound exemptions
+
+Legitimate synthetic fixtures that collide with a detector use tracked records
+in `tests/public_scan_exemptions.json` (never plaintext values):
+
+```json
+{
+  "schema_version": 1,
+  "exemptions": [
+    {
+      "path": "tests/example_fixture.py",
+      "rule": "ipv4",
+      "digest": "<64-lowercase-hex-sha256-of-folded-value>",
+      "reason": "synthetic fixture explanation",
+      "approved_by": "@owner",
+      "expires": "2027-06-01"
+    }
+  ]
+}
+```
+
+Compute a digest from stdin without putting the value on the command line:
+
+```bash
+printf '%s\n' '<value>' | python3 tests/check_public_release.py --exemption-digest ipv4
+```
+
+Every record requires all six fields (`path`, `rule`, `digest`, `reason`,
+`approved_by`, `expires` as `YYYY-MM-DD`). Any expired, undated, malformed, or
+incomplete record fails the scan. Every run lists all configured exemptions by
+path, rule, and 12-character digest prefix, marked `applied` or `unused`.
+Optional keyed-list exemptions (added separately for private repositories) use
+their keyed HMAC digest instead.
+
+Hash-bound binary exceptions live in `tests/public_scan_binary_exceptions.json`:
+
+```json
+{
+  "schema_version": 1,
+  "binary": [
+    {
+      "path": "docs/diagram.png",
+      "sha256": "<64-lowercase-hex-sha256-of-file-bytes>",
+      "reason": "reviewed documentation diagram"
+    }
+  ]
+}
+```
+
+### Trusted base-revision CI and code ownership
+
+- `.github/workflows/public-scan.yml` is the sole authoritative CI privacy
+  gate. It runs on `pull_request_target` (targeting any branch) and pushes to
+  `main` across both `ubuntu-24.04` and `macos-latest` with no secret. It checks
+  out the trusted default branch commit (`github.sha`) with full history for the
+  scanner, detectors, mode configuration, exemptions, and binary exceptions,
+  fetches the pull request head purely as git objects, and scans every commit in
+  `base..head` with `--range` (failing closed on incomplete history). Head code
+  never runs, and head edits to exemptions, modes, binary exceptions, or the
+  scanner do not take effect until reviewed and merged.
+- Both platform jobs (`scan-linux` and `scan-macos`) require exit 0 and the
+  positive completion marker `PUBLIC_SCAN_VERIFIED=1` before setting
+  `scan_verified=true`. The aggregator job publishes the exact GitHub check
+  context `public-scan / result` (via `name: public-scan / result`) and fails
+  closed unless both Linux and macOS succeeded and reported `scan_verified=true`.
+- Required jobs in `.github/workflows/ci.yml` (`repository-validation`,
+  `secret-scan`, `macos-host-lock`) run no head-controlled privacy or
+  public-release scan steps (`repository-validation` runs `make repo-ci-check`,
+  which runs only non-privacy unit tests via `unit-non-privacy-check` and
+  `check_repository.py --skip-privacy-checks`, omitting `public-draft-check` and
+  `test_public_*.py`). The separate `linux-public-scan` and `macos-public-scan`
+  jobs in `.github/workflows/ci.yml` execute pull-request head code
+  (`make public-check` and `test_public_*.py`) and are non-authoritative
+  self-tests only: no required privacy or identity verdict comes from
+  `.github/workflows/ci.yml`.
+- Require `public-scan / result` on `main`, next to the existing required
+  checks. Repository protection setup must fail closed if `public-scan / result`
+  is absent rather than silently skipping it. Enforcement of code-owner review
+  for `.github/CODEOWNERS` (covering the scanner, mode config, exemptions,
+  binary exceptions, scan workflows, and `.github/CODEOWNERS` itself) depends on
+  the repository protection setup in `TSK-040`.
+- Locally, the `pre-push` hook runs `make ci-check` (worktree check) and scans
+  every new commit (tree and commit message) and annotated tag message pushed to
+  the destination remote across all pushed refs (branches and tags alike,
+  excluding commits via `--remotes=<remote>` only when the destination push URL
+  matches `remote.<name>.url`) through `tests/check_public_release.py --commits`
+  and `--tag-objects`. In CI, `--range` scans both the trees and commit messages
+  of every commit in `base..head`.
+
 ## Private fleet repositories
 
 - [ ] Create personal and/or organization fleet repositories as private.

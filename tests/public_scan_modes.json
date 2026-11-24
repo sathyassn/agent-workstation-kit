@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "modes": {
+    "chat-tracker-id": "block",
+    "cloud-id": "block",
+    "email": "block",
+    "home-path": "block",
+    "ipv4": "block",
+    "ipv6": "block",
+    "mac-address": "block",
+    "phone": "block",
+    "private-dns": "block",
+    "secret": "block"
+  }
+}
