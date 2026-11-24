@@ -1,0 +1,11 @@
+id = "TSK-049"
+uid = "5677b291-7f9a-4caf-88d4-f28b10a133bb"
+kind = "TSK"
+title = "Guided manual steps with sanitised screenshots"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-24T00:41:36Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
