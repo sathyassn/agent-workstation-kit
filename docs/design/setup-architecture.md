@@ -1417,17 +1417,23 @@ hours, while a guard that watched load and available memory stayed green.
 - **Learnings batch 4 (2026-11-23).**
   - Measured reserve: count non-reclaimable use only (anonymous plus
     kernel memory, never file cache), take the p95 rather than the peak,
-    multiply by 1.5, and keep the role default as floor and ceiling guard;
-    `plan` shows both numbers (TSK-045).
+    multiply by 1.5; the fixed part is max(role default, that value) unless
+    set explicitly, the role default when no baseline exists, and on macOS
+    the same rule over the approximate measure, labelled approximate; `plan`
+    shows both numbers (TSK-045).
   - At the limit, slow before killing: MemoryHigh is the working limit,
     MemoryLow protects the desktop and the agent manager, heavy jobs run in
     their own job scopes, systemd-oomd targets job scopes first, and every
-    kill is logged and surfaced with the resume command (TSK-045).
+    kill (and on macOS every stop at critical pressure) is logged and
+    surfaced with the resume command; a pressure-based freeze is a setting,
+    off by default (TSK-045).
   - Everything agents start stays inside the ceiling: the capped runner,
     rootless Docker and Podman, and leak-prone desktop helpers under their
     own per-service ceilings (TSK-044); a login-shell hook and launchers
     put agent work in the cap whatever terminal or app starts it
-    (`agent-placement`, TSK-046).
+    (`agent-placement`, TSK-046); the hook is on by default only for a
+    dedicated agent account, and offered in `plan` in the single-account
+    topology, so a person's own shells stay outside unless selected.
 - **The session side** is split at one boundary. The kit's resources unit
   ships the machine-wide controls and a small runner library and wrapper:
   the memory-pressure signal and the admission and stop policy (on macOS,
@@ -1808,7 +1814,9 @@ What revert cannot undo, listed in every revert preview:
     history on macOS;
   - from learnings batch 4 (EPC-022 AC-11 and AC-12, TSK-047): runaway
     processes, more than one desktop, audio stack or keyring daemon per
-    user, keyring health, slow DNS (recognising the Codex #48766 message),
+    user, keyring health, slow DNS (a warning at one second; the Codex
+    managed proxy fails lookups over two seconds as private addresses,
+    openai/codex#48766, diagnosed only with timing evidence),
     and the read-only `reboot-plan`;
   - the earlier doctor items.
 
