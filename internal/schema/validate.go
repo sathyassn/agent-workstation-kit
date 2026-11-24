@@ -33,6 +33,8 @@ const (
 	msgHostnameNoURL          = "must be a hostname without a URL scheme/path"
 	msgSecretRejected         = "must not contain a credential or secret"
 	msgUnknownKey             = "unknown key"
+	msgUnknownTopLevelKey     = "unknown top-level key"
+	msgMustBeTOMLTable        = "must be a TOML table"
 	msgApprovedPkgList        = "must be a list of approved package names (no options, URLs or third-party taps)"
 	msgDuplicatePkg           = "duplicate package selections"
 	msgMiseVersion            = "select an explicit reviewed version with its binary digest"
@@ -122,7 +124,9 @@ var (
 	whitespaceCollapseR = regexp.MustCompile(`\s+`)
 	awsAccessKeyRe      = regexp.MustCompile(`^(?:AKIA|ASIA)[A-Z0-9]{16}$`)
 	googleAPIKeyRe      = regexp.MustCompile(`^AIza[0-9A-Za-z_-]{35}$`)
-	slackTokenRe        = regexp.MustCompile(`^xox[baprs]-`)
+	slackTokenRe        = regexp.MustCompile(`^xox[baprs]-[0-9A-Za-z-]{10,}$`)
+	npmTokenRe          = regexp.MustCompile(`^npm_[A-Za-z0-9]{36}$`)
+	tskeyTokenRe        = regexp.MustCompile(`^tskey-(?:auth|api|client)-[A-Za-z0-9-]{10,}$`)
 	pemPrivateKeyRe     = regexp.MustCompile(`^-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----`)
 )
 
@@ -256,9 +260,30 @@ func ValidateRaw(profile map[string]any, ready bool) []Issue {
 	issues = append(issues, validateSecurity(security)...)
 	issues = append(issues, validateResources(resources)...)
 	issues = append(issues, validateBackupAndMaintenance(backup, maintenance)...)
+	issues = append(issues, validateRawSecrets(profile)...)
 
 	if ready {
 		issues = append(issues, validateReady(profile, readyKeys)...)
+	}
+	return issues
+}
+
+func validateRawSecrets(profile map[string]any) []Issue {
+	flat, err := flattenTOMLMap(profile)
+	if err != nil {
+		return nil
+	}
+	var issues []Issue
+	for _, fk := range sortedFlatKeys(flat) {
+		k := Key(fk)
+		if IsPrincipalKey(k) {
+			// Principal keys are already checked via validPrincipal /
+			// validNamedHumanPrincipal using LooksLikeSecret.
+			continue
+		}
+		if containsSecretValue(flat[fk]) {
+			issues = append(issues, Issue{Path: fk, Message: msgSecretRejected})
+		}
 	}
 	return issues
 }
@@ -279,7 +304,7 @@ func validateStructure(
 	}
 	slices.Sort(extraTop)
 	for _, k := range extraTop {
-		issues = append(issues, Issue{Path: k, Message: "unknown top-level key"})
+		issues = append(issues, Issue{Path: k, Message: msgUnknownTopLevelKey})
 	}
 
 	if v, ok := profile[KeySchemaVersion.String()].(int64); !ok || v != SchemaVersion {
@@ -299,7 +324,7 @@ func validateStructure(
 		secName := sec.String()
 		tbl := asTable(profile[secName])
 		if tbl == nil {
-			issues = append(issues, Issue{Path: secName, Message: "must be a TOML table"})
+			issues = append(issues, Issue{Path: secName, Message: msgMustBeTOMLTable})
 			continue
 		}
 		allowed := sectionAllowed[sec]
@@ -1049,9 +1074,9 @@ func looksLikeCredential(value string) bool {
 
 // LooksLikeSecret reports whether value carries a recognised credential or
 // token shape that must never be stored in config or echoed back. Patterns
-// match real token formats (case-sensitive for AWS/Google/Slack/PEM/npm/tskey
-// tokens) so ordinary labels such as Asia/Tokyo or Asia-Office are never
-// misclassified.
+// match real token formats (case-sensitive for AWS/Google/Slack/npm/Tailscale/
+// PEM tokens) so ordinary labels such as Asia/Tokyo, Asia-Office, xoxb-dev,
+// npm_cli or tskey-docs are never misclassified.
 func LooksLikeSecret(value string) bool {
 	trimmed := strings.TrimSpace(value)
 	if looksLikeCredential(trimmed) {
@@ -1060,13 +1085,13 @@ func LooksLikeSecret(value string) bool {
 	if awsAccessKeyRe.MatchString(trimmed) ||
 		googleAPIKeyRe.MatchString(trimmed) ||
 		slackTokenRe.MatchString(trimmed) ||
+		npmTokenRe.MatchString(trimmed) ||
+		tskeyTokenRe.MatchString(trimmed) ||
 		pemPrivateKeyRe.MatchString(trimmed) {
 		return true
 	}
-	for _, prefix := range []string{"npm_", "pypi-", "tskey-"} {
-		if strings.HasPrefix(trimmed, prefix) {
-			return true
-		}
+	if strings.HasPrefix(trimmed, "pypi-") {
+		return true
 	}
 	return strings.HasPrefix(cases.Fold().String(trimmed), "bearer ")
 }
@@ -1737,7 +1762,7 @@ func validatePartialAccountsAndAuth(flat map[string]any) []Issue {
 
 func validPrincipal(raw any) bool {
 	s, ok := raw.(string)
-	return ok && principalRe.MatchString(s) && !looksLikeCredential(s)
+	return ok && principalRe.MatchString(s) && !LooksLikeSecret(s)
 }
 
 func validNamedHumanPrincipal(raw any) bool {
@@ -1745,7 +1770,7 @@ func validNamedHumanPrincipal(raw any) bool {
 		return true
 	}
 	s, ok := raw.(string)
-	if !ok || utf8.RuneCountInString(s) > maxEmailLen || looksLikeCredential(s) {
+	if !ok || utf8.RuneCountInString(s) > maxEmailLen || LooksLikeSecret(s) {
 		return false
 	}
 	return emailPrincipalRe.MatchString(s)

@@ -698,6 +698,43 @@ func CheckRawSafetyFloor(layer Layer, doc map[string]any) error {
 	return nil
 }
 
+// CheckRawFileLayer validates a raw file layer on its own before merging
+// higher layers (such as WSKIT_* environment overrides). It refuses
+// safety-floor violations, duplicate quoted/nested keys, unknown top-level
+// keys, type/format/secret errors, and cross-field conflicts among keys
+// present in doc, while deferring required-key presence checks to the merged
+// document.
+func CheckRawFileLayer(layer Layer, doc map[string]any) ([]Issue, error) {
+	if err := CheckRawSafetyFloor(layer, doc); err != nil {
+		return nil, err
+	}
+
+	topAllowed := make(map[string]bool)
+	for _, sec := range AllSections() {
+		topAllowed[sec.String()] = true
+	}
+	for _, fs := range FieldSpecs() {
+		if fs.Section == "" {
+			topAllowed[fs.Name] = true
+		}
+	}
+
+	var issues []Issue
+	for _, k := range sortedFlatKeys(doc) {
+		if !topAllowed[k] {
+			issues = append(issues, Issue{Path: k, Message: msgUnknownTopLevelKey})
+			continue
+		}
+		if Section(k).Valid() && asTable(doc[k]) == nil {
+			issues = append(issues, Issue{Path: k, Message: msgMustBeTOMLTable})
+		}
+	}
+	if len(issues) > 0 {
+		return issues, nil
+	}
+	return ValidatePartialRaw(doc), nil
+}
+
 // flattenTOMLMap flattens a decoded TOML document into dotted keys, keeping
 // string-map fields (like accounts.admin_assignments) as whole leaf values,
 // and refusing any duplicate between quoted dotted keys and nested tables.

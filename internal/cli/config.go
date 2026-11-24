@@ -27,6 +27,7 @@ const (
 
 	ruleSchemaValidation = "schema-validation"
 	configJSONVersion    = 1
+	kitModulePath        = "github.com/sathyassn/agent-workstation-kit"
 )
 
 type configFlags struct {
@@ -337,16 +338,19 @@ func newConfigValidateCommand(opts Options, shared *sharedFlags, cfgFlags *confi
 				if err != nil {
 					return NewRefusal(ruleSchemaValidation, err)
 				}
-				if err := schema.CheckRawSafetyFloor(schema.LayerMachine, raw); err != nil {
-					return mapSchemaError(err)
-				}
 				if len(envOverrides) > 0 {
-					if fileIssues := schema.ValidateRaw(raw, false); len(fileIssues) > 0 {
+					fileIssues, fileErr := schema.CheckRawFileLayer(schema.LayerMachine, raw)
+					if fileErr != nil {
+						return mapSchemaError(fileErr)
+					}
+					if len(fileIssues) > 0 {
 						return emitValidateResult(cmd, shared.json, target, ready, false, fileIssues)
 					}
 					for _, ov := range envOverrides {
 						schema.SetValueInMap(raw, ov.Key, ov.Value)
 					}
+				} else if err := schema.CheckRawSafetyFloor(schema.LayerMachine, raw); err != nil {
+					return mapSchemaError(err)
 				}
 				issues := schema.ValidateRaw(raw, ready)
 				return emitValidateResult(cmd, shared.json, target, ready, false, issues)
@@ -430,8 +434,13 @@ func resolveFleetExpectedVersion(explicit, runningVersion string) (string, error
 func findRepoVersionFile(startDir string) (string, bool) {
 	dir := filepath.Clean(startDir)
 	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			data, readErr := os.ReadFile(filepath.Join(dir, "VERSION")) //nolint:gosec // walking ancestors for repo VERSION file
+		modPath := filepath.Join(dir, "go.mod")
+		modBytes, err := os.ReadFile(modPath) //nolint:gosec // walking ancestors for this kit's go.mod
+		if err == nil {
+			if !isKitGoMod(modBytes) {
+				return "", false
+			}
+			data, readErr := os.ReadFile(filepath.Join(dir, "VERSION")) //nolint:gosec // walking ancestors for this kit's VERSION file
 			if readErr == nil {
 				if v := strings.TrimSpace(string(data)); v != "" {
 					return v, true
@@ -445,6 +454,20 @@ func findRepoVersionFile(startDir string) (string, bool) {
 		}
 		dir = parent
 	}
+}
+
+func isKitGoMod(data []byte) bool {
+	for _, line := range strings.Split(string(data), "\n") {
+		if idx := strings.Index(line, "//"); idx >= 0 {
+			line = line[:idx]
+		}
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		return len(fields) == 2 && fields[0] == "module" && fields[1] == kitModulePath
+	}
+	return false
 }
 
 func resolveConfigLayers(opts Options, shared *sharedFlags, cfgFlags *configFlags) (*schema.ResolvedConfig, error) {

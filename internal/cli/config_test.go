@@ -524,11 +524,11 @@ func TestConfigSetRejectsAllTokenFamiliesAndAgentInHumans(t *testing.T) {
 		name  string
 		value string
 	}{
-		{name: "slack xoxb", value: "xoxb-" + "example"},
+		{name: "slack xoxb", value: "xoxb-" + strings.Repeat("0", 12)},
 		{name: "aws AKIA", value: "AKIA" + strings.Repeat("A", 16)},
 		{name: "aws ASIA", value: "ASIA" + strings.Repeat("B", 16)},
-		{name: "npm token", value: "npm_" + "example"},
-		{name: "tailscale tskey", value: "tskey-" + "example"},
+		{name: "npm token", value: "npm_" + strings.Repeat("a", 36)},
+		{name: "tailscale tskey", value: "tskey-auth-" + strings.Repeat("a", 12)},
 		{name: "github ghp", value: "ghp_" + "example"},
 		{name: "google AIza", value: "AIza" + strings.Repeat("C", 35)},
 	}
@@ -686,7 +686,7 @@ func TestConfigValidateFleetDevBuildVersionFallback(t *testing.T) {
 
 	t.Run("dev build reads repository VERSION file", func(t *testing.T) {
 		checkout := t.TempDir()
-		if err := os.WriteFile(filepath.Join(checkout, "go.mod"), []byte("module example.invalid/test\n"), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(checkout, "go.mod"), []byte("module github.com/sathyassn/agent-workstation-kit\n"), 0o600); err != nil {
 			t.Fatalf("write go.mod: %v", err)
 		}
 		if err := os.WriteFile(filepath.Join(checkout, "VERSION"), []byte("0.2.0-rc.7\n"), 0o600); err != nil {
@@ -714,6 +714,27 @@ func TestConfigValidateFleetDevBuildVersionFallback(t *testing.T) {
 		}
 	})
 
+	t.Run("dev build ignores unrelated go.mod VERSION file", func(t *testing.T) {
+		unrelated := t.TempDir()
+		if err := os.WriteFile(filepath.Join(unrelated, "go.mod"), []byte("module example.invalid/unrelated\n"), 0o600); err != nil {
+			t.Fatalf("write unrelated go.mod: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(unrelated, "VERSION"), []byte("0.2.0-rc.7\n"), 0o600); err != nil {
+			t.Fatalf("write unrelated VERSION: %v", err)
+		}
+		t.Chdir(unrelated)
+
+		fleet := makeFleet(t, "0.2.0-rc.7")
+		r := runDev(t, "config", "validate", "--fleet", fleet)
+		if ExitCodeFor(r.err) != contract.ExitRefused {
+			t.Fatalf("dev build trusted unrelated go.mod VERSION: exit=%d stdout=%q stderr=%q",
+				ExitCodeFor(r.err), r.stdout, r.stderr)
+		}
+		if !strings.Contains(r.stderr, "--expected-version") {
+			t.Errorf("unrelated go.mod stderr = %q, want --expected-version guidance", r.stderr)
+		}
+	})
+
 	t.Run("dev build without VERSION requires --expected-version", func(t *testing.T) {
 		isolated := t.TempDir()
 		t.Chdir(isolated)
@@ -732,4 +753,107 @@ func TestConfigValidateFleetDevBuildVersionFallback(t *testing.T) {
 			t.Fatalf("dev build with explicit --expected-version failed: err=%v stderr=%q", rExplicit.err, rExplicit.stderr)
 		}
 	})
+}
+
+// TestExistingProfileWithSlackTokenFailsValidateAndUnrelatedSet covers S1: a
+// real-shaped token already stored in a principal key of an existing profile
+// must fail config validate AND block an unrelated config set write.
+func TestExistingProfileWithSlackTokenFailsValidateAndUnrelatedSet(t *testing.T) {
+	t.Parallel()
+
+	readyBytes, err := os.ReadFile(filepath.Join("..", "..", "testdata", "profiles", "valid", "ready", "work-linux-ready.toml")) //nolint:gosec // repo fixture
+	if err != nil {
+		t.Fatalf("read ready fixture: %v", err)
+	}
+	slackToken := "xoxb-" + strings.Repeat("0", 12)
+	poisoned := strings.Replace(string(readyBytes), `github_principal = "acme-agent-dev"`, `github_principal = "`+slackToken+`"`, 1)
+	profilePath := filepath.Join(t.TempDir(), "poisoned.toml")
+	if err := os.WriteFile(profilePath, []byte(poisoned), 0o600); err != nil { //nolint:gosec // test temp file
+		t.Fatalf("write poisoned.toml: %v", err)
+	}
+
+	rVal := execute(t, "config", "validate", profilePath, "--ready")
+	if ExitCodeFor(rVal.err) != contract.ExitRefused {
+		t.Fatalf("config validate accepted existing profile with xoxb token: exit=%d stdout=%q stderr=%q",
+			ExitCodeFor(rVal.err), rVal.stdout, rVal.stderr)
+	}
+
+	rSet := execute(t, "config", "set", "backup.retention_days", "45", "--config", profilePath, "--apply")
+	if ExitCodeFor(rSet.err) != contract.ExitRefused {
+		t.Fatalf("unrelated config set succeeded on profile with xoxb token: exit=%d stdout=%q stderr=%q",
+			ExitCodeFor(rSet.err), rSet.stdout, rSet.stderr)
+	}
+	after, err := os.ReadFile(profilePath) //nolint:gosec // test temp file
+	if err != nil {
+		t.Fatalf("read poisoned.toml: %v", err)
+	}
+	if string(after) != poisoned {
+		t.Fatal("unrelated config set modified poisoned.toml despite rejected token")
+	}
+}
+
+// TestConfigValidateEnvSuppliesMissingRequiredKey covers S3: a machine profile
+// omitting a required key supplied via WSKIT_* passes config validate, while a
+// file-layer type error, safety-floor violation, or quoted duplicate still
+// fails even when overridden by env.
+func TestConfigValidateEnvSuppliesMissingRequiredKey(t *testing.T) {
+	t.Parallel()
+
+	readyBytes, err := os.ReadFile(filepath.Join("..", "..", "testdata", "profiles", "valid", "ready", "work-linux-ready.toml")) //nolint:gosec // repo fixture
+	if err != nil {
+		t.Fatalf("read ready fixture: %v", err)
+	}
+	readySrc := string(readyBytes)
+
+	t.Run("env supplies missing required backup.retention_days", func(t *testing.T) {
+		t.Parallel()
+		noRetention := strings.Replace(readySrc, "retention_days = 30\n", "", 1)
+		p := filepath.Join(t.TempDir(), "no-retention.toml")
+		if err := os.WriteFile(p, []byte(noRetention), 0o600); err != nil { //nolint:gosec // test temp file
+			t.Fatalf("write no-retention.toml: %v", err)
+		}
+		env := map[string]string{
+			schema.EnvVarForKey(schema.KeyBackupRetentionDays): "30",
+		}
+		r := executeWithEnv(t, env, "config", "validate", p, "--ready")
+		if r.err != nil {
+			t.Fatalf("expected PASS when WSKIT_BACKUP_RETENTION_DAYS supplies missing key, got err=%v stderr=%q",
+				r.err, r.stderr)
+		}
+	})
+
+	t.Run("env cannot hide file-layer type error", func(t *testing.T) {
+		t.Parallel()
+		badPort := strings.Replace(readySrc, "nomachine_port = 4000", `nomachine_port = "4000"`, 1)
+		p := filepath.Join(t.TempDir(), "bad-port.toml")
+		if err := os.WriteFile(p, []byte(badPort), 0o600); err != nil { //nolint:gosec // test temp file
+			t.Fatalf("write bad-port.toml: %v", err)
+		}
+		env := map[string]string{
+			schema.EnvVarForKey(schema.KeyRemoteNomachinePort): "4000",
+		}
+		r := executeWithEnv(t, env, "config", "validate", p, "--ready")
+		if ExitCodeFor(r.err) != contract.ExitRefused {
+			t.Fatalf("expected exit 2 refusing file-layer type error despite env override, got exit=%d stdout=%q stderr=%q",
+				ExitCodeFor(r.err), r.stdout, r.stderr)
+		}
+	})
+}
+
+// TestConfigSetAcceptsBenignTokenLookalikes covers S2 through config set:
+// non-token labels like xoxb-dev, npm_cli and tskey-docs are accepted and
+// never redacted.
+func TestConfigSetAcceptsBenignTokenLookalikes(t *testing.T) {
+	t.Parallel()
+
+	userFile := filepath.Join(t.TempDir(), "user.toml")
+	for _, label := range []string{"xoxb-dev", "npm_cli", "tskey-docs"} {
+		r := execute(t, "config", "set", "source_control.github_principal", label, "--user-config", userFile, "--apply")
+		if r.err != nil {
+			t.Fatalf("config set github_principal=%s failed: err=%v stderr=%q", label, r.err, r.stderr)
+		}
+		if !strings.Contains(r.stdout, label) || strings.Contains(r.stdout, schema.RedactText) {
+			t.Fatalf("config set github_principal=%s output unexpectedly redacted: %q", label, r.stdout)
+		}
+	}
 }

@@ -468,6 +468,9 @@ func TestLooksLikeSecretShapes(t *testing.T) {
 		"akia-team",
 		"aiza-label",
 		"acme-agent-dev",
+		"xoxb-dev",
+		"npm_cli",
+		"tskey-docs",
 	}
 	for _, val := range benign {
 		if schema.LooksLikeSecret(val) {
@@ -487,13 +490,15 @@ func TestLooksLikeSecretShapes(t *testing.T) {
 		{name: "google AIza", val: "AIza" + strings.Repeat("C", 35)},
 		{name: "github ghp", val: "ghp_" + "example"},
 		{name: "github pat", val: "github_pat_" + "example"},
-		{name: "slack xoxb", val: "xoxb-" + "example"},
-		{name: "slack xoxp", val: "xoxp-" + "example"},
-		{name: "slack xoxa", val: "xoxa-" + "example"},
-		{name: "slack xoxr", val: "xoxr-" + "example"},
-		{name: "slack xoxs", val: "xoxs-" + "example"},
-		{name: "npm token", val: "npm_" + "example"},
-		{name: "tailscale tskey", val: "tskey-" + "example"},
+		{name: "slack xoxb", val: "xoxb-" + strings.Repeat("0", 12)},
+		{name: "slack xoxp", val: "xoxp-" + strings.Repeat("0", 12)},
+		{name: "slack xoxa", val: "xoxa-" + strings.Repeat("0", 12)},
+		{name: "slack xoxr", val: "xoxr-" + strings.Repeat("0", 12)},
+		{name: "slack xoxs", val: "xoxs-" + strings.Repeat("0", 12)},
+		{name: "npm token", val: "npm_" + strings.Repeat("a", 36)},
+		{name: "tailscale auth", val: "tskey-auth-" + strings.Repeat("a", 12)},
+		{name: "tailscale api", val: "tskey-api-" + strings.Repeat("a", 12)},
+		{name: "tailscale client", val: "tskey-client-" + strings.Repeat("a", 12)},
 		{name: "openai sk", val: "sk-" + "example"},
 		{name: "pem private key", val: "-----BEGIN " + "RSA PRIVATE KEY-----"},
 	}
