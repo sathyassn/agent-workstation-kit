@@ -16,18 +16,45 @@ var ErrPathLink = errors.New("path holds a link or a non-folder")
 
 const walkDirFlags = unix.O_RDONLY | unix.O_DIRECTORY | unix.O_NOFOLLOW | unix.O_CLOEXEC
 
+// FileID uniquely identifies a filesystem object by device and inode number.
+type FileID struct {
+	Dev uint64
+	Ino uint64
+}
+
+// FileIDFromStat returns the device and inode identity from a raw stat result.
+func FileIDFromStat(st unix.Stat_t) FileID {
+	// #nosec G115 -- device ID is bit-cast to uint64 for identity equality only.
+	return FileID{Dev: uint64(st.Dev), Ino: st.Ino}
+}
+
 // OpenDirNoFollow opens the folder at the clean absolute path abs by walking
 // from "/" one component at a time with O_NOFOLLOW|O_DIRECTORY. A link
 // anywhere on the path, or a folder swapped for a link, fails the walk
 // instead of redirecting it. Callers then act on names relative to the
 // returned folder.
 func OpenDirNoFollow(abs string) (*os.File, error) {
+	return OpenDirNoFollowFunc(abs, nil)
+}
+
+// OpenDirNoFollowFunc walks abs like OpenDirNoFollow and, when check is
+// non-nil, calls check(fd, soFar) on "/" and on each walked folder descriptor
+// before stepping into the next component. Returning a non-nil error closes
+// the descriptor and aborts the walk immediately.
+func OpenDirNoFollowFunc(abs string, check func(fd int, soFar string) error) (*os.File, error) {
 	if !filepath.IsAbs(abs) || filepath.Clean(abs) != abs {
 		return nil, fmt.Errorf("%w: %q is not a clean absolute path", ErrPathLink, abs)
 	}
 	fd, err := unix.Open("/", walkDirFlags, 0)
 	if err != nil {
 		return nil, fmt.Errorf("open /: %w", err)
+	}
+	soFar := "/"
+	if check != nil {
+		if err := check(fd, soFar); err != nil {
+			_ = unix.Close(fd)
+			return nil, err
+		}
 	}
 	for _, comp := range strings.Split(strings.TrimPrefix(abs, "/"), "/") {
 		if comp == "" {
@@ -42,6 +69,13 @@ func OpenDirNoFollow(abs string) (*os.File, error) {
 			return nil, fmt.Errorf("open %q at %q: %w", abs, comp, err)
 		}
 		fd = next
+		soFar = filepath.Join(soFar, comp)
+		if check != nil {
+			if err := check(fd, soFar); err != nil {
+				_ = unix.Close(fd)
+				return nil, err
+			}
+		}
 	}
 	return os.NewFile(uintptr(fd), abs), nil
 }

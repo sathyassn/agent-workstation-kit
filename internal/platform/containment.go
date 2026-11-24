@@ -93,8 +93,12 @@ type LaunchSpec struct {
 	// signal one; the engine also runs it with a context that cancel and
 	// grace cannot end.
 	PackageTransaction bool
-	// Output receives the tool's output. It may be nil.
+	// Output receives the tool's stdout (and stderr when Stderr is nil). It
+	// may be nil.
 	Output io.Writer
+	// Stderr, when non-nil, receives the tool's stderr separately from Output
+	// so callers can parse stdout without stderr contamination.
+	Stderr io.Writer
 }
 
 // LaunchAck names the supervisor process an adapter started for a launch.

@@ -210,6 +210,29 @@ func (s *Sink) Deliver(e contract.Event) {
 	if s.closed {
 		return
 	}
+	s.deliverLocked(e)
+}
+
+// DeliverSequenced calls assign under s.mu so e.Seq is stamped atomically with
+// registering e in the sink's ordering state, then releases s.mu before any
+// blocking run-log write. Progress events therefore never block behind a slow
+// non-progress log write while keeping strict sequence order in both log and UI.
+func (s *Sink) DeliverSequenced(e contract.Event, assign func(*contract.Event)) contract.Event {
+	e = cloneEvent(e)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if assign != nil {
+		assign(&e)
+	}
+	if s.closed {
+		return e
+	}
+	ret := cloneEvent(e)
+	s.deliverLocked(e)
+	return ret
+}
+
+func (s *Sink) deliverLocked(e contract.Event) {
 	if isProgress(e.Kind) {
 		s.waiting = addProgress(s.waiting, e, s.lastNonProgress, len(s.waiting) >= s.maxWait)
 		s.showProgressLocked(e)

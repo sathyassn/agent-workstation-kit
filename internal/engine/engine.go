@@ -3,13 +3,21 @@ package engine
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
+	"sync"
 	"time"
+
+	"github.com/gowebpki/jcs"
+	"golang.org/x/sys/unix"
 
 	"github.com/sathyassn/agent-workstation-kit/internal/contract"
 	"github.com/sathyassn/agent-workstation-kit/internal/platform"
@@ -31,14 +39,36 @@ type ProcessInspector interface {
 	Alive(ctx context.Context, id platform.ProcessIdentity) (bool, error)
 }
 
+// RestoreValidator checks host configuration after a restore replays the
+// manifest (for example sshd -t, visudo -c or ufw status). A non-nil error
+// fails the restore closed with exit 4, leaving the intent unfinished.
+type RestoreValidator interface {
+	Name() string
+	Validate(ctx context.Context) error
+}
+
+type validatorFunc struct {
+	name string
+	fn   func(ctx context.Context) error
+}
+
+func (v validatorFunc) Name() string                       { return v.name }
+func (v validatorFunc) Validate(ctx context.Context) error { return v.fn(ctx) }
+
+// NewValidator adapts a named function into a RestoreValidator.
+func NewValidator(name string, fn func(ctx context.Context) error) RestoreValidator {
+	return validatorFunc{name: name, fn: fn}
+}
+
 // Defaults for the bounds in Options.
 const (
-	DefaultGrace       = 10 * time.Second
-	DefaultKillWait    = 10 * time.Second
-	DefaultClaimTTL    = 5 * time.Minute
-	DefaultClaimRenew  = time.Minute
-	DefaultLockPoll    = 50 * time.Millisecond
-	DefaultCallTimeout = 10 * time.Second
+	DefaultGrace               = 10 * time.Second
+	DefaultKillWait            = 10 * time.Second
+	DefaultClaimTTL            = 5 * time.Minute
+	DefaultClaimRenew          = time.Minute
+	DefaultLockPoll            = 50 * time.Millisecond
+	DefaultCallTimeout         = 10 * time.Second
+	DefaultStateRestoreTimeout = 30 * time.Second
 )
 
 // Options configure an Engine. JournalDir, HostLock, Containment and
@@ -56,6 +86,13 @@ type Options struct {
 	Scope       contract.Scope
 	Containment Containment
 	Inspector   ProcessInspector
+	// Providers maps each StateProviderName to its StateProvider for
+	// pre-apply snapshots, declarative operations (Package, Service,
+	// UserGroup) and cross-process recovery restores.
+	Providers map[contract.StateProviderName]contract.StateProvider
+	// Validators run after a restore replays and verifies the manifest
+	// (ADR 0005 section 5). Any failure leaves the intent unfinished (exit 4).
+	Validators []RestoreValidator
 	// Sink receives events. If it also has an Err method that reports a
 	// failed write, the step fails closed on that error.
 	Sink contract.Sink
@@ -78,9 +115,31 @@ type Options struct {
 	LockPoll time.Duration
 	// CallTimeout bounds each supervisor inspection and signal.
 	CallTimeout time.Duration
+	// StateRestoreTimeout bounds the provider Restore call SetState runs
+	// after a failed Write, under an uncancelled context.
+	StateRestoreTimeout time.Duration
 	// traceFn, set only by tests in this package, sees every folder entry
 	// and folder fsync for the durability model.
 	traceFn func(op, dir, name string)
+	// metaOps, set only by tests in this package, overrides OS metadata
+	// capture and application (for example to simulate ENOTSUP).
+	metaOps metadataOps
+	// extraPackageDBPaths, set only by tests in this package, adds real
+	// directories whose (dev, ino) identities are treated as package-DB roots.
+	extraPackageDBPaths []string
+	// maxPackageDBDirs, set only by tests in this package, overrides the
+	// startup package-DB walk cap (default maxPackageDBWalkDirs).
+	maxPackageDBDirs int
+	// openPackageDBDir, set only by tests in this package, overrides
+	// platform.OpenDirNoFollow during the startup package-DB walk (for example
+	// to inject EMFILE).
+	openPackageDBDir func(string) (*os.File, error)
+	// isRoot, set only by tests in this package, overrides the effective-root
+	// check (default os.Geteuid() == 0) during startup package-DB scanning.
+	isRoot func() bool
+	// afterLstat, set only by tests in this package, runs between lstat and
+	// open in backupOne to exercise the TOCTOU window deterministically.
+	afterLstat func(path string)
 	// Fault is called at every Point. Nil uses the build's default, which
 	// is no hook unless the binary is built with the faultinject tag.
 	Fault FaultFunc
@@ -88,7 +147,58 @@ type Options struct {
 
 // Engine runs unit transactions against one journal.
 type Engine struct {
-	opts Options
+	opts     Options
+	provMu   sync.RWMutex
+	pkgDBIDs map[platform.FileID]string
+	emitMu   sync.Mutex
+	seqMu    sync.Mutex
+	seq      uint64
+}
+
+// sequencedSink is an optional interface implemented by events.Sink so Seq
+// assignment happens atomically with registering the event in the sink's
+// ordering state before releasing the sink lock for any blocking log write.
+type sequencedSink interface {
+	DeliverSequenced(ev contract.Event, assign func(*contract.Event)) contract.Event
+}
+
+// deliver assigns the next sequence number and delivers ev to e.opts.Sink.
+// When e.opts.Sink implements sequencedSink (such as events.Sink), non-progress
+// deliveries are serialised under emitMu while progress events enter
+// DeliverSequenced without waiting on emitMu so a slow non-progress log write
+// never stalls progress delivery (SPC-001 "Events"). For plain contract.Sink
+// implementations without DeliverSequenced, every event (including progress)
+// assigns Seq and calls Deliver under emitMu so concurrent emitters always
+// arrive in strictly increasing Seq order.
+func (e *Engine) deliver(ev contract.Event) contract.Event {
+	assign := func(target *contract.Event) {
+		e.seqMu.Lock()
+		e.seq++
+		target.Seq = e.seq
+		e.seqMu.Unlock()
+	}
+	if ss, ok := e.opts.Sink.(sequencedSink); ok {
+		progress := ev.Kind == contract.EventProgress || ev.Kind == contract.EventCoalesced
+		if !progress {
+			e.emitMu.Lock()
+			defer e.emitMu.Unlock()
+		}
+		return ss.DeliverSequenced(ev, assign)
+	}
+	e.emitMu.Lock()
+	defer e.emitMu.Unlock()
+	assign(&ev)
+	if e.opts.Sink != nil {
+		e.opts.Sink.Deliver(ev)
+	}
+	return ev
+}
+
+func (e *Engine) lookupProvider(name contract.StateProviderName) (contract.StateProvider, bool) {
+	e.provMu.RLock()
+	defer e.provMu.RUnlock()
+	p, ok := e.opts.Providers[name]
+	return p, ok
 }
 
 // New checks opts and fills in defaults.
@@ -104,6 +214,26 @@ func New(opts Options) (*Engine, error) {
 		return nil, fmt.Errorf("%w: Containment and Inspector are required", ErrInvalidOptions)
 	case !opts.Scope.Valid():
 		return nil, fmt.Errorf("%w: scope %q", ErrInvalidOptions, opts.Scope)
+	}
+	if len(opts.Providers) > 0 {
+		copied := make(map[contract.StateProviderName]contract.StateProvider, len(opts.Providers))
+		for name, p := range opts.Providers {
+			if p == nil || name == "" || p.Name() != name {
+				return nil, fmt.Errorf("%w: invalid state provider entry %q", ErrInvalidOptions, name)
+			}
+			copied[name] = p
+		}
+		opts.Providers = copied
+	}
+	if len(opts.Validators) > 0 {
+		copied := make([]RestoreValidator, len(opts.Validators))
+		for i, v := range opts.Validators {
+			if v == nil || v.Name() == "" {
+				return nil, fmt.Errorf("%w: validator %d must be non-nil with a name", ErrInvalidOptions, i)
+			}
+			copied[i] = v
+		}
+		opts.Validators = copied
 	}
 	if err := checkExistingAncestors(opts.JournalDir); err != nil {
 		return nil, fmt.Errorf("journal folder: %w", err)
@@ -139,16 +269,44 @@ func New(opts Options) (*Engine, error) {
 	setDefault(&opts.ClaimRenew, DefaultClaimRenew)
 	setDefault(&opts.LockPoll, DefaultLockPoll)
 	setDefault(&opts.CallTimeout, DefaultCallTimeout)
+	setDefault(&opts.StateRestoreTimeout, DefaultStateRestoreTimeout)
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
 	if opts.LookupEnv == nil {
 		opts.LookupEnv = os.LookupEnv
 	}
+	if opts.metaOps == nil {
+		opts.metaOps = osMetadataOps{}
+	}
 	if opts.Fault == nil {
 		opts.Fault = defaultFault()
 	}
-	return &Engine{opts: opts}, nil
+	if opts.isRoot == nil {
+		opts.isRoot = func() bool { return os.Geteuid() == 0 }
+	}
+	var walkRoots, statOnlyRoots []string
+	if opts.Root == "" {
+		walkRoots = append(packageDBPrefixes(), opts.extraPackageDBPaths...)
+	} else {
+		for _, pref := range packageDBPrefixes() {
+			walkRoots = append(walkRoots, filepath.Join(opts.Root, pref))
+		}
+		walkRoots = append(walkRoots, opts.extraPackageDBPaths...)
+		statOnlyRoots = packageDBPrefixes()
+	}
+	pkgIDs, err := resolvePackageDBIDs(walkRoots, statOnlyRoots, opts.maxPackageDBDirs, opts.openPackageDBDir, opts.isRoot())
+	if err != nil {
+		return nil, err
+	}
+	return &Engine{opts: opts, pkgDBIDs: pkgIDs}, nil
+}
+
+func (e *Engine) meta() metadataOps {
+	if e.opts.metaOps != nil {
+		return e.opts.metaOps
+	}
+	return osMetadataOps{}
 }
 
 func setDefault(d *time.Duration, v time.Duration) {
@@ -191,10 +349,241 @@ func (e *Engine) empty(ctx context.Context, name string, sup platform.ProcessIde
 	return nil
 }
 
-// Apply runs one unit's apply as a transaction: back up every declared path,
-// write the intent record, apply, verify, write the receipt. A failure
-// restores the backup and writes a failed receipt. Apply holds the host lock
-// throughout and the journal lock only while it touches the journal.
+type droppedWarning struct {
+	path  string
+	attrs []string
+}
+
+// Plan runs u.Plan and inspects existing declared target files (read-only) for
+// OS-protected extended attributes that inode replacement cannot preserve (such
+// as macOS com.apple.macl). Any such loss is appended to Plan.CannotUndo, the
+// canonical RFC 8785 SHA-256 plan digest is recomputed over the finalised plan
+// (SPC-001 "Plans and approvals"), and StepPlan warning events are emitted with
+// a valid non-empty RunID before approval.
+func (e *Engine) Plan(ctx context.Context, u contract.Unit, in contract.Inputs) (contract.Plan, error) {
+	desc, err := u.Describe(ctx)
+	if err != nil {
+		return contract.Plan{}, fmt.Errorf("describe %s: %w", u.ID(), err)
+	}
+	if desc.Unit != u.ID() {
+		return contract.Plan{}, fmt.Errorf("%w: unit %q, description %q", ErrUnitMismatch, u.ID(), desc.Unit)
+	}
+	p, err := u.Plan(ctx, in)
+	if err != nil {
+		return contract.Plan{}, fmt.Errorf("plan %s: %w", u.ID(), err)
+	}
+	if p.Unit != u.ID() {
+		return contract.Plan{}, fmt.Errorf("%w: unit %q, plan %q", ErrUnitMismatch, u.ID(), p.Unit)
+	}
+	runID := contract.RunID(p.ID)
+	if runID == "" {
+		runID, err = newRunID()
+		if err != nil {
+			return contract.Plan{}, err
+		}
+	}
+	p, warnings, err := e.finalisePlan(ctx, desc, p)
+	if err != nil {
+		return contract.Plan{}, err
+	}
+	if e.opts.Sink != nil {
+		for _, w := range warnings {
+			_ = e.deliver(contract.Event{
+				Time:  e.opts.Now().UTC(),
+				RunID: runID,
+				Unit:  u.ID(),
+				Step:  contract.StepPlan,
+				Kind:  contract.EventWarning,
+				Text:  fmt.Sprintf("replacing %s will drop OS-protected extended attribute %s (cannot be re-set)", w.path, strings.Join(w.attrs, ", ")),
+				Data: map[contract.DataKey]string{
+					contract.DataPath: w.path,
+				},
+			})
+		}
+	}
+	return p, nil
+}
+
+const (
+	droppedXattrNoteMid    = ": replacing drops OS-protected extended attribute "
+	droppedXattrNoteSuffix = " (cannot be re-set)"
+)
+
+func droppedXattrNote(path, attr string) string {
+	return path + droppedXattrNoteMid + attr + droppedXattrNoteSuffix
+}
+
+func isDroppedXattrNote(note string) bool {
+	idx := strings.Index(note, droppedXattrNoteMid)
+	return idx > 0 && strings.HasSuffix(note, droppedXattrNoteSuffix) && idx+len(droppedXattrNoteMid) < len(note)-len(droppedXattrNoteSuffix)
+}
+
+func extractDroppedXattrNotes(cannotUndo []string) []string {
+	var out []string
+	for _, note := range cannotUndo {
+		if isDroppedXattrNote(note) {
+			out = append(out, note)
+		}
+	}
+	return out
+}
+
+// mergePlanDroppedNotes restores the engine's plan-time dropped-xattr
+// CannotUndo notes in their original order before finalisePlan inspects disk
+// for any newly appearing dropped xattrs.
+func mergePlanDroppedNotes(cannotUndo, recorded []string) []string {
+	if len(recorded) == 0 {
+		return cannotUndo
+	}
+	out := make([]string, 0, len(cannotUndo)+len(recorded))
+	for _, note := range cannotUndo {
+		if !slices.Contains(recorded, note) {
+			out = append(out, note)
+		}
+	}
+	return append(out, recorded...)
+}
+
+// hasUnrecordedDroppedXattr reports whether target inspection found any
+// OS-protected extended attribute (such as com.apple.macl) that was not
+// already recorded in plan-time PlanDroppedNotes.
+func hasUnrecordedDroppedXattr(warnings []droppedWarning, recorded []string) bool {
+	for _, w := range warnings {
+		for _, attr := range w.attrs {
+			if !slices.Contains(recorded, droppedXattrNote(w.path, attr)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// finalisePlan annotates p.CannotUndo with any OS-protected extended attributes
+// that inode replacement would drop on declared target files and computes the
+// canonical RFC 8785 SHA-256 plan digest (SPC-001 "Plans and approvals"). Both
+// Engine.Plan and Engine.Resume use finalisePlan so plan digests are compared
+// on the exact same canonical basis.
+func (e *Engine) finalisePlan(ctx context.Context, desc contract.Description, p contract.Plan) (contract.Plan, []droppedWarning, error) {
+	var paths []string
+	paths = append(paths, desc.OwnedPaths...)
+	for _, ch := range p.Changes {
+		if strings.HasPrefix(ch.Target, "/") {
+			paths = append(paths, ch.Target)
+		}
+	}
+	slices.Sort(paths)
+	paths = slices.Compact(paths)
+
+	if len(p.CannotUndo) > 0 {
+		p.CannotUndo = append([]string(nil), p.CannotUndo...)
+	}
+
+	var warnings []droppedWarning
+	for _, path := range paths {
+		if err := ctx.Err(); err != nil {
+			return contract.Plan{}, nil, fmt.Errorf("plan %s: %w", desc.Unit, err)
+		}
+		dropped := e.inspectTargetDroppedXattrs(path)
+		if len(dropped) == 0 {
+			continue
+		}
+		for _, attr := range dropped {
+			note := droppedXattrNote(path, attr)
+			if !slices.Contains(p.CannotUndo, note) {
+				p.CannotUndo = append(p.CannotUndo, note)
+			}
+		}
+		warnings = append(warnings, droppedWarning{path: path, attrs: dropped})
+	}
+	digest, err := planDigest(p)
+	if err != nil {
+		return contract.Plan{}, nil, fmt.Errorf("plan digest %s: %w", desc.Unit, err)
+	}
+	p.Digest = digest
+	return p, warnings, nil
+}
+
+// planDigest computes the SHA-256 hex digest of p in RFC 8785 canonical JSON
+// without the digest field (SPC-001 "Plans and approvals").
+func planDigest(p contract.Plan) (contract.Digest, error) {
+	changes := p.Changes
+	if changes == nil {
+		changes = []contract.Change{}
+	}
+	nonDefaults := p.NonDefaults
+	if nonDefaults == nil {
+		nonDefaults = []contract.ConfigKey{}
+	}
+	blockedBy := p.BlockedBy
+	if blockedBy == nil {
+		blockedBy = []string{}
+	}
+	cannotUndo := p.CannotUndo
+	if cannotUndo == nil {
+		cannotUndo = []string{}
+	}
+	raw, err := json.Marshal(struct {
+		ID          contract.PlanID      `json:"id"`
+		Unit        contract.UnitID      `json:"unit"`
+		Changes     []contract.Change    `json:"changes"`
+		NonDefaults []contract.ConfigKey `json:"non_defaults"`
+		BlockedBy   []string             `json:"blocked_by"`
+		CannotUndo  []string             `json:"cannot_undo"`
+		Outcome     *contract.Outcome    `json:"outcome"`
+	}{
+		ID:          p.ID,
+		Unit:        p.Unit,
+		Changes:     changes,
+		NonDefaults: nonDefaults,
+		BlockedBy:   blockedBy,
+		CannotUndo:  cannotUndo,
+		Outcome:     p.Outcome,
+	})
+	if err != nil {
+		return "", fmt.Errorf("marshal plan for digest: %w", err)
+	}
+	canon, err := jcs.Transform(raw)
+	if err != nil {
+		return "", fmt.Errorf("canonicalise plan JSON: %w", err)
+	}
+	sum := sha256.Sum256(canon)
+	return contract.Digest(hex.EncodeToString(sum[:])), nil
+}
+
+// inspectTargetDroppedXattrs inspects an existing regular file at path without
+// modifying disk or journal state, returning any non-preservable OS-protected
+// extended attributes (such as macOS com.apple.macl) that replacement will drop.
+func (e *Engine) inspectTargetDroppedXattrs(path string) []string {
+	clean, err := cleanPath(path)
+	if err != nil || isPackageDBPath(clean) {
+		return nil
+	}
+	p, err := e.openParent(e.real(clean))
+	if err != nil {
+		return nil
+	}
+	defer p.close()
+	st, err := p.lstat()
+	if err != nil || st.Mode&unix.S_IFMT != unix.S_IFREG {
+		return nil
+	}
+	f, _, err := p.openChecked(st)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = f.Close() }()
+	meta, err := e.meta().Read(f)
+	if err != nil {
+		return nil
+	}
+	return meta.DroppedXattrs
+}
+
+// Apply runs one unit's apply as a transaction: back up every declared path
+// and matching state provider, write the intent record, apply, verify, write
+// the receipt. A failure restores the backup and writes a failed receipt.
+// Apply holds the host lock throughout and the journal lock only while it
+// touches the journal.
 //
 // If ctx ends, the step runs on for the grace period; if it has not finished
 // by then, its context is cancelled, the record is left for the next start,
@@ -260,9 +649,16 @@ func (e *Engine) runApply(ctx context.Context, l *locks, self platform.ProcessId
 	if err != nil {
 		return err
 	}
+	e.emitBackupWarnings(runID, desc.Unit, m)
+	digestKind := PlanDigestVerbatim
+	droppedNotes := extractDroppedXattrNotes(p.CannotUndo)
+	if canon, derr := planDigest(p); derr == nil && p.Digest == canon {
+		digestKind = PlanDigestCanonical
+	}
 	rec := &Record{
 		Status: StatusApplying, RunID: runID, Unit: desc.Unit, PlanID: p.ID,
-		PlanDigest: p.Digest, Scope: e.opts.Scope, Executor: self,
+		PlanDigest: p.Digest, PlanDigestKind: digestKind, PlanDroppedNotes: droppedNotes,
+		Scope: e.opts.Scope, Executor: self,
 	}
 	if err := l.withJournal(bk, func() error { return e.writeRecord(rec) }); err != nil {
 		return err
@@ -321,7 +717,9 @@ func (e *Engine) step(ctx context.Context, t *tx, u contract.Unit, p contract.Pl
 	return nil
 }
 
-// failRun restores a failed run and closes it with a failed receipt.
+// failRun restores a failed run and closes it with a failed receipt. If the
+// restore or its validators fail, the intent stays StatusRestoring and the
+// error maps to exit 4.
 func (e *Engine) failRun(ctx context.Context, l *locks, rec *Record, m *Manifest, cause error) error {
 	if err := e.restoreRun(ctx, l, rec, m, StatusIdle); err != nil {
 		return errors.Join(cause, err)
@@ -329,15 +727,41 @@ func (e *Engine) failRun(ctx context.Context, l *locks, rec *Record, m *Manifest
 	return fmt.Errorf("%w: %w", ErrApplyFailed, cause)
 }
 
-// restoreRun marks the record restoring, restores the manifest, writes a
-// failed receipt for the run and moves the record to next.
+// emitBackupWarnings surfaces non-preservable OS-protected attributes (such as
+// macOS com.apple.macl) detected on declared targets before apply begins,
+// sharing the engine's monotonic sequence counter with Plan and tx.Emit so
+// events.Sink never drops overlapping events.
+func (e *Engine) emitBackupWarnings(runID contract.RunID, unit contract.UnitID, m *Manifest) {
+	if e.opts.Sink == nil || m == nil {
+		return
+	}
+	for _, en := range m.Entries {
+		if len(en.DroppedXattrs) == 0 {
+			continue
+		}
+		_ = e.deliver(contract.Event{
+			Time:  e.opts.Now().UTC(),
+			RunID: runID,
+			Unit:  unit,
+			Step:  contract.StepBackup,
+			Kind:  contract.EventWarning,
+			Text:  fmt.Sprintf("replacing %s will drop OS-protected extended attribute %s (cannot be re-set)", en.Path, strings.Join(en.DroppedXattrs, ", ")),
+			Data: map[contract.DataKey]string{
+				contract.DataPath: en.Path,
+			},
+		})
+	}
+}
+
+// restoreRun marks the record restoring, restores and validates the manifest,
+// writes a failed receipt for the run and moves the record to next.
 func (e *Engine) restoreRun(ctx context.Context, l *locks, rec *Record, m *Manifest, next Status) error {
 	rec.Status = StatusRestoring
 	if err := l.withJournal(ctx, func() error { return e.writeRecord(rec) }); err != nil {
 		return err
 	}
 	e.fault(PointRestoreStart)
-	if err := e.restore(ctx, m); err != nil {
+	if err := e.restore(ctx, l, rec, m); err != nil {
 		return err
 	}
 	if err := e.writeReceipt(contract.Receipt{

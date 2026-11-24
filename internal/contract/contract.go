@@ -41,6 +41,12 @@ type DeclarativeTx interface {
 // Tx is what kit units get: the typed operations plus SetState and Run.
 type Tx interface {
 	DeclarativeTx
+	// SetState updates one declared state key through p. Implementations must
+	// check ctx.Err() before taking the transaction lock, refuse an undeclared
+	// key before calling p, snapshot p as the durable backup, call Write, and
+	// record the receipt row only on success (restoring the snapshot under an
+	// uncancelled bounded context if Write fails). One lock covers snapshot,
+	// write and receipt.
 	SetState(ctx context.Context, p StateProvider, key StateKey, want State) error
 	// Run executes argv with only the declared environment, a timeout, and
 	// inside the run's containment.

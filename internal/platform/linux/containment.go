@@ -147,12 +147,17 @@ func (c *Containment) Run(ctx context.Context, spec platform.LaunchSpec, onSuper
 	if user && !c.hasUserManager(ctx) {
 		return contract.CommandResult{}, platform.ErrNoUserManager
 	}
+	stdout, stderr := spec.Output, spec.Stderr
+	if stderr == nil && stdout != nil {
+		shared := platform.NewSyncWriter(stdout)
+		stdout, stderr = shared, shared
+	}
 	res, err := c.Runner.Run(ctx, platform.ExecSpec{
 		Argv:      SystemdRunArgv(c.bin().SystemdRun, spec.Name, user, spec.Argv),
 		Env:       c.launchEnv(user, spec.Env),
 		Dir:       spec.Dir,
-		Stdout:    spec.Output,
-		Stderr:    spec.Output,
+		Stdout:    stdout,
+		Stderr:    stderr,
 		GateShell: c.bin().Shell,
 		Gate: func(pid int) error {
 			id, err := c.Inspector.Identity(ctx, pid)

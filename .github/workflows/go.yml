@@ -65,7 +65,15 @@ jobs:
         run: go tool golangci-lint run ./...
 
       - name: Run tests with race detector
+        env:
+          TMPDIR: ${{ runner.temp }}
         run: go test -race ./...
+
+      - name: Run TSK-018 backup, metadata and journey tests (AC-1, AC-3, AC-5)
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: |
+          go test -race -v -run 'TestRestoreReturnsFilesAndStateToManifest|TestRestoreValidatorsAndMismatchesFailClosed|TestRecoveryNeverRestoresPackageDBFiles|TestExtendedMetadataLiftsRefusalAndRestoresIdentically|TestEnsureBlockPreservesExtendedMetadata|TestRestoreClearsInheritedDirACL|TestJourneyKillAndResumeRestoresFileWithACLAndXattrAndHostname' ./internal/engine/
 
       - name: Run govulncheck
         run: go tool govulncheck ./...
