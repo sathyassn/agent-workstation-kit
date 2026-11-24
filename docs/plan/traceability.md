@@ -13,7 +13,7 @@ Tasks are listed once their epic is planned; the P1 spec PR adds P1's.
 | Signed releases, 1.0.0 versioning (9, 12) | EPC-001 | TSK-004 | release artefacts; verify run |
 | One source of truth, generated code (2a, 15) | EPC-001 | TSK-005 | staleness and graph checks |
 | First install with system tools only (3, 9) | EPC-001 | TSK-006 | shell tests with a fake download |
-| Public-safety scan (12) | EPC-002 | TSK-007, TSK-008 | scanner tests |
+| Public-safety scan (12) | EPC-002 | TSK-007, TSK-008, TSK-050 | scanner tests; negative fail-closed tests; CI journey |
 | Contracts published before code (15) | EPC-003 | TSK-023 | contract tests and schema fixtures |
 | One apply path, staged binary, containment, recovery (3, 5) | EPC-003 | TSK-013, TSK-024 | fault-injection and concurrency tests |
 | Frozen-code fixes (3) | EPC-003 | TSK-010 | regression tests |
