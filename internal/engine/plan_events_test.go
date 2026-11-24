@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"io/fs"
@@ -131,6 +132,7 @@ func validateEventLogAgainstSchema(t *testing.T, logPath string) int {
 		t.Fatalf("read event log %q: %v", logPath, err)
 	}
 	count := 0
+	var prevSeq uint64
 	sc := bufio.NewScanner(bytes.NewReader(raw))
 	for sc.Scan() {
 		line := bytes.TrimSpace(sc.Bytes())
@@ -145,6 +147,16 @@ func validateEventLogAgainstSchema(t *testing.T, logPath string) int {
 		if err := schema.Validate(val); err != nil {
 			t.Fatalf("line %d: event.schema.json validation failed: %v\n%s", count, err, line)
 		}
+		var rec struct {
+			Seq uint64 `json:"seq"`
+		}
+		if err := json.Unmarshal(line, &rec); err != nil {
+			t.Fatalf("line %d: decode seq: %v\n%s", count, err, line)
+		}
+		if rec.Seq <= prevSeq {
+			t.Fatalf("line %d: JSONL events out of strictly increasing Seq order: seq %d after %d\n%s", count, rec.Seq, prevSeq, line)
+		}
+		prevSeq = rec.Seq
 	}
 	if err := sc.Err(); err != nil {
 		t.Fatalf("scan event log: %v", err)
@@ -721,9 +733,10 @@ func TestResumeMatchesEnginePlanDigest(t *testing.T) {
 	})
 }
 
-// blockingNonProgressSink blocks the first non-progress Deliver until release
-// is closed while letting progress Deliver calls return immediately, and
-// records all delivered events in arrival order.
+// blockingNonProgressSink implements sequencedSink (like events.Sink): it
+// assigns Seq before any blocking non-progress I/O, blocks the first
+// non-progress delivery until release is closed while letting progress
+// deliveries return immediately, and records all delivered events.
 type blockingNonProgressSink struct {
 	mu      sync.Mutex
 	entered chan struct{}
@@ -733,6 +746,15 @@ type blockingNonProgressSink struct {
 }
 
 func (s *blockingNonProgressSink) Deliver(ev contract.Event) {
+	s.DeliverSequenced(ev, nil)
+}
+
+func (s *blockingNonProgressSink) DeliverSequenced(ev contract.Event, assign func(*contract.Event)) contract.Event {
+	s.mu.Lock()
+	if assign != nil {
+		assign(&ev)
+	}
+	s.mu.Unlock()
 	if ev.Kind != contract.EventProgress && ev.Kind != contract.EventCoalesced {
 		block := false
 		s.once.Do(func() {
@@ -746,6 +768,7 @@ func (s *blockingNonProgressSink) Deliver(ev contract.Event) {
 	s.mu.Lock()
 	s.got = append(s.got, ev)
 	s.mu.Unlock()
+	return ev
 }
 
 // blockingLogWriter wraps an io.Writer and blocks the first Write call until
@@ -1425,6 +1448,172 @@ func TestResumeMatchesVerbatim64HexUnitPlanDigest(t *testing.T) {
 		}
 		if _, err := resumer.Resume(context.Background(), resolve, ResumeOptions{}); !errors.Is(err, ErrPlanChanged) {
 			t.Fatalf("Resume with changed 64-hex unit digest err = %v, want ErrPlanChanged", err)
+		}
+	})
+}
+
+// plainProgressOrderProbeSink is a plain contract.Sink (does NOT implement
+// DeliverSequenced) that delays Seq 1 briefly to let Seq 2 overtake it if
+// Seq assignment and Deliver are not serialised under one mutex.
+type plainProgressOrderProbeSink struct {
+	mu   sync.Mutex
+	seq2 chan struct{}
+	once sync.Once
+	got  []contract.Event
+}
+
+func (s *plainProgressOrderProbeSink) Deliver(ev contract.Event) {
+	switch ev.Seq {
+	case 1:
+		select {
+		case <-s.seq2:
+		case <-time.After(15 * time.Millisecond):
+		}
+	case 2:
+		s.once.Do(func() { close(s.seq2) })
+	}
+	s.mu.Lock()
+	s.got = append(s.got, ev)
+	s.mu.Unlock()
+}
+
+type plainRecordingSink struct {
+	mu  sync.Mutex
+	got []contract.Event
+}
+
+func (s *plainRecordingSink) Deliver(ev contract.Event) {
+	s.mu.Lock()
+	s.got = append(s.got, ev)
+	s.mu.Unlock()
+}
+
+// TestDeliverPlainSinkConcurrentProgressMonotonicSeq is J3: when the configured
+// sink does NOT implement DeliverSequenced, concurrent EventProgress emitters
+// must still be delivered in strictly increasing Seq order under -race.
+func TestDeliverPlainSinkConcurrentProgressMonotonicSeq(t *testing.T) {
+	t.Run("deterministic_probe_two_progress_emitters", func(t *testing.T) {
+		dir, err := filepath.EvalSymlinks(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		root := filepath.Join(dir, "root")
+		target := "/etc/wskit-plain-prog-probe.conf"
+		if err := os.MkdirAll(filepath.Join(root, "etc"), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		probe := &plainProgressOrderProbeSink{seq2: make(chan struct{})}
+		table := platformtest.NewProcessTable("boot-plain-prog-probe")
+		e, err := New(Options{
+			JournalDir:  filepath.Join(dir, "journal"),
+			HostLock:    filepath.Join(dir, "host.lock"),
+			Root:        root,
+			Scope:       contract.ScopeUser,
+			Containment: platformtest.NewContainment(table),
+			Inspector:   table.Inspector(table.Spawn()),
+			Sink:        probe,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		unit := progressEmitUnit{
+			path: target,
+			apply: func(_ context.Context, tx contract.Tx) error {
+				start := make(chan struct{})
+				var wg sync.WaitGroup
+				for range 2 {
+					wg.Add(1)
+					go func() {
+						defer wg.Done()
+						<-start
+						tx.Emit(contract.Event{Kind: contract.EventProgress, Text: "tick"})
+					}()
+				}
+				close(start)
+				wg.Wait()
+				return nil
+			},
+		}
+		if err := e.Apply(context.Background(), unit, contract.Plan{ID: "p", Unit: contract.UnitShell, Digest: "d"}); err != nil {
+			t.Fatalf("Apply: %v", err)
+		}
+
+		probe.mu.Lock()
+		got := append([]contract.Event(nil), probe.got...)
+		probe.mu.Unlock()
+		if len(got) != 2 {
+			t.Fatalf("plain sink got %d progress events, want 2: %+v", len(got), got)
+		}
+		if got[0].Seq != 1 || got[1].Seq != 2 {
+			t.Fatalf("plain sink received progress seqs [%d, %d] out of order, want [1, 2]", got[0].Seq, got[1].Seq)
+		}
+	})
+
+	t.Run("concurrent_progress_burst_under_race", func(t *testing.T) {
+		dir, err := filepath.EvalSymlinks(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		root := filepath.Join(dir, "root")
+		target := "/etc/wskit-plain-prog-burst.conf"
+		if err := os.MkdirAll(filepath.Join(root, "etc"), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		rec := &plainRecordingSink{}
+		table := platformtest.NewProcessTable("boot-plain-prog-burst")
+		e, err := New(Options{
+			JournalDir:  filepath.Join(dir, "journal"),
+			HostLock:    filepath.Join(dir, "host.lock"),
+			Root:        root,
+			Scope:       contract.ScopeUser,
+			Containment: platformtest.NewContainment(table),
+			Inspector:   table.Inspector(table.Spawn()),
+			Sink:        rec,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		const goroutines = 8
+		const perG = 20
+		const wantTotal = goroutines * perG
+		unit := progressEmitUnit{
+			path: target,
+			apply: func(_ context.Context, tx contract.Tx) error {
+				start := make(chan struct{})
+				var wg sync.WaitGroup
+				for range goroutines {
+					wg.Add(1)
+					go func() {
+						defer wg.Done()
+						<-start
+						for range perG {
+							tx.Emit(contract.Event{Kind: contract.EventProgress, Text: "burst tick"})
+						}
+					}()
+				}
+				close(start)
+				wg.Wait()
+				return nil
+			},
+		}
+		if err := e.Apply(context.Background(), unit, contract.Plan{ID: "p", Unit: contract.UnitShell, Digest: "d"}); err != nil {
+			t.Fatalf("Apply: %v", err)
+		}
+
+		rec.mu.Lock()
+		got := append([]contract.Event(nil), rec.got...)
+		rec.mu.Unlock()
+		if len(got) != wantTotal {
+			t.Fatalf("plain sink got %d events, want %d", len(got), wantTotal)
+		}
+		var prevSeq uint64
+		for i, ev := range got {
+			if ev.Seq <= prevSeq {
+				t.Fatalf("event %d out of order: seq %d after %d", i, ev.Seq, prevSeq)
+			}
+			prevSeq = ev.Seq
 		}
 	})
 }

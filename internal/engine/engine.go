@@ -147,12 +147,12 @@ type Options struct {
 
 // Engine runs unit transactions against one journal.
 type Engine struct {
-	opts      Options
-	provMu    sync.RWMutex
-	pkgDBIDs  map[platform.FileID]string
-	nonProgMu sync.Mutex
-	seqMu     sync.Mutex
-	seq       uint64
+	opts     Options
+	provMu   sync.RWMutex
+	pkgDBIDs map[platform.FileID]string
+	emitMu   sync.Mutex
+	seqMu    sync.Mutex
+	seq      uint64
 }
 
 // sequencedSink is an optional interface implemented by events.Sink so Seq
@@ -163,16 +163,14 @@ type sequencedSink interface {
 }
 
 // deliver assigns the next sequence number and delivers ev to e.opts.Sink.
-// Non-progress events are serialised under nonProgMu so concurrent non-progress
-// emitters stay in strict monotonic sequence order for every sink. Progress
-// events never wait on nonProgMu so a slow non-progress log write cannot stall
-// concurrent progress delivery (SPC-001 "Events").
+// When e.opts.Sink implements sequencedSink (such as events.Sink), non-progress
+// deliveries are serialised under emitMu while progress events enter
+// DeliverSequenced without waiting on emitMu so a slow non-progress log write
+// never stalls progress delivery (SPC-001 "Events"). For plain contract.Sink
+// implementations without DeliverSequenced, every event (including progress)
+// assigns Seq and calls Deliver under emitMu so concurrent emitters always
+// arrive in strictly increasing Seq order.
 func (e *Engine) deliver(ev contract.Event) contract.Event {
-	progress := ev.Kind == contract.EventProgress || ev.Kind == contract.EventCoalesced
-	if !progress {
-		e.nonProgMu.Lock()
-		defer e.nonProgMu.Unlock()
-	}
 	assign := func(target *contract.Event) {
 		e.seqMu.Lock()
 		e.seq++
@@ -180,8 +178,15 @@ func (e *Engine) deliver(ev contract.Event) contract.Event {
 		e.seqMu.Unlock()
 	}
 	if ss, ok := e.opts.Sink.(sequencedSink); ok {
+		progress := ev.Kind == contract.EventProgress || ev.Kind == contract.EventCoalesced
+		if !progress {
+			e.emitMu.Lock()
+			defer e.emitMu.Unlock()
+		}
 		return ss.DeliverSequenced(ev, assign)
 	}
+	e.emitMu.Lock()
+	defer e.emitMu.Unlock()
 	assign(&ev)
 	if e.opts.Sink != nil {
 		e.opts.Sink.Deliver(ev)
