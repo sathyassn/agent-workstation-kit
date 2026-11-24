@@ -1009,3 +1009,422 @@ func TestDeliverProgressNotBlockedBySlowNonProgressWrite(t *testing.T) {
 		}
 	})
 }
+
+// dynamicDropMetaOps is a metadataOps fake whose reported DroppedXattrs can be
+// toggled mid-test (for example to model macOS com.apple.macl being present at
+// plan/backup time and permanently absent after the target is replaced and
+// restored).
+type dynamicDropMetaOps struct {
+	mu      sync.Mutex
+	dropped []string
+}
+
+func (m *dynamicDropMetaOps) setDropped(attrs []string) {
+	m.mu.Lock()
+	m.dropped = append([]string(nil), attrs...)
+	m.mu.Unlock()
+}
+
+func (m *dynamicDropMetaOps) Read(f *os.File) (FileMetadata, error) {
+	meta, err := osMetadataOps{}.Read(f)
+	if err != nil {
+		return FileMetadata{}, err
+	}
+	m.mu.Lock()
+	if len(m.dropped) > 0 {
+		meta.DroppedXattrs = append([]string(nil), m.dropped...)
+	}
+	m.mu.Unlock()
+	return meta, nil
+}
+
+func (m *dynamicDropMetaOps) Apply(f *os.File, meta FileMetadata) error {
+	return osMetadataOps{}.Apply(f, meta)
+}
+
+// TestResumeSucceedsWhenDroppedXattrVanishesAfterRestore is J1: if a target
+// carried com.apple.macl at plan time, was replaced before a crash, and
+// therefore no longer carries com.apple.macl after restore, Resume must still
+// match the plan basis recorded in the intent and reapply cleanly, while still
+// refusing genuine plan changes or newly appearing dropped xattrs.
+func TestResumeSucceedsWhenDroppedXattrVanishesAfterRestore(t *testing.T) {
+	type crashSentinel struct{}
+	runInterrupted := func(t *testing.T, e *Engine, u contract.Unit, p contract.Plan) {
+		t.Helper()
+		var panicked bool
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					if _, ok := r.(crashSentinel); ok {
+						panicked = true
+						return
+					}
+					panic(r)
+				}
+			}()
+			_ = e.Apply(context.Background(), u, p)
+		}()
+		if !panicked {
+			t.Fatal("expected simulated crash during Apply")
+		}
+	}
+
+	for _, resolverMode := range []string{"unit_plan", "engine_plan"} {
+		t.Run("vanished_macl_"+resolverMode, func(t *testing.T) {
+			dir, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			root := filepath.Join(dir, "root")
+			target := "/etc/wskit-vanished-macl.conf"
+			if err := os.MkdirAll(filepath.Join(root, "etc"), 0o750); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, target), []byte("orig\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			table := platformtest.NewProcessTable("boot-vanished-macl")
+			cont := platformtest.NewContainment(table)
+			journalDir := filepath.Join(dir, "journal")
+			hostLock := filepath.Join(dir, "host.lock")
+			ops := &dynamicDropMetaOps{dropped: []string{"com.apple.macl"}}
+
+			firstID := table.Spawn()
+			firstEng, err := New(Options{
+				JournalDir:  journalDir,
+				HostLock:    hostLock,
+				Root:        root,
+				Scope:       contract.ScopeUser,
+				Containment: cont,
+				Inspector:   table.Inspector(firstID),
+				metaOps:     ops,
+				Fault: func(pt Point) {
+					if pt == PointMutation {
+						// File was just replaced: com.apple.macl is gone forever.
+						ops.setDropped(nil)
+						panic(crashSentinel{})
+					}
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			unit := planDropTestUnit{path: target, planID: "plan-macl-vanish-1"}
+			plan, err := firstEng.Plan(context.Background(), unit, contract.Inputs{})
+			if err != nil {
+				t.Fatalf("Engine.Plan: %v", err)
+			}
+			if len(plan.CannotUndo) == 0 {
+				t.Fatal("expected CannotUndo note for com.apple.macl at Plan time")
+			}
+			runInterrupted(t, firstEng, unit, plan)
+			table.Kill(firstID)
+
+			resumer, err := New(Options{
+				JournalDir:  journalDir,
+				HostLock:    hostLock,
+				Root:        root,
+				Scope:       contract.ScopeUser,
+				Containment: cont,
+				Inspector:   table.Inspector(table.Spawn()),
+				metaOps:     ops,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			resolve := func(ctx context.Context, _ contract.UnitID) (contract.Unit, contract.Plan, error) {
+				if resolverMode == "engine_plan" {
+					p, perr := resumer.Plan(ctx, unit, contract.Inputs{})
+					return unit, p, perr
+				}
+				p, perr := unit.Plan(ctx, contract.Inputs{})
+				return unit, p, perr
+			}
+			res, err := resumer.Resume(context.Background(), resolve, ResumeOptions{})
+			if err != nil || res.Action != ResumeReapplied {
+				t.Fatalf("Resume after vanished com.apple.macl = %+v, %v; want ResumeReapplied", res, err)
+			}
+			gotData, err := os.ReadFile(filepath.Join(root, target)) //nolint:gosec // test root path
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(gotData) != "updated\n" {
+				t.Fatalf("target content after reapply = %q, want %q", gotData, "updated\n")
+			}
+		})
+	}
+
+	t.Run("genuine_plan_change_still_refused", func(t *testing.T) {
+		dir, err := filepath.EvalSymlinks(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		root := filepath.Join(dir, "root")
+		target := "/etc/wskit-vanished-macl-changed.conf"
+		if err := os.MkdirAll(filepath.Join(root, "etc"), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, target), []byte("orig\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		table := platformtest.NewProcessTable("boot-vanished-macl-chg")
+		cont := platformtest.NewContainment(table)
+		journalDir := filepath.Join(dir, "journal")
+		hostLock := filepath.Join(dir, "host.lock")
+		ops := &dynamicDropMetaOps{dropped: []string{"com.apple.macl"}}
+
+		firstID := table.Spawn()
+		firstEng, err := New(Options{
+			JournalDir:  journalDir,
+			HostLock:    hostLock,
+			Root:        root,
+			Scope:       contract.ScopeUser,
+			Containment: cont,
+			Inspector:   table.Inspector(firstID),
+			metaOps:     ops,
+			Fault: func(pt Point) {
+				if pt == PointMutation {
+					ops.setDropped(nil)
+					panic(crashSentinel{})
+				}
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		unit := planDropTestUnit{path: target, planID: "plan-macl-vanish-1"}
+		plan, err := firstEng.Plan(context.Background(), unit, contract.Inputs{})
+		if err != nil {
+			t.Fatalf("Engine.Plan: %v", err)
+		}
+		runInterrupted(t, firstEng, unit, plan)
+		table.Kill(firstID)
+
+		resumer, err := New(Options{
+			JournalDir:  journalDir,
+			HostLock:    hostLock,
+			Root:        root,
+			Scope:       contract.ScopeUser,
+			Containment: cont,
+			Inspector:   table.Inspector(table.Spawn()),
+			metaOps:     ops,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		changedUnit := planDropTestUnit{path: target, planID: "plan-macl-vanish-2"}
+		resolve := func(ctx context.Context, _ contract.UnitID) (contract.Unit, contract.Plan, error) {
+			p, perr := changedUnit.Plan(ctx, contract.Inputs{})
+			return changedUnit, p, perr
+		}
+		if _, err := resumer.Resume(context.Background(), resolve, ResumeOptions{}); !errors.Is(err, ErrPlanChanged) {
+			t.Fatalf("Resume with changed plan err = %v, want ErrPlanChanged", err)
+		}
+	})
+}
+
+type verbatimDigestUnit struct {
+	path   string
+	digest contract.Digest
+}
+
+func (u verbatimDigestUnit) ID() contract.UnitID { return contract.UnitShell }
+
+func (u verbatimDigestUnit) Describe(context.Context) (contract.Description, error) {
+	return contract.Description{
+		Unit:       contract.UnitShell,
+		Scope:      contract.ScopeUser,
+		OwnedPaths: []string{u.path},
+	}, nil
+}
+
+func (u verbatimDigestUnit) Plan(context.Context, contract.Inputs) (contract.Plan, error) {
+	return contract.Plan{
+		ID:     "plan-verbatim-hex-1",
+		Unit:   contract.UnitShell,
+		Digest: u.digest,
+		Changes: []contract.Change{
+			{Target: u.path, Action: contract.ActionReplace, Risk: contract.RiskLow},
+		},
+	}, nil
+}
+
+func (u verbatimDigestUnit) Apply(ctx context.Context, tx contract.Tx, _ contract.Plan) error {
+	return tx.WriteFile(ctx, u.path, []byte("updated-hex\n"), 0o600, contract.Owner{UID: os.Getuid(), GID: os.Getgid()})
+}
+
+func (u verbatimDigestUnit) Verify(context.Context, contract.Plan) (contract.Result, error) {
+	return contract.Result{Unit: contract.UnitShell, Outcome: contract.OutcomeVerified}, nil
+}
+
+func (u verbatimDigestUnit) Revert(context.Context, contract.Tx, contract.Receipt) error { return nil }
+
+func (u verbatimDigestUnit) Status(context.Context) (contract.Status, error) {
+	return contract.Status{Unit: contract.UnitShell}, nil
+}
+
+// TestResumeMatchesVerbatim64HexUnitPlanDigest is J2: Resume must rely on the
+// explicit digest kind recorded in the intent record rather than guessing from
+// 64-lowercase-hex string shape, so a Unit.Plan returning a 64-hex digest
+// resumes cleanly without mismatch.
+func TestResumeMatchesVerbatim64HexUnitPlanDigest(t *testing.T) {
+	type crashSentinel struct{}
+	runInterrupted := func(t *testing.T, e *Engine, u contract.Unit, p contract.Plan) {
+		t.Helper()
+		var panicked bool
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					if _, ok := r.(crashSentinel); ok {
+						panicked = true
+						return
+					}
+					panic(r)
+				}
+			}()
+			_ = e.Apply(context.Background(), u, p)
+		}()
+		if !panicked {
+			t.Fatal("expected simulated crash during Apply")
+		}
+	}
+
+	hexDigestA := contract.Digest(strings.Repeat("a", 64))
+	hexDigestB := contract.Digest(strings.Repeat("b", 64))
+
+	t.Run("unchanged_64_hex_unit_digest_resumes", func(t *testing.T) {
+		dir, err := filepath.EvalSymlinks(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		root := filepath.Join(dir, "root")
+		target := "/etc/wskit-hex-digest.conf"
+		if err := os.MkdirAll(filepath.Join(root, "etc"), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, target), []byte("orig\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		table := platformtest.NewProcessTable("boot-hex-digest")
+		cont := platformtest.NewContainment(table)
+		journalDir := filepath.Join(dir, "journal")
+		hostLock := filepath.Join(dir, "host.lock")
+
+		firstID := table.Spawn()
+		firstEng, err := New(Options{
+			JournalDir:  journalDir,
+			HostLock:    hostLock,
+			Root:        root,
+			Scope:       contract.ScopeUser,
+			Containment: cont,
+			Inspector:   table.Inspector(firstID),
+			Fault: func(pt Point) {
+				if pt == PointMutation {
+					panic(crashSentinel{})
+				}
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		unit := verbatimDigestUnit{path: target, digest: hexDigestA}
+		plan, err := unit.Plan(context.Background(), contract.Inputs{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		runInterrupted(t, firstEng, unit, plan)
+		table.Kill(firstID)
+
+		resumer, err := New(Options{
+			JournalDir:  journalDir,
+			HostLock:    hostLock,
+			Root:        root,
+			Scope:       contract.ScopeUser,
+			Containment: cont,
+			Inspector:   table.Inspector(table.Spawn()),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		resolve := func(ctx context.Context, _ contract.UnitID) (contract.Unit, contract.Plan, error) {
+			p, perr := unit.Plan(ctx, contract.Inputs{})
+			return unit, p, perr
+		}
+		res, err := resumer.Resume(context.Background(), resolve, ResumeOptions{})
+		if err != nil || res.Action != ResumeReapplied {
+			t.Fatalf("Resume with unchanged 64-hex unit digest = %+v, %v; want ResumeReapplied", res, err)
+		}
+		gotData, err := os.ReadFile(filepath.Join(root, target)) //nolint:gosec // test root path
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(gotData) != "updated-hex\n" {
+			t.Fatalf("target content after reapply = %q, want %q", gotData, "updated-hex\n")
+		}
+	})
+
+	t.Run("changed_64_hex_unit_digest_refused", func(t *testing.T) {
+		dir, err := filepath.EvalSymlinks(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		root := filepath.Join(dir, "root")
+		target := "/etc/wskit-hex-digest-chg.conf"
+		if err := os.MkdirAll(filepath.Join(root, "etc"), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, target), []byte("orig\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		table := platformtest.NewProcessTable("boot-hex-digest-chg")
+		cont := platformtest.NewContainment(table)
+		journalDir := filepath.Join(dir, "journal")
+		hostLock := filepath.Join(dir, "host.lock")
+
+		firstID := table.Spawn()
+		firstEng, err := New(Options{
+			JournalDir:  journalDir,
+			HostLock:    hostLock,
+			Root:        root,
+			Scope:       contract.ScopeUser,
+			Containment: cont,
+			Inspector:   table.Inspector(firstID),
+			Fault: func(pt Point) {
+				if pt == PointMutation {
+					panic(crashSentinel{})
+				}
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		unit := verbatimDigestUnit{path: target, digest: hexDigestA}
+		plan, err := unit.Plan(context.Background(), contract.Inputs{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		runInterrupted(t, firstEng, unit, plan)
+		table.Kill(firstID)
+
+		resumer, err := New(Options{
+			JournalDir:  journalDir,
+			HostLock:    hostLock,
+			Root:        root,
+			Scope:       contract.ScopeUser,
+			Containment: cont,
+			Inspector:   table.Inspector(table.Spawn()),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		changedUnit := verbatimDigestUnit{path: target, digest: hexDigestB}
+		resolve := func(ctx context.Context, _ contract.UnitID) (contract.Unit, contract.Plan, error) {
+			p, perr := changedUnit.Plan(ctx, contract.Inputs{})
+			return changedUnit, p, perr
+		}
+		if _, err := resumer.Resume(context.Background(), resolve, ResumeOptions{}); !errors.Is(err, ErrPlanChanged) {
+			t.Fatalf("Resume with changed 64-hex unit digest err = %v, want ErrPlanChanged", err)
+		}
+	})
+}

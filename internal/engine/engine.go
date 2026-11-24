@@ -399,6 +399,46 @@ func (e *Engine) Plan(ctx context.Context, u contract.Unit, in contract.Inputs) 
 	return p, nil
 }
 
+const (
+	droppedXattrNoteMid    = ": replacing drops OS-protected extended attribute "
+	droppedXattrNoteSuffix = " (cannot be re-set)"
+)
+
+func droppedXattrNote(path, attr string) string {
+	return path + droppedXattrNoteMid + attr + droppedXattrNoteSuffix
+}
+
+func isDroppedXattrNote(note string) bool {
+	idx := strings.Index(note, droppedXattrNoteMid)
+	return idx > 0 && strings.HasSuffix(note, droppedXattrNoteSuffix) && idx+len(droppedXattrNoteMid) < len(note)-len(droppedXattrNoteSuffix)
+}
+
+func extractDroppedXattrNotes(cannotUndo []string) []string {
+	var out []string
+	for _, note := range cannotUndo {
+		if isDroppedXattrNote(note) {
+			out = append(out, note)
+		}
+	}
+	return out
+}
+
+// mergePlanDroppedNotes restores the engine's plan-time dropped-xattr
+// CannotUndo notes in their original order before finalisePlan inspects disk
+// for any newly appearing dropped xattrs.
+func mergePlanDroppedNotes(cannotUndo, recorded []string) []string {
+	if len(recorded) == 0 {
+		return cannotUndo
+	}
+	out := make([]string, 0, len(cannotUndo)+len(recorded))
+	for _, note := range cannotUndo {
+		if !slices.Contains(recorded, note) {
+			out = append(out, note)
+		}
+	}
+	return append(out, recorded...)
+}
+
 // finalisePlan annotates p.CannotUndo with any OS-protected extended attributes
 // that inode replacement would drop on declared target files and computes the
 // canonical RFC 8785 SHA-256 plan digest (SPC-001 "Plans and approvals"). Both
@@ -430,7 +470,7 @@ func (e *Engine) finalisePlan(ctx context.Context, desc contract.Description, p 
 			continue
 		}
 		for _, attr := range dropped {
-			note := fmt.Sprintf("%s: replacing drops OS-protected extended attribute %s (cannot be re-set)", path, attr)
+			note := droppedXattrNote(path, attr)
 			if !slices.Contains(p.CannotUndo, note) {
 				p.CannotUndo = append(p.CannotUndo, note)
 				mutated = true
@@ -444,21 +484,6 @@ func (e *Engine) finalisePlan(ctx context.Context, desc contract.Description, p 
 	}
 	p.Digest = digest
 	return p, warnings, mutated, nil
-}
-
-// isCanonicalDigest reports whether d has the 64 lowercase hex character shape
-// of a SHA-256 planDigest.
-func isCanonicalDigest(d contract.Digest) bool {
-	if len(d) != sha256.Size*2 {
-		return false
-	}
-	for i := range len(d) {
-		c := d[i]
-		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
-			return false
-		}
-	}
-	return true
 }
 
 // planDigest computes the SHA-256 hex digest of p in RFC 8785 canonical JSON
@@ -608,9 +633,16 @@ func (e *Engine) runApply(ctx context.Context, l *locks, self platform.ProcessId
 		return err
 	}
 	e.emitBackupWarnings(runID, desc.Unit, m)
+	digestKind := PlanDigestVerbatim
+	var droppedNotes []string
+	if canon, derr := planDigest(p); derr == nil && p.Digest == canon {
+		digestKind = PlanDigestCanonical
+		droppedNotes = extractDroppedXattrNotes(p.CannotUndo)
+	}
 	rec := &Record{
 		Status: StatusApplying, RunID: runID, Unit: desc.Unit, PlanID: p.ID,
-		PlanDigest: p.Digest, Scope: e.opts.Scope, Executor: self,
+		PlanDigest: p.Digest, PlanDigestKind: digestKind, PlanDroppedNotes: droppedNotes,
+		Scope: e.opts.Scope, Executor: self,
 	}
 	if err := l.withJournal(bk, func() error { return e.writeRecord(rec) }); err != nil {
 		return err
