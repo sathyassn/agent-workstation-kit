@@ -2015,19 +2015,25 @@ client hid this, because it routes everything.
     host and computer names, tailnet names) is read where the check runs,
     never stored, and blocks; CI checks the commits' git identities;
   - a person-name warning on changed prose runs locally only, warn-only and
-    time-boxed, never in CI by default;
+    time-boxed, and never in CI;
   - the keyed HMAC list is an optional layer, off by default, for private
     repositories such as the fleet;
-  - exemptions are tracked records (path, value or pattern, reason,
-    approver, review or expiry date), changed only by a reviewed PR and
-    listed in the output;
-  - the scan fails closed when the file listing fails or is empty;
+  - exemptions are tracked records (exact path, exact value, reason,
+    approver, expiry date), read from the base revision only, invalid once
+    expired, and listed on every run;
+  - every blocking layer fails closed: a failed or empty listing, a crashed
+    or skipped detector, a failed identity source, incomplete CI history or
+    exceeded caps is a failure, never a pass; in CI the base revision's
+    scanner judges the head as data only; a non-default mode is printed on
+    every run;
   - findings print only file, line and rule, never the matched text, so CI
     logs cannot leak what the scan exists to catch;
-  - the rule file and the scanner's own tests are scanned too, allowing only
-    listed synthetic values;
-  - obfuscations are caught: zero-padded octets, glued prefixes, and partial
-    private-range prefixes.
+  - the exemption records and the scanner's own tests are scanned too,
+    allowing only documented synthetic values;
+  - inputs are decoded and folded before detection (escapes, UTF-16, case,
+    confusable characters, zero-padded octets, glued and partial prefixes);
+    a file with NUL bytes is refused unless a hash-bound binary exception
+    names its content hash.
 - **Doc tests.** From T2 on, runbook command blocks run in preview mode
   against fixtures. Each block is marked `preview-tested` or `human-only`.
 - **Each PR's gate:** the engineering standard (`docs/standards/engineering.md`,
