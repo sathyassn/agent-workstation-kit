@@ -1141,7 +1141,8 @@ func TestPackageDBScanEMFILEFailsClosed(t *testing.T) {
 // TestPackageDBScanUnprivilegedRecordsUnreadableSubdir is G1 (unprivileged):
 // when not running as root, a 0o000 (unreadable) subdirectory inside a
 // package-DB root (such as Ubuntu's 0700 _apt partial directories) must not
-// fail startup; its (dev, ino) is recorded so any target beneath it is refused
+// fail startup; its (dev, ino) is recorded so any target reached through that
+// directory's identity (even via a non-package-DB parent/prefix) is refused
 // with ErrPackageDBPath (exit 2), and sibling subtrees continue scanning.
 func TestPackageDBScanUnprivilegedRecordsUnreadableSubdir(t *testing.T) {
 	if os.Geteuid() == 0 {
@@ -1152,7 +1153,13 @@ func TestPackageDBScanUnprivilegedRecordsUnreadableSubdir(t *testing.T) {
 		t.Fatal(err)
 	}
 	root := filepath.Join(dir, "root")
-	pkgRoot := filepath.Join(root, "pkgdb")
+	if err := os.MkdirAll(root, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	// Keep pkgRoot outside root so the later alias inside root is NOT under
+	// any package-DB root prefix and can ONLY be refused by locked's own
+	// recorded (dev, ino) identity.
+	pkgRoot := filepath.Join(dir, "real-pkgdb")
 	locked := filepath.Join(pkgRoot, "partial")
 	sibling := filepath.Join(pkgRoot, "lists", "nested")
 	if err := os.MkdirAll(locked, 0o750); err != nil {
@@ -1164,7 +1171,11 @@ func TestPackageDBScanUnprivilegedRecordsUnreadableSubdir(t *testing.T) {
 	if err := os.Chmod(locked, 0o000); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) }) //nolint:gosec // restore directory permissions for t.TempDir cleanup
+	aliasDir := filepath.Join(root, "non-pkgdb-alias")
+	t.Cleanup(func() {
+		_ = os.Chmod(locked, 0o700)   //nolint:gosec // restore directory permissions for t.TempDir cleanup
+		_ = os.Chmod(aliasDir, 0o700) //nolint:gosec // restore directory permissions for t.TempDir cleanup
+	})
 
 	table := platformtest.NewProcessTable("boot-pkgdb-unpriv")
 	e, err := New(Options{
@@ -1195,10 +1206,22 @@ func TestPackageDBScanUnprivilegedRecordsUnreadableSubdir(t *testing.T) {
 		t.Fatalf("checkPackageDBStat(sibling subdir) = %v (exit %d), want ErrPackageDBPath (exit 2)", err, ExitCode(err))
 	}
 
-	// Any target path beneath the unreadable subdir must be refused with ErrPackageDBPath (exit 2).
-	target := "/pkgdb/partial/archive.deb"
+	// Re-expose the unreadable directory's exact (dev, ino) under a non-pkgdb
+	// parent and non-pkgdb prefix (rename on the same filesystem preserves
+	// dev/ino, modelling a bind mount of the unreadable subdir). Only locked's
+	// own recorded (dev, ino) can refuse this path.
+	if err := os.Chmod(locked, 0o750); err != nil { //nolint:gosec // restore directory permissions before renaming test alias
+		t.Fatal(err)
+	}
+	if err := os.Rename(locked, aliasDir); err != nil {
+		t.Fatal(err)
+	}
+	target := "/non-pkgdb-alias/archive.deb"
 	err = e.Apply(context.Background(), failingWriteUnit{path: target, fail: false}, contract.Plan{ID: "p", Unit: contract.UnitShell, Digest: "d"})
 	if !errors.Is(err, ErrPackageDBPath) || ExitCode(err) != contract.ExitRefused {
-		t.Fatalf("Apply under unreadable package-DB subdir = %v (exit %d), want ErrPackageDBPath (exit 2)", err, ExitCode(err))
+		t.Fatalf("Apply under aliased unreadable subdir = %v (exit %d), want ErrPackageDBPath (exit 2)", err, ExitCode(err))
+	}
+	if !strings.Contains(err.Error(), "partial") {
+		t.Fatalf("ErrPackageDBPath = %v, want refusal attributed specifically to unreadable subdir %q", err, locked)
 	}
 }
