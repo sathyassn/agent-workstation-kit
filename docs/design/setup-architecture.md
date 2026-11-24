@@ -359,7 +359,7 @@ This is a user decision (2026-11-21).
   - `validate` checks the schema and that company and machine files agree;
   - `host add|show|record|retire` manages machine records;
   - `check [--host]` is the doctor with fleet inputs;
-  - `privacy-lint` is the keyed identifier scan (section 12), generic;
+  - `privacy-lint` is the public-safety scan (section 12), generic, with the optional keyed list on for a private fleet;
   - `lock show|bump` shows and moves the kit pin, verified against the
     release checksum and signature;
   - `values get|set|explain` reads and writes company values with their
@@ -2004,13 +2004,24 @@ client hid this, because it routes everything.
   - the public-safety scan passes (hardened below);
   - the Go build and test jobs pass on Linux and macOS, and the frozen
     Python's jobs pass while it remains (from T1).
-- **Public-safety scan hardening** (its own security PR, with a
-  cross-lineage review; it does not depend on T1):
-  - personal names and private network names are matched by keyed HMAC, so
-    the rule file neither contains them nor lets them be guessed; the key
-    lives in an untracked local file and a CI secret;
-  - CI fails closed when the key is missing, and when the file listing fails
-    or is empty;
+- **Public-safety scan hardening** (its own security PRs, with a
+  cross-lineage review; it does not depend on T1). Re-scoped by operator
+  decision (2026-11-23, EPC-002): no hand-kept list of names.
+  - Deterministic detectors that need no list block in the pre-push check
+    and in CI: emails, phone numbers, IP and MAC addresses, real home paths,
+    private DNS names, cloud account and project IDs, chat and tracker user
+    IDs, and secrets; they need no secret and run in well under a second;
+  - the contributor's own identity (git identity, account and full name,
+    host and computer names, tailnet names) is read where the check runs,
+    never stored, and blocks; CI checks the commits' git identities;
+  - a person-name warning on changed prose runs locally only, warn-only and
+    time-boxed, never in CI by default;
+  - the keyed HMAC list is an optional layer, off by default, for private
+    repositories such as the fleet;
+  - exemptions are tracked records (path, value or pattern, reason,
+    approver, review or expiry date), changed only by a reviewed PR and
+    listed in the output;
+  - the scan fails closed when the file listing fails or is empty;
   - findings print only file, line and rule, never the matched text, so CI
     logs cannot leak what the scan exists to catch;
   - the rule file and the scanner's own tests are scanned too, allowing only
