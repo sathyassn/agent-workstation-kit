@@ -323,6 +323,87 @@ class DeterministicDetectorTests(unittest.TestCase):
             )
             self.assertEqual(["docs/sample.txt:1: matched rule 'private-dns'"], res.failures)
 
+    def test_private_dns_allows_go_and_code_member_local_access(self) -> None:
+        allowed_cases = (
+            join("time", ".Local"),
+            "t := time.Date(2026, 1, 1, 0, 0, 0, 0, " + join("time", ".Local") + ")",
+            join("now", ".Local()"),
+            join("cfg", ".local("),
+            join("foo", ".local(x)"),
+            join("foo", ".Local", ".String()"),
+            join("s", ".Local", ".String()"),
+            join("x", ".Local:"),
+            "case " + join("x", ".Local:"),
+            join("x", ".Local"),
+            join("a.b", ".Local"),
+            join("my_cfg", ".Local"),
+            join("my_cfg", ".local(arg)"),
+            join("v2", ".Local"),
+        )
+        for sample in allowed_cases:
+            with self.subTest(allowed=sample):
+                res = public_release.scan_sources(
+                    [public_release.SourceFile("internal/sample.go", (sample + "\n").encode("utf-8"))]
+                )
+                self.assertEqual([], res.failures, (sample, res.failures))
+
+        # Allowing a Go member access on a line must never mask a real private DNS name on the same line.
+        mixed = "loc := " + join("time", ".Local") + " // host " + join("my-mac", ".local") + "\n"
+        mixed_res = public_release.scan_sources(
+            [public_release.SourceFile("internal/sample.go", mixed.encode("utf-8"))]
+        )
+        self.assertEqual(["internal/sample.go:1: matched rule 'private-dns'"], mixed_res.failures)
+
+    def test_private_dns_still_blocks_real_local_internal_and_ts_net_forms(self) -> None:
+        blocked_cases = (
+            join("my-mac", ".local"),
+            join("MY-MAC", ".LOCAL"),
+            join("my-mac", ".local", ":8080"),
+            join("mac-mini", ".local", ":22"),
+            join("https://", "box", ".local", "/api"),
+            join("https://", "printer", ".local", "/status"),
+            join("ssh admin@", "box", ".local"),
+            join("box", ".local", "."),
+            join("hostname", ".local"),
+            join("workstation", ".local"),
+            join("MyMac", ".local"),
+            join("BOX", ".LOCAL"),
+            join("my-mac", ".Local"),
+            join("https://", "Box", ".Local", "/api"),
+            join("ssh admin@", "Box", ".Local"),
+            join("box", ".Local", ":8080"),
+            join("box", ".Local", "."),
+            join("box", ".lOcAl"),
+            join("BOX", ".LOCAL", "(note)"),
+            join("my-mac", ".local", "(note)"),
+            join("https://", "box", ".local", "(x)"),
+            join("01", ".Local"),
+            # Homoglyph, lookalike, and escape-encoded forms must remain blocked.
+            join("mybox", "\u2024", "local"),
+            join("myb", "\u03bf", "x", ".local"),
+            join("mybox", ".l", "\u03bf", "cal"),
+            join("mybox", "%2e", "local"),
+            join("mybox", "\\u002e", "local"),
+            join("mybox", "\u2024", "ts", "\u3002", "net"),
+            join("myb", "\u03bf", "x", ".ts", ".net"),
+            join("mybox", "\u2024", "internal"),
+            join("myb", "\u03bf", "x", ".internal"),
+            # .internal and .ts.net detection must remain unchanged even with call/Title-case syntax.
+            join("foo", ".Internal"),
+            join("foo", ".internal(x)"),
+            join("foo", ".Ts.Net"),
+            join("foo", ".ts.net(x)"),
+        )
+        for sample in blocked_cases:
+            with self.subTest(blocked=sample):
+                res = public_release.scan_sources(
+                    [public_release.SourceFile("docs/sample.txt", (sample + "\n").encode("utf-8"))]
+                )
+                self.assertTrue(
+                    any("matched rule 'private-dns'" in f for f in res.failures),
+                    (sample, res.failures),
+                )
+
     def test_cloud_id_detector(self) -> None:
         self.assertRuleOutcome(
             "cloud-id",

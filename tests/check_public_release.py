@@ -429,6 +429,8 @@ PRIVATE_DNS_RE = re.compile(
     r"(?!\.[A-Za-z0-9-])(?![A-Za-z0-9-])",
     re.IGNORECASE,
 )
+PRIVATE_DNS_CODE_IDENT_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*$")
+PRIVATE_DNS_PORT_SUFFIX_RE = re.compile(r":\d+")
 
 AWS_ARN_RE = re.compile(
     r"arn:aws(?:-[a-z]+)?:[a-z0-9-]+:[a-z0-9-]*:(\d{12}):[^\s\"'`<>]*",
@@ -1078,6 +1080,36 @@ def detect_home_path(text: str) -> list[str]:
     return hits
 
 
+def _is_code_member_local(text: str, match: re.Match[str]) -> bool:
+    """Return True when a `.local` match is a Go/code member or method access.
+
+    Preserves case before folding: only exact Title-case `.Local` member access
+    or `.local(`/`.Local(` method calls on valid code identifier chains (no
+    hyphens, no leading digits, no URL `://`, no `@`, no `:port`, and no
+    trailing FQDN `.`) are treated as code rather than mDNS hostnames.
+    """
+    raw = match.group(1)
+    prefix, dot, tld = raw.rpartition(".")
+    if not dot or tld.casefold() != "local":
+        return False
+    if not all(PRIVATE_DNS_CODE_IDENT_RE.fullmatch(label) for label in prefix.split(".")):
+        return False
+    start, end = match.span(1)
+    if start >= 3 and text[start - 3 : start] == "://":
+        return False
+    if start >= 1 and text[start - 1] == "@":
+        return False
+    if end < len(text):
+        next_ch = text[end]
+        if next_ch == "(" and tld in ("local", "Local"):
+            return True
+        if next_ch == ":" and PRIVATE_DNS_PORT_SUFFIX_RE.match(text, end) is not None:
+            return False
+        if next_ch == ".":
+            return False
+    return tld == "Local"
+
+
 def detect_private_dns(text: str) -> list[str]:
     if "." not in text:
         return []
@@ -1086,6 +1118,8 @@ def detect_private_dns(text: str) -> list[str]:
         return []
     hits: list[str] = []
     for match in PRIVATE_DNS_RE.finditer(text):
+        if _is_code_member_local(text, match):
+            continue
         folded = match.group(1).casefold()
         if folded in ALLOWED_PRIVATE_DNS:
             continue
