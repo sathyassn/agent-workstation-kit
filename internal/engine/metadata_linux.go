@@ -20,6 +20,20 @@ const (
 	posixACLDefault = "system.posix_acl_default"
 )
 
+func validateXattrForOS(_ string, _ []byte) error {
+	return nil
+}
+
+func validateACLForOS(acl *FileACL) error {
+	if acl == nil {
+		return nil
+	}
+	if acl.Kind != ACLKindLinuxPOSIX {
+		return fmt.Errorf("%w: cannot apply %q ACL on linux", ErrRestoreMismatch, acl.Kind)
+	}
+	return nil
+}
+
 func readFileMetadata(f *os.File) (FileMetadata, error) {
 	status, all, err := readAllXattrs(f, nil)
 	if err != nil {
@@ -34,7 +48,7 @@ func readFileMetadata(f *os.File) (FileMetadata, error) {
 	var xattrs []XattrEntry
 	var acl *FileACL
 	for _, x := range all {
-		switch x.Name {
+		switch string(x.Name) {
 		case posixACLAccess:
 			if acl == nil {
 				acl = &FileACL{Kind: ACLKindLinuxPOSIX}
@@ -74,16 +88,16 @@ func applyFileMetadata(f *os.File, m FileMetadata) error {
 			}
 			return nil
 		}
-		if m.ACL.Kind != ACLKindLinuxPOSIX {
-			return fmt.Errorf("%w: cannot apply %q ACL on linux", ErrRestoreMismatch, m.ACL.Kind)
+		if err := validateACLForOS(m.ACL); err != nil {
+			return err
 		}
 		if len(m.ACL.Access) > 0 {
-			if err := setOneXattr(f, posixACLAccess, m.ACL.Access); err != nil {
+			if err := setOneXattr(f, []byte(posixACLAccess), m.ACL.Access); err != nil {
 				return err
 			}
 		}
 		if len(m.ACL.Default) > 0 {
-			if err := setOneXattr(f, posixACLDefault, m.ACL.Default); err != nil {
+			if err := setOneXattr(f, []byte(posixACLDefault), m.ACL.Default); err != nil {
 				return err
 			}
 		}

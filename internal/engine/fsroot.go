@@ -36,6 +36,17 @@ func openDir(abs string) (*os.File, error) {
 	return d, nil
 }
 
+// openTargetDir opens the folder at abs without following links and refuses
+// crossing any walked component whose (dev, ino) matches a resolved
+// package-database directory.
+func (e *Engine) openTargetDir(abs string) (*os.File, error) {
+	d, err := platform.OpenDirNoFollowFunc(abs, e.checkPackageDBFD)
+	if err != nil {
+		return nil, fmt.Errorf("walk: %w", err)
+	}
+	return d, nil
+}
+
 // parent is an open folder and a name inside it.
 type parent struct {
 	dir  *os.File
@@ -48,6 +59,18 @@ func openParent(abs string) (parent, error) {
 		return parent{}, fmt.Errorf("%w: %q has no final name", ErrPathLink, abs)
 	}
 	dir, err := openDir(filepath.Clean(d))
+	if err != nil {
+		return parent{}, err
+	}
+	return parent{dir: dir, name: name}, nil
+}
+
+func (e *Engine) openParent(abs string) (parent, error) {
+	d, name := filepath.Split(abs)
+	if name == "" {
+		return parent{}, fmt.Errorf("%w: %q has no final name", ErrPathLink, abs)
+	}
+	dir, err := e.openTargetDir(filepath.Clean(d))
 	if err != nil {
 		return parent{}, err
 	}
@@ -81,6 +104,36 @@ func (p parent) open() (*os.File, error) {
 		return nil, fmt.Errorf("open %q: %w", p.path(), err)
 	}
 	return os.NewFile(uintptr(fd), p.path()), nil
+}
+
+// openChecked opens the regular file at p without following links, fstats the
+// opened descriptor, and refuses if dev, ino or file type changed since st.
+// Callers must derive every file attribute (mode, owner, size, metadata and
+// content) exclusively from the returned descriptor and stat result.
+func (p parent) openChecked(st unix.Stat_t) (*os.File, unix.Stat_t, error) {
+	f, err := p.open()
+	if err != nil {
+		return nil, unix.Stat_t{}, err
+	}
+	var fst unix.Stat_t
+	if err := unix.Fstat(int(f.Fd()), &fst); err != nil {
+		_ = f.Close()
+		return nil, unix.Stat_t{}, fmt.Errorf("fstat %q: %w", p.path(), err)
+	}
+	if fst.Dev != st.Dev || fst.Ino != st.Ino || (fst.Mode&unix.S_IFMT) != (st.Mode&unix.S_IFMT) {
+		_ = f.Close()
+		return nil, unix.Stat_t{}, fmt.Errorf("%w: %q dev/ino/type changed after stat", ErrTargetChanged, p.path())
+	}
+	return f, fst, nil
+}
+
+// checkWritable checks that this process has write and search access on p's
+// opened parent directory without creating or modifying any entry.
+func (p parent) checkWritable() error {
+	if err := unix.Faccessat(p.fd(), ".", unix.W_OK|unix.X_OK, 0); err != nil {
+		return fmt.Errorf("parent folder %q is not writable: %w", p.dir.Name(), err)
+	}
+	return nil
 }
 
 // errLinkTarget explains why a link target is refused.

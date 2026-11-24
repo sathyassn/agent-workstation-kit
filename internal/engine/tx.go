@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"runtime"
 	"strconv"
 	"sync"
+	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -148,7 +150,7 @@ func (t *tx) WriteFile(ctx context.Context, path string, data []byte, perm fs.Fi
 	if err != nil {
 		return err
 	}
-	p, err := openParent(t.e.real(path))
+	p, err := t.e.openParent(t.e.real(path))
 	if err != nil {
 		return err
 	}
@@ -184,7 +186,7 @@ func (t *tx) editBlock(ctx context.Context, path string, edit func(string) (stri
 	if err != nil {
 		return err
 	}
-	p, err := openParent(t.e.real(path))
+	p, err := t.e.openParent(t.e.real(path))
 	if err != nil {
 		return err
 	}
@@ -200,12 +202,12 @@ func (t *tx) editBlock(ctx context.Context, path string, edit func(string) (stri
 		// Editing through a link would replace the link with a file.
 		return fmt.Errorf("%w: %q is not a regular file", ErrUnsupportedTarget, path)
 	default:
-		spec.perm = unixMode(st)
-		spec.owner = &contract.Owner{UID: int(st.Uid), GID: int(st.Gid)}
-		f, err := p.open()
+		f, fst, err := p.openChecked(st)
 		if err != nil {
 			return err
 		}
+		spec.perm = unixMode(fst)
+		spec.owner = &contract.Owner{UID: int(fst.Uid), GID: int(fst.Gid)}
 		meta, metaErr := t.e.meta().Read(f)
 		if metaErr != nil {
 			_ = f.Close()
@@ -216,6 +218,9 @@ func (t *tx) editBlock(ctx context.Context, path string, edit func(string) (stri
 		_ = f.Close()
 		if err != nil {
 			return fmt.Errorf("read %q: %w", path, err)
+		}
+		if int64(len(cur)) != fst.Size {
+			return fmt.Errorf("%w: %q size changed during read (%d vs %d)", ErrTargetChanged, path, len(cur), fst.Size)
 		}
 	}
 	next, err := edit(string(cur))
@@ -241,7 +246,7 @@ func (t *tx) Remove(ctx context.Context, path string) error {
 	if err != nil {
 		return err
 	}
-	p, err := openParent(t.e.real(path))
+	p, err := t.e.openParent(t.e.real(path))
 	if err != nil {
 		return err
 	}
@@ -356,15 +361,27 @@ func (t *tx) setStateLocked(
 		}
 	}
 
-	if err := p.Write(ctx, key, want); err != nil {
+	t.e.fault(PointStateBackup)
+
+	pkgTxn := name == contract.ProviderPackages
+	writeCtx := platform.WithCommandRunner(ctx, t.containedRunner(pkgTxn))
+	if err := p.Write(writeCtx, key, want); err != nil {
 		writeErr := fmt.Errorf("write state %q: %w", key, err)
+		if sinkErr := t.sinkErr(); errors.Is(sinkErr, ErrEmptinessUnknown) {
+			return errors.Join(writeErr, sinkErr)
+		}
 		restoreCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), t.e.opts.StateRestoreTimeout)
 		defer cancel()
+		restoreCtx = platform.WithCommandRunner(restoreCtx, t.containedRunner(pkgTxn))
 		if restoreErr := p.Restore(restoreCtx, snap); restoreErr != nil {
 			return errors.Join(writeErr, fmt.Errorf("%w for %q: %w", ErrStateRestoreFailed, key, restoreErr))
 		}
 		return writeErr
 	}
+	if sinkErr := t.sinkErr(); sinkErr != nil {
+		return sinkErr
+	}
+	t.e.fault(PointStateWrite)
 
 	ref := contract.BackupRef(string(t.m.RunID) + ":" + fileName)
 	after := digest([]byte(want.Value))
@@ -386,6 +403,43 @@ func (t *tx) setStateLocked(
 	}})
 	t.e.fault(PointMutation)
 	return nil
+}
+
+// containedCommandRunner adapts the engine's recorded containment to
+// platform.CommandRunner so OS commands run by a StateProvider during SetState
+// are tracked in the intent record and drained by Resume before any restore.
+// Its Run method is invoked only while tx.opMu is already held by setStateLocked.
+type containedCommandRunner struct {
+	t      *tx
+	pkgTxn bool
+}
+
+func (t *tx) containedRunner(pkgTxn bool) platform.CommandRunner {
+	return containedCommandRunner{t: t, pkgTxn: pkgTxn}
+}
+
+func (r containedCommandRunner) Run(ctx context.Context, spec platform.ExecSpec) (platform.ExecResult, error) {
+	if len(spec.Argv) == 0 {
+		return platform.ExecResult{}, platform.ErrCommandEmpty
+	}
+	if err := ctx.Err(); err != nil {
+		return platform.ExecResult{}, fmt.Errorf("state command %s: %w", spec.Argv[0], err)
+	}
+	if err := r.t.sinkErr(); err != nil {
+		return platform.ExecResult{}, err
+	}
+	var outBuf bytes.Buffer
+	res, err := r.t.runContainedLocked(ctx, spec.Argv, spec.Env, spec.Dir, 0, r.pkgTxn, &outBuf)
+	out := outBuf.String()
+	execRes := platform.ExecResult{
+		ExitCode: res.ExitCode,
+		Stdout:   out,
+		Duration: res.Duration,
+	}
+	if res.ExitCode != 0 {
+		execRes.Stderr = out
+	}
+	return execRes, err
 }
 
 // Run starts c inside a new containment of this run. The containment name is
@@ -412,13 +466,24 @@ func (t *tx) Run(ctx context.Context, c contract.Command) (contract.CommandResul
 	if err := t.sinkErr(); err != nil {
 		return contract.CommandResult{}, err
 	}
+	return t.runContainedLocked(ctx, c.Argv, t.toolEnv(c.EnvKeys), c.Dir, c.Timeout, c.PackageTransaction, t.e.opts.ToolLog)
+}
+
+func (t *tx) runContainedLocked(
+	ctx context.Context,
+	argv, env []string,
+	dir string,
+	timeout time.Duration,
+	pkgTxn bool,
+	output io.Writer,
+) (contract.CommandResult, error) {
 	bk := context.WithoutCancel(ctx)
 	t.cmdSeq++
 	name, err := t.e.opts.Containment.NameFor(t.m.RunID, t.cmdSeq)
 	if err != nil {
 		return contract.CommandResult{}, fmt.Errorf("containment name: %w", err)
 	}
-	if err := t.setCommand(bk, &CommandRecord{Name: name, PackageTransaction: c.PackageTransaction}); err != nil {
+	if err := t.setCommand(bk, &CommandRecord{Name: name, PackageTransaction: pkgTxn}); err != nil {
 		return contract.CommandResult{}, err
 	}
 	t.e.fault(PointLaunch)
@@ -426,47 +491,47 @@ func (t *tx) Run(ctx context.Context, c contract.Command) (contract.CommandResul
 	var sup platform.ProcessIdentity
 	runCtx, cancel := ctx, context.CancelFunc(func() {})
 	switch {
-	case c.PackageTransaction:
+	case pkgTxn:
 		// Waited for, never killed: no cancel, grace or timeout ends it.
 		runCtx = bk
-	case c.Timeout > 0:
-		runCtx, cancel = context.WithTimeout(ctx, c.Timeout)
+	case timeout > 0:
+		runCtx, cancel = context.WithTimeout(ctx, timeout)
 	}
 	defer cancel()
-	t.Emit(contract.Event{Kind: contract.EventCommand, Data: map[contract.DataKey]string{contract.DataArgv0: c.Argv[0]}})
+	t.Emit(contract.Event{Kind: contract.EventCommand, Data: map[contract.DataKey]string{contract.DataArgv0: argv[0]}})
 	res, err := t.e.opts.Containment.Run(runCtx, platform.LaunchSpec{
-		Name: name, Scope: t.e.opts.Scope, Argv: c.Argv, Env: t.toolEnv(c.EnvKeys), Dir: c.Dir,
-		PackageTransaction: c.PackageTransaction, Output: t.e.opts.ToolLog,
+		Name: name, Scope: t.e.opts.Scope, Argv: argv, Env: env, Dir: dir,
+		PackageTransaction: pkgTxn, Output: output,
 	}, func(ack platform.LaunchAck) error {
 		// The supervisor waits at its gate until this is durable.
 		sup = ack.Supervisor
-		return t.setCommand(bk, &CommandRecord{Name: name, PackageTransaction: c.PackageTransaction, Supervisor: sup})
+		return t.setCommand(bk, &CommandRecord{Name: name, PackageTransaction: pkgTxn, Supervisor: sup})
 	})
 	t.e.fault(PointCommandDone)
 	if err != nil {
-		err = fmt.Errorf("run %s: %w", c.Argv[0], err)
+		err = fmt.Errorf("run %s: %w", argv[0], err)
 	}
 	// Prove the containment empty before the unit moves on, whether the
 	// tool succeeded, failed or was cancelled: a tool can leave descendants.
 	// A package transaction's containment is only waited for.
-	if emptyErr := t.e.empty(bk, name, sup, c.PackageTransaction, 0); emptyErr != nil {
-		blocked := fmt.Errorf("%w: command %s: %w", ErrEmptinessUnknown, c.Argv[0], emptyErr)
+	if emptyErr := t.e.empty(bk, name, sup, pkgTxn, 0); emptyErr != nil {
+		blocked := fmt.Errorf("%w: command %s: %w", ErrEmptinessUnknown, argv[0], emptyErr)
 		t.fail(blocked)
 		return res, errors.Join(err, blocked)
 	}
-	if markErr := t.setCommand(bk, &CommandRecord{Name: name, PackageTransaction: c.PackageTransaction, Supervisor: sup, Finished: true}); markErr != nil {
+	if markErr := t.setCommand(bk, &CommandRecord{Name: name, PackageTransaction: pkgTxn, Supervisor: sup, Finished: true}); markErr != nil {
 		t.fail(markErr)
 		return res, errors.Join(err, markErr)
 	}
 	t.e.fault(PointCommandEmptied)
 	if err == nil && runCtx.Err() != nil {
-		err = fmt.Errorf("run %s: %w", c.Argv[0], runCtx.Err())
+		err = fmt.Errorf("run %s: %w", argv[0], runCtx.Err())
 	}
 	if failErr := t.sinkErr(); failErr != nil {
 		err = errors.Join(err, failErr)
 	}
 	t.Emit(contract.Event{Kind: contract.EventCommand, Data: map[contract.DataKey]string{
-		contract.DataArgv0: c.Argv[0], contract.DataExitCode: strconv.Itoa(res.ExitCode),
+		contract.DataArgv0: argv[0], contract.DataExitCode: strconv.Itoa(res.ExitCode),
 	}})
 	return res, err
 }

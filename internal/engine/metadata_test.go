@@ -275,7 +275,7 @@ func TestDarwinProvenanceNotRecordedInManifest(t *testing.T) {
 	}
 	for _, en := range m.Entries {
 		for _, xa := range en.Xattrs {
-			if xa.Name == "com.apple.provenance" {
+			if bytes.Equal(xa.Name, []byte("com.apple.provenance")) {
 				t.Fatalf("manifest recorded exempted com.apple.provenance on %q", en.Path)
 			}
 		}
@@ -358,4 +358,56 @@ func TestFailOrSkipInCI(t *testing.T) {
 			t.Fatalf("failed=%v skipped=%v, want failed=false skipped=true", m.failed, m.skipped)
 		}
 	})
+}
+
+// TestDarwinLargeACLOver512BytesPreserved is M3: macOS ACLs larger than 512
+// bytes (> 20 ACEs) must be captured without truncation using
+// FSOPT_REPORT_FULLSIZE and restored identically.
+func TestDarwinLargeACLOver512BytesPreserved(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("macOS kauth_filesec ACL test")
+	}
+	w := newWorld(t)
+	target := filepath.Join(w.root, pathA)
+	// Attach 26 positional ACEs: 44-byte kauth_filesec header + 26*24 = 668 bytes > 512 bytes.
+	// Using +a# 0 inserts without coalescing and uses allow-only rights so cleanup succeeds.
+	const aceCount = 26
+	for range aceCount {
+		// #nosec G204 -- fixed system tool on a test temp file.
+		if out, err := exec.Command("/bin/chmod", "+a#", "0", "everyone allow read", target).CombinedOutput(); err != nil {
+			failOrSkipInCI(t, "cannot add macOS ACE: %v %s", err, out)
+		}
+	}
+	wantACL := readACLText(t, target)
+	if lines := strings.Split(wantACL, "\n"); len(lines) < aceCount {
+		t.Fatalf("attached %d ACE lines, want at least %d:\n%s", len(lines), aceCount, wantACL)
+	}
+
+	e, _ := w.engine(t)
+	u := &testUnit{root: w.root, afterRun: func(context.Context) error { return errNotRestored }}
+	err := e.Apply(context.Background(), u, testPlan())
+	if !errors.Is(err, engine.ErrApplyFailed) || !errors.Is(err, errNotRestored) {
+		t.Fatalf("Apply err = %v (exit %d), want ErrApplyFailed wrapping errNotRestored", err, engine.ExitCode(err))
+	}
+	rec := w.record(t)
+	raw, err := os.ReadFile(filepath.Join(w.journal, "backups", string(rec.RunID), "manifest.json")) //nolint:gosec // test temp journal
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m engine.Manifest
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+	var aclLen int
+	for _, en := range m.Entries {
+		if en.Path == pathA && en.ACL != nil {
+			aclLen = len(en.ACL.Access)
+		}
+	}
+	if aclLen <= 512 {
+		t.Fatalf("captured ACL size = %d bytes, want > 512 bytes", aclLen)
+	}
+	if gotACL := readACLText(t, target); gotACL != wantACL {
+		t.Fatalf("restored large ACL mismatch:\ngot:\n%s\nwant:\n%s", gotACL, wantACL)
+	}
 }

@@ -192,7 +192,7 @@ func (e *Engine) providerNameForKey(key contract.StateKey) contract.StateProvide
 }
 
 func (e *Engine) backupOne(dir, name, path string) (ManifestEntry, error) {
-	p, err := openParent(e.real(path))
+	p, err := e.openParent(e.real(path))
 	if err != nil {
 		return ManifestEntry{}, err
 	}
@@ -204,12 +204,31 @@ func (e *Engine) backupOne(dir, name, path string) (ManifestEntry, error) {
 	if err != nil {
 		return ManifestEntry{}, err
 	}
-	en := ManifestEntry{Path: path, Mode: unixMode(st), UID: int(st.Uid), GID: int(st.Gid)}
+	if err := e.checkPackageDBStat(st, path); err != nil {
+		return ManifestEntry{}, err
+	}
 	switch st.Mode & unix.S_IFMT {
 	case unix.S_IFREG:
-		f, err := p.open()
+		if e.opts.afterLstat != nil {
+			e.opts.afterLstat(path)
+		}
+		f, fst, err := p.openChecked(st)
 		if err != nil {
 			return ManifestEntry{}, err
+		}
+		if err := e.checkPackageDBStat(fst, path); err != nil {
+			_ = f.Close()
+			return ManifestEntry{}, err
+		}
+		// Take every attribute (mode, owner, size, xattrs, ACLs and content)
+		// from the opened descriptor so a concurrent swap cannot split them.
+		en := ManifestEntry{
+			Path: path,
+			Kind: KindFile,
+			Mode: unixMode(fst),
+			UID:  int(fst.Uid),
+			GID:  int(fst.Gid),
+			Data: name,
 		}
 		meta, metaErr := e.meta().Read(f)
 		if metaErr != nil {
@@ -221,18 +240,21 @@ func (e *Engine) backupOne(dir, name, path string) (ManifestEntry, error) {
 		if err != nil {
 			return ManifestEntry{}, fmt.Errorf("read %q: %w", path, err)
 		}
-		en.Kind, en.Digest, en.Data = KindFile, digest(data), name
+		if int64(len(data)) != fst.Size {
+			return ManifestEntry{}, fmt.Errorf("%w: %q size changed during read (%d vs %d)", ErrTargetChanged, path, len(data), fst.Size)
+		}
+		en.Digest = digest(data)
 		en.XattrsStatus, en.Xattrs = meta.XattrsStatus, meta.Xattrs
 		en.ACLStatus, en.ACL = meta.ACLStatus, meta.ACL
 		if err := e.atomicWrite(filepath.Join(dir, name), fileSpec{data: data, perm: 0o600}); err != nil {
 			return ManifestEntry{}, err
 		}
+		return en, nil
 	case unix.S_IFLNK:
 		return ManifestEntry{}, fmt.Errorf("%w: %q %s", ErrUnsupportedTarget, path, errLinkTarget)
 	default:
 		return ManifestEntry{}, fmt.Errorf("%w: %q has file type %o", ErrUnsupportedTarget, path, st.Mode&unix.S_IFMT)
 	}
-	return en, nil
 }
 
 // unixMode converts a raw stat mode to the bits a backup keeps.
@@ -313,13 +335,29 @@ func (e *Engine) restoreInner(ctx context.Context, m *Manifest) error {
 	return nil
 }
 
-// validateManifestForRestore checks the whole manifest before replaying any
-// state snapshot or file entry, so a package-database path, tampered backup,
-// corrupt entry or missing provider never leaves a partial restore.
+// validateManifestForRestore checks the whole manifest and every live target's
+// restorability (parent accessibility/writability, absence of symlinks or
+// package-database aliases, incompatible live file types such as an absent
+// target that became a directory, metadata validity, backup digests and state
+// provider registration) before replaying any state snapshot or file entry, so
+// pre-validation failure exits 4 with zero state or file mutations.
 func (e *Engine) validateManifestForRestore(dir string, m *Manifest) error {
 	for _, en := range m.Entries {
 		if isPackageDBPath(en.Path) {
 			return fmt.Errorf("%w: %w: %q", ErrRestoreMismatch, ErrPackageDBPath, en.Path)
+		}
+		for _, xa := range en.Xattrs {
+			if len(xa.Name) == 0 || bytes.IndexByte(xa.Name, 0) >= 0 {
+				return fmt.Errorf("%w: %q has invalid extended attribute name", ErrCorruptRecord, en.Path)
+			}
+			if err := validateXattrForOS(en.Path, xa.Name); err != nil {
+				return err
+			}
+		}
+		if en.ACLStatus == MetadataCaptured {
+			if err := validateACLForOS(en.ACL); err != nil {
+				return err
+			}
 		}
 		switch en.Kind {
 		case KindAbsent, KindSymlink:
@@ -333,6 +371,9 @@ func (e *Engine) validateManifestForRestore(dir string, m *Manifest) error {
 			}
 		default:
 			return fmt.Errorf("%w: entry kind %q", ErrCorruptRecord, en.Kind)
+		}
+		if err := e.validateTargetRestorable(en); err != nil {
+			return err
 		}
 	}
 	for _, st := range m.States {
@@ -350,6 +391,49 @@ func (e *Engine) validateManifestForRestore(dir string, m *Manifest) error {
 	return nil
 }
 
+// validateTargetRestorable checks live filesystem preconditions for en without
+// modifying anything on disk.
+func (e *Engine) validateTargetRestorable(en ManifestEntry) error {
+	p, err := e.openParent(e.real(en.Path))
+	if err != nil {
+		return err
+	}
+	defer p.close()
+	st, statErr := p.lstat()
+	exists := false
+	switch {
+	case statErr == nil:
+		exists = true
+		if err := e.checkPackageDBStat(st, en.Path); err != nil {
+			return err
+		}
+	case errors.Is(statErr, fs.ErrNotExist):
+	default:
+		return statErr
+	}
+	switch en.Kind {
+	case KindAbsent:
+		if exists && st.Mode&unix.S_IFMT == unix.S_IFDIR {
+			return fmt.Errorf("%w: %q became a folder", ErrUnsupportedTarget, en.Path)
+		}
+		stale, err := hasStaleTemps(p)
+		if err != nil {
+			return err
+		}
+		if exists || stale {
+			return p.checkWritable()
+		}
+		return nil
+	case KindFile, KindSymlink:
+		if exists && st.Mode&unix.S_IFMT == unix.S_IFDIR {
+			return fmt.Errorf("%w: %q became a folder", ErrUnsupportedTarget, en.Path)
+		}
+		return p.checkWritable()
+	default:
+		return fmt.Errorf("%w: entry kind %q", ErrCorruptRecord, en.Kind)
+	}
+}
+
 func (e *Engine) restoreState(ctx context.Context, dir string, st ManifestState) error {
 	data, err := readFileAt(filepath.Join(dir, st.Data))
 	if err != nil {
@@ -365,6 +449,7 @@ func (e *Engine) restoreState(ctx context.Context, dir string, st ManifestState)
 	if err := p.Restore(ctx, contract.Snapshot{Provider: st.Provider, Data: data}); err != nil {
 		return fmt.Errorf("%w: restore state %q: %w", ErrRestoreMismatch, st.Provider, err)
 	}
+	e.fault(PointStateRestore)
 	after, err := p.Snapshot(ctx)
 	if err != nil {
 		return fmt.Errorf("%w: verify restored state %q: %w", ErrRestoreMismatch, st.Provider, err)
@@ -377,10 +462,10 @@ func (e *Engine) restoreState(ctx context.Context, dir string, st ManifestState)
 
 func (e *Engine) restoreOne(dir string, en ManifestEntry) error {
 	real := e.real(en.Path)
-	if err := removeTemps(real); err != nil {
+	if err := e.removeTemps(real); err != nil {
 		return err
 	}
-	p, err := openParent(real)
+	p, err := e.openParent(real)
 	if err != nil {
 		return err
 	}
@@ -437,7 +522,7 @@ func (e *Engine) restoreOne(dir string, en ManifestEntry) error {
 // following links and verifies its type, content digest, owner, mode,
 // extended attributes and ACLs against en.
 func (e *Engine) verifyRestoredEntry(en ManifestEntry) error {
-	p, err := openParent(e.real(en.Path))
+	p, err := e.openParent(e.real(en.Path))
 	if err != nil {
 		return fmt.Errorf("%w: %q: %w", ErrRestoreMismatch, en.Path, err)
 	}
@@ -456,20 +541,23 @@ func (e *Engine) verifyRestoredEntry(en ManifestEntry) error {
 		if st.Mode&unix.S_IFMT != unix.S_IFREG {
 			return fmt.Errorf("%w: %q is not a regular file after restore", ErrRestoreMismatch, en.Path)
 		}
-		if unixMode(st) != en.Mode {
-			return fmt.Errorf("%w: %q mode = %v, want %v", ErrRestoreMismatch, en.Path, unixMode(st), en.Mode)
-		}
-		if int(st.Uid) != en.UID || int(st.Gid) != en.GID {
-			return fmt.Errorf("%w: %q owner = %d:%d, want %d:%d", ErrRestoreMismatch, en.Path, st.Uid, st.Gid, en.UID, en.GID)
-		}
-		f, err := p.open()
+		f, fst, err := p.openChecked(st)
 		if err != nil {
 			return fmt.Errorf("%w: open %q: %w", ErrRestoreMismatch, en.Path, err)
 		}
 		defer func() { _ = f.Close() }()
+		if unixMode(fst) != en.Mode {
+			return fmt.Errorf("%w: %q mode = %v, want %v", ErrRestoreMismatch, en.Path, unixMode(fst), en.Mode)
+		}
+		if int(fst.Uid) != en.UID || int(fst.Gid) != en.GID {
+			return fmt.Errorf("%w: %q owner = %d:%d, want %d:%d", ErrRestoreMismatch, en.Path, fst.Uid, fst.Gid, en.UID, en.GID)
+		}
 		data, err := io.ReadAll(f)
 		if err != nil {
 			return fmt.Errorf("%w: read %q: %w", ErrRestoreMismatch, en.Path, err)
+		}
+		if int64(len(data)) != fst.Size {
+			return fmt.Errorf("%w: %q size changed during verify (%d vs %d)", ErrRestoreMismatch, en.Path, len(data), fst.Size)
 		}
 		if digest(data) != en.Digest {
 			return fmt.Errorf("%w: %q content digest mismatch after restore", ErrRestoreMismatch, en.Path)

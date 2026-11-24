@@ -64,6 +64,13 @@ var (
 	// package-manager database; packages are changed and reverted only
 	// through the package manager.
 	ErrPackageDBPath = errors.New("package-database path cannot be backed up or restored as a file")
+	// ErrTargetChanged reports a target whose device, inode, file type or size
+	// changed between stat and open/read.
+	ErrTargetChanged = errors.New("target changed between stat and open")
+	// ErrProtectedMetadata reports a target carrying OS-protected metadata
+	// (such as macOS SIP com.apple.rootless) that cannot be preserved across
+	// replacement or restore.
+	ErrProtectedMetadata = errors.New("target carries OS-protected metadata that cannot be preserved")
 	// ErrNilStateProvider reports SetState called with a nil StateProvider.
 	ErrNilStateProvider = errors.New("state provider is nil")
 	// ErrStateRestoreFailed reports that SetState could not restore the
@@ -108,6 +115,8 @@ func ExitCode(err error) contract.ExitCode {
 		return contract.ExitRecoveryBlocks
 	case errors.Is(err, contract.ErrUndeclaredTarget),
 		errors.Is(err, ErrPackageDBPath),
+		errors.Is(err, ErrTargetChanged),
+		errors.Is(err, ErrProtectedMetadata),
 		errors.Is(err, ErrUnregisteredProvider),
 		errors.Is(err, platform.ErrForbiddenEnv):
 		return contract.ExitRefused

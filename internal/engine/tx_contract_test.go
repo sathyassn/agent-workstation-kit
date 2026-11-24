@@ -400,7 +400,7 @@ func TestRestoreFailsClosedOnMetadataMismatch(t *testing.T) {
 	ops := &dropMetaOnApplyOps{
 		captured: FileMetadata{
 			XattrsStatus: MetadataCaptured,
-			Xattrs:       []XattrEntry{{Name: "user.expected", Value: []byte("v1")}},
+			Xattrs:       []XattrEntry{{Name: []byte("user.expected"), Value: []byte("v1")}},
 			ACLStatus:    MetadataCaptured,
 		},
 	}
@@ -456,12 +456,12 @@ func (u failingWriteUnit) Status(context.Context) (contract.Status, error) {
 }
 
 func TestEqualXattrsAndACLHelpers(t *testing.T) {
-	a := []XattrEntry{{Name: "b", Value: []byte("2")}, {Name: "a", Value: []byte("1")}}
-	b := []XattrEntry{{Name: "a", Value: []byte("1")}, {Name: "b", Value: []byte("2")}}
+	a := []XattrEntry{{Name: []byte("b"), Value: []byte("2")}, {Name: []byte("a"), Value: []byte("1")}}
+	b := []XattrEntry{{Name: []byte("a"), Value: []byte("1")}, {Name: []byte("b"), Value: []byte("2")}}
 	if !equalXattrs(a, b) {
 		t.Fatal("equalXattrs failed on differently ordered equal slices")
 	}
-	if equalXattrs(a, []XattrEntry{{Name: "a", Value: []byte("diff")}}) {
+	if equalXattrs(a, []XattrEntry{{Name: []byte("a"), Value: []byte("diff")}}) {
 		t.Fatal("equalXattrs matched unequal slices")
 	}
 	if !equalACL(nil, nil) {
@@ -479,4 +479,241 @@ func TestEqualXattrsAndACLHelpers(t *testing.T) {
 	_ = bytes.Equal(nil, nil)
 	_ = slices.Equal([]int{1}, []int{1})
 	_ = time.Second
+}
+
+// TestPackageDBGuardRefusesSameDevInoAlias is H2: even when a declared path's
+// spelling does not match any package-DB prefix (as with a bind mount or path
+// alias), walking through a directory whose (dev, ino) matches a resolved
+// package-DB root must be refused with ErrPackageDBPath (exit 2).
+func TestPackageDBGuardRefusesSameDevInoAlias(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(dir, "root")
+	aliasDir := filepath.Join(root, "mnt", "pkg-alias")
+	if err := os.MkdirAll(aliasDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	target := "/mnt/pkg-alias/status"
+	if err := os.WriteFile(filepath.Join(root, target), []byte("orig-db\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	table := platformtest.NewProcessTable("boot-pkgdb-ino")
+	e, err := New(Options{
+		JournalDir:          filepath.Join(dir, "journal"),
+		HostLock:            filepath.Join(dir, "host.lock"),
+		Root:                root,
+		Scope:               contract.ScopeUser,
+		Containment:         platformtest.NewContainment(table),
+		Inspector:           table.Inspector(table.Spawn()),
+		extraPackageDBPaths: []string{aliasDir},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = e.Apply(context.Background(), failingWriteUnit{path: target, fail: false}, contract.Plan{ID: "p", Unit: contract.UnitShell, Digest: "d"})
+	if !errors.Is(err, ErrPackageDBPath) || ExitCode(err) != contract.ExitRefused {
+		t.Fatalf("Apply on bind-mount/alias package-DB path = %v (exit %d), want ErrPackageDBPath (exit 2)", err, ExitCode(err))
+	}
+	rec, err := e.readRecord()
+	if err != nil || rec != nil {
+		t.Fatalf("intent written for package-DB alias: %+v, %v", rec, err)
+	}
+}
+
+// TestBackupRefusesLstatFstatMismatchAndUsesOpenedFD is H3: backupOne must
+// fstat the opened fd, refuse if dev/ino/type changed after lstat, and take
+// every attribute (owner, mode, size, xattrs, ACLs, content) from the opened fd.
+func TestBackupRefusesLstatFstatMismatchAndUsesOpenedFD(t *testing.T) {
+	t.Run("inode swapped between lstat and open is refused", func(t *testing.T) {
+		dir, err := filepath.EvalSymlinks(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		root := filepath.Join(dir, "root")
+		target := "/etc/wskit-toctou.conf"
+		realTarget := filepath.Join(root, target)
+		if err := os.MkdirAll(filepath.Dir(realTarget), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(realTarget, []byte("before-swap\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		table := platformtest.NewProcessTable("boot-toctou")
+		e, err := New(Options{
+			JournalDir:  filepath.Join(dir, "journal"),
+			HostLock:    filepath.Join(dir, "host.lock"),
+			Root:        root,
+			Scope:       contract.ScopeUser,
+			Containment: platformtest.NewContainment(table),
+			Inspector:   table.Inspector(table.Spawn()),
+			afterLstat: func(_ string) {
+				tmp := realTarget + ".swap"
+				_ = os.WriteFile(tmp, []byte("swapped-inode\n"), 0o600)
+				_ = os.Rename(tmp, realTarget)
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = e.Apply(context.Background(), failingWriteUnit{path: target, fail: false}, contract.Plan{ID: "p", Unit: contract.UnitShell, Digest: "d"})
+		if !errors.Is(err, ErrTargetChanged) || ExitCode(err) != contract.ExitRefused {
+			t.Fatalf("Apply err = %v (exit %d), want ErrTargetChanged (exit 2)", err, ExitCode(err))
+		}
+		rec, rerr := e.readRecord()
+		if rerr != nil || rec != nil {
+			t.Fatalf("intent written after lstat/fstat mismatch: %+v, %v", rec, rerr)
+		}
+	})
+
+	t.Run("file replaced by directory between lstat and open is refused", func(t *testing.T) {
+		dir, err := filepath.EvalSymlinks(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		root := filepath.Join(dir, "root")
+		target := "/etc/wskit-typeswap.conf"
+		realTarget := filepath.Join(root, target)
+		if err := os.MkdirAll(filepath.Dir(realTarget), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(realTarget, []byte("before-dir\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		table := platformtest.NewProcessTable("boot-typeswap")
+		e, err := New(Options{
+			JournalDir:  filepath.Join(dir, "journal"),
+			HostLock:    filepath.Join(dir, "host.lock"),
+			Root:        root,
+			Scope:       contract.ScopeUser,
+			Containment: platformtest.NewContainment(table),
+			Inspector:   table.Inspector(table.Spawn()),
+			afterLstat: func(_ string) {
+				_ = os.Remove(realTarget)
+				_ = os.Mkdir(realTarget, 0o700)
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = e.Apply(context.Background(), failingWriteUnit{path: target, fail: false}, contract.Plan{ID: "p", Unit: contract.UnitShell, Digest: "d"})
+		if !errors.Is(err, ErrTargetChanged) || ExitCode(err) != contract.ExitRefused {
+			t.Fatalf("Apply err = %v (exit %d), want ErrTargetChanged (exit 2)", err, ExitCode(err))
+		}
+	})
+
+	t.Run("mode comes from fstat on opened fd rather than earlier lstat", func(t *testing.T) {
+		dir, err := filepath.EvalSymlinks(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		root := filepath.Join(dir, "root")
+		target := "/etc/wskit-fstat-mode.conf"
+		realTarget := filepath.Join(root, target)
+		if err := os.MkdirAll(filepath.Dir(realTarget), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(realTarget, []byte("same-inode\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		table := platformtest.NewProcessTable("boot-fstat")
+		e, err := New(Options{
+			JournalDir:  filepath.Join(dir, "journal"),
+			HostLock:    filepath.Join(dir, "host.lock"),
+			Root:        root,
+			Scope:       contract.ScopeUser,
+			Containment: platformtest.NewContainment(table),
+			Inspector:   table.Inspector(table.Spawn()),
+			afterLstat: func(_ string) {
+				// Chmod the exact same inode between lstat and open.
+				_ = os.Chmod(realTarget, 0o640) //nolint:gosec // test temp file
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = e.Apply(context.Background(), failingWriteUnit{path: target, fail: false}, contract.Plan{ID: "p", Unit: contract.UnitShell, Digest: "d"})
+		if err != nil {
+			t.Fatalf("Apply: %v", err)
+		}
+		rec, err := e.readRecord()
+		if err != nil || rec == nil {
+			t.Fatalf("readRecord = %v, %v", rec, err)
+		}
+		m, err := e.readManifest(rec.RunID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(m.Entries) != 1 || m.Entries[0].Mode != 0o640 {
+			t.Fatalf("manifest Mode = %v, want 0640 from fstat on opened fd", m.Entries[0].Mode)
+		}
+	})
+}
+
+type memoryMetadataOps struct {
+	mu      sync.Mutex
+	current FileMetadata
+	applied []XattrEntry
+}
+
+func (m *memoryMetadataOps) Read(_ *os.File) (FileMetadata, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.current, nil
+}
+
+func (m *memoryMetadataOps) Apply(_ *os.File, meta FileMetadata) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.applied = append([]XattrEntry(nil), meta.Xattrs...)
+	m.current = meta
+	return nil
+}
+
+// TestNonUTF8XattrNameRoundTripsThroughBackupAndRestore is M4 end-to-end:
+// a non-UTF-8 extended attribute name (user.\xff\xfe) survives backup,
+// manifest.json persistence on disk, restore Apply and post-restore verify.
+func TestNonUTF8XattrNameRoundTripsThroughBackupAndRestore(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(dir, "root")
+	target := "/etc/wskit-nonutf8.conf"
+	if err := os.MkdirAll(filepath.Join(root, "etc"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, target), []byte("orig\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rawName := []byte("user.\xff\xfe")
+	rawVal := []byte("raw\x00\xff")
+	ops := &memoryMetadataOps{
+		current: FileMetadata{
+			XattrsStatus: MetadataCaptured,
+			Xattrs:       []XattrEntry{{Name: rawName, Value: rawVal}},
+			ACLStatus:    MetadataCaptured,
+		},
+	}
+	table := platformtest.NewProcessTable("boot-nonutf8")
+	e, err := New(Options{
+		JournalDir:  filepath.Join(dir, "journal"),
+		HostLock:    filepath.Join(dir, "host.lock"),
+		Root:        root,
+		Scope:       contract.ScopeUser,
+		Containment: platformtest.NewContainment(table),
+		Inspector:   table.Inspector(table.Spawn()),
+		metaOps:     ops,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = e.Apply(context.Background(), failingWriteUnit{path: target, fail: true}, contract.Plan{ID: "p", Unit: contract.UnitShell, Digest: "d"})
+	if !errors.Is(err, ErrApplyFailed) {
+		t.Fatalf("Apply err = %v, want ErrApplyFailed after lossless restore", err)
+	}
+	if len(ops.applied) != 1 || !bytes.Equal(ops.applied[0].Name, rawName) || !bytes.Equal(ops.applied[0].Value, rawVal) {
+		t.Fatalf("applied xattrs = %+v, want exact raw name %x and value %x", ops.applied, rawName, rawVal)
+	}
 }

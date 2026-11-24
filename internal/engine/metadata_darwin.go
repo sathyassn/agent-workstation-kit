@@ -15,13 +15,33 @@ func isMissingXattrErr(err error) bool {
 	return errors.Is(err, unix.ENOATTR) || errors.Is(err, unix.ENODATA)
 }
 
-// systemProvenance is the attribute macOS attaches by itself to files that
-// ordinary processes write, the engine's own writes included. It records
-// which process wrote the file for Gatekeeper; it is not file content the
-// kit set, and the OS attaches it again to whatever the engine writes, so a
-// backup omits it and restore validation ignores it.
+// macOS kernel-managed extended attributes fall into two distinct classes:
+//
+//  1. OS-attached bookkeeping attributes on ordinary user files, excluded
+//     consistently at backup, apply and verify because macOS attaches them
+//     automatically and blocks user-space modification (EPERM or silent
+//     rewriting):
+//     - com.apple.provenance: Gatekeeper/EndpointSecurity writer tracking
+//     attached to files written by ordinary processes, the engine included.
+//     - com.apple.macl: TCC/Sandbox per-file Mandatory Access Control List
+//     attached by macOS whenever a sandboxed app accesses a user file;
+//     SIP prevents user-space setxattr/removexattr on it.
+//
+//  2. SIP/kernel-protected target markers whose presence means the target
+//     itself cannot be safely replaced or restored by user-space processes;
+//     refused at backup time (ErrProtectedMetadata, exit 2) before any change
+//     or intent is written, and refused on restore if forged in a manifest:
+//     - com.apple.rootless: System Integrity Protection restriction marker.
+//     - com.apple.decmpfs: APFS/HFS+ kernel transparent compression store.
+//     - com.apple.system.Security: kernel-managed ACL backing store (ACLs
+//     are captured through ATTR_CMN_EXTENDED_SECURITY instead).
 const (
-	systemProvenance  = "com.apple.provenance"
+	xattrDarwinProvenance = "com.apple.provenance"
+	xattrDarwinMACL       = "com.apple.macl"
+	xattrDarwinRootless   = "com.apple.rootless"
+	xattrDarwinDecmpfs    = "com.apple.decmpfs"
+	xattrDarwinSecurity   = "com.apple.system.Security"
+
 	initialACLBufLen  = 512
 	maxACLBufLen      = 1 << 20
 	attrRefHeaderLen  = 8
@@ -31,9 +51,57 @@ const (
 	kauthFilesecSize0 = 44 // magic(4) + owner(16) + group(16) + entrycount(4) + flags(4)
 )
 
+func isDarwinOSAttachedXattr(name []byte) bool {
+	switch string(name) {
+	case xattrDarwinProvenance, xattrDarwinMACL:
+		return true
+	default:
+		return false
+	}
+}
+
+func isDarwinRefusedXattr(name []byte) bool {
+	switch string(name) {
+	case xattrDarwinRootless, xattrDarwinDecmpfs, xattrDarwinSecurity:
+		return true
+	default:
+		return false
+	}
+}
+
+func classifyDarwinXattr(path string, name []byte) (skip bool, err error) {
+	if isDarwinRefusedXattr(name) {
+		return false, fmt.Errorf("%w: %q carries %q", ErrProtectedMetadata, path, string(name))
+	}
+	if isDarwinOSAttachedXattr(name) {
+		return true, nil
+	}
+	return false, nil
+}
+
+func validateXattrForOS(path string, name []byte) error {
+	if isDarwinRefusedXattr(name) {
+		return fmt.Errorf("%w: %q carries %q", ErrProtectedMetadata, path, string(name))
+	}
+	return nil
+}
+
+func validateACLForOS(acl *FileACL) error {
+	if acl == nil || len(acl.Access) == 0 {
+		return nil
+	}
+	if acl.Kind != ACLKindDarwinFilesec {
+		return fmt.Errorf("%w: cannot apply %q ACL on darwin", ErrRestoreMismatch, acl.Kind)
+	}
+	if len(acl.Access) > maxACLBufLen {
+		return fmt.Errorf("%w: ACL size %d exceeds limit %d", ErrRestoreMismatch, len(acl.Access), maxACLBufLen)
+	}
+	return nil
+}
+
 func readFileMetadata(f *os.File) (FileMetadata, error) {
-	xStatus, xattrs, err := readAllXattrs(f, func(name string) bool {
-		return name == systemProvenance
+	xStatus, xattrs, err := readAllXattrs(f, func(name []byte) (bool, error) {
+		return classifyDarwinXattr(f.Name(), name)
 	})
 	if err != nil {
 		return FileMetadata{}, err
@@ -53,7 +121,11 @@ func readFileMetadata(f *os.File) (FileMetadata, error) {
 func applyFileMetadata(f *os.File, m FileMetadata) error {
 	if m.XattrsStatus == MetadataCaptured {
 		for _, x := range m.Xattrs {
-			if x.Name == systemProvenance {
+			skip, err := classifyDarwinXattr(f.Name(), x.Name)
+			if err != nil {
+				return err
+			}
+			if skip {
 				continue
 			}
 			if err := setOneXattr(f, x.Name, x.Value); err != nil {
@@ -68,8 +140,8 @@ func applyFileMetadata(f *os.File, m FileMetadata) error {
 			}
 			return nil
 		}
-		if m.ACL.Kind != ACLKindDarwinFilesec {
-			return fmt.Errorf("%w: cannot apply %q ACL on darwin", ErrRestoreMismatch, m.ACL.Kind)
+		if err := validateACLForOS(m.ACL); err != nil {
+			return err
 		}
 		if err := applyDarwinACL(f, m.ACL.Access); err != nil {
 			return err
@@ -89,7 +161,9 @@ func clearDarwinACL(f *os.File) error {
 }
 
 // readDarwinACL reads a macOS file's extended security attribute
-// (ATTR_CMN_EXTENDED_SECURITY) using fgetattrlist(2).
+// (ATTR_CMN_EXTENDED_SECURITY) using fgetattrlist(2) with
+// FSOPT_REPORT_FULLSIZE so ACLs larger than initialACLBufLen report their
+// complete required size and grow the buffer instead of truncating.
 func readDarwinACL(f *os.File) (MetadataSupport, *FileACL, error) {
 	al := unix.Attrlist{
 		Bitmapcount: unix.ATTR_BIT_MAP_COUNT,
@@ -100,9 +174,12 @@ func readDarwinACL(f *os.File) (MetadataSupport, *FileACL, error) {
 		buf := make([]byte, bufLen)
 		// The reply is a u32 total length, then an attrreference_t {i32
 		// offset, u32 length} for the extended security attribute.
+		// FSOPT_REPORT_FULLSIZE guarantees totalLen reports the full required
+		// buffer size even when the ACL exceeds len(buf).
 		//nolint:staticcheck,gosec // x/sys/unix has no fgetattrlist wrapper on darwin; pointers refer to live local buffers
 		_, _, errno := syscall.Syscall6(unix.SYS_FGETATTRLIST, f.Fd(),
-			uintptr(unsafe.Pointer(&al)), uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)), 0, 0)
+			uintptr(unsafe.Pointer(&al)), uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)),
+			uintptr(unix.FSOPT_REPORT_FULLSIZE), 0)
 		if errno != 0 {
 			if isUnsupportedMetadataErr(errno) {
 				return MetadataUnsupported, nil, nil

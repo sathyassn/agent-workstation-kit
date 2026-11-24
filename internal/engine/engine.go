@@ -117,6 +117,12 @@ type Options struct {
 	// metaOps, set only by tests in this package, overrides OS metadata
 	// capture and application (for example to simulate ENOTSUP).
 	metaOps metadataOps
+	// extraPackageDBPaths, set only by tests in this package, adds real
+	// directories whose (dev, ino) identities are treated as package-DB roots.
+	extraPackageDBPaths []string
+	// afterLstat, set only by tests in this package, runs between lstat and
+	// open in backupOne to exercise the TOCTOU window deterministically.
+	afterLstat func(path string)
 	// Fault is called at every Point. Nil uses the build's default, which
 	// is no hook unless the binary is built with the faultinject tag.
 	Fault FaultFunc
@@ -124,8 +130,9 @@ type Options struct {
 
 // Engine runs unit transactions against one journal.
 type Engine struct {
-	opts   Options
-	provMu sync.RWMutex
+	opts     Options
+	provMu   sync.RWMutex
+	pkgDBIDs map[platform.FileID]string
 }
 
 func (e *Engine) lookupProvider(name contract.StateProviderName) (contract.StateProvider, bool) {
@@ -216,7 +223,8 @@ func New(opts Options) (*Engine, error) {
 	if opts.Fault == nil {
 		opts.Fault = defaultFault()
 	}
-	return &Engine{opts: opts}, nil
+	roots := append(packageDBPrefixes(), opts.extraPackageDBPaths...)
+	return &Engine{opts: opts, pkgDBIDs: resolvePackageDBIDs(roots)}, nil
 }
 
 func (e *Engine) meta() metadataOps {

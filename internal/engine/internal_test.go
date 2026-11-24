@@ -1,7 +1,9 @@
 package engine
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -138,5 +140,61 @@ func TestPackageDBPathGuard(t *testing.T) {
 		if got := isPackageDBPathForOS(tc.path, tc.goos); got != tc.want {
 			t.Errorf("isPackageDBPathForOS(%q, %q) = %v, want %v", tc.path, tc.goos, got, tc.want)
 		}
+	}
+}
+
+// TestPackageDBGuardUnicodeCaseFold is H2 (macOS Unicode case folding):
+// U+017F (long s 'ſ') folds to 's' under Unicode case folding and must not
+// bypass the package-DB prefix guard on darwin.
+func TestPackageDBGuardUnicodeCaseFold(t *testing.T) {
+	tests := []struct {
+		path string
+		goos string
+		want bool
+	}{
+		{"/u\u017fr/local/Cellar/zsh/5.9/bin/zsh", "darwin", true},
+		{"/Library/Receipt\u017f/example.bom", "darwin", true},
+		{"/\u017fystem/Volume\u017f/Data/opt/homebrew/Cellar/zsh/5.9/bin/zsh", "darwin", true},
+		{"/u\u017fr/local/Cellar/zsh/5.9/bin/zsh", "linux", false},
+	}
+	for _, tc := range tests {
+		if got := isPackageDBPathForOS(tc.path, tc.goos); got != tc.want {
+			t.Errorf("isPackageDBPathForOS(%q, %q) = %v, want %v", tc.path, tc.goos, got, tc.want)
+		}
+	}
+}
+
+// TestManifestRoundTripsNonUTF8XattrName is M4: non-UTF-8 extended attribute
+// names must survive manifest JSON marshalling and unmarshalling losslessly.
+func TestManifestRoundTripsNonUTF8XattrName(t *testing.T) {
+	rawName := []byte("user.\xff\xfe")
+	rawVal := []byte("payload\x00\xff")
+	in := Manifest{
+		RunID: "rnonutf8",
+		Unit:  contract.UnitShell,
+		Entries: []ManifestEntry{{
+			Path:         "/etc/wskit-test/a.conf",
+			Kind:         KindFile,
+			XattrsStatus: MetadataCaptured,
+			Xattrs:       []XattrEntry{{Name: rawName, Value: rawVal}},
+		}},
+	}
+	data, err := json.Marshal(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out Manifest
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Entries) != 1 || len(out.Entries[0].Xattrs) != 1 {
+		t.Fatalf("unexpected decoded manifest: %+v", out)
+	}
+	gotName := out.Entries[0].Xattrs[0].Name
+	if !bytes.Equal(gotName, rawName) {
+		t.Fatalf("round-tripped xattr name = %x, want %x", gotName, rawName)
+	}
+	if !bytes.Equal(out.Entries[0].Xattrs[0].Value, rawVal) {
+		t.Fatalf("round-tripped xattr value = %x, want %x", out.Entries[0].Xattrs[0].Value, rawVal)
 	}
 }

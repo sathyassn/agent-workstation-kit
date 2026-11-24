@@ -125,8 +125,8 @@ func createTemp(p parent) (string, *os.File, error) {
 
 // removeTemps removes temporary files a kill left next to path. A missing
 // folder has none.
-func removeTemps(path string) error {
-	p, err := openParent(path)
+func (e *Engine) removeTemps(path string) error {
+	p, err := e.openParent(path)
 	if errors.Is(err, unix.ENOENT) {
 		return nil
 	}
@@ -147,6 +147,22 @@ func removeTemps(path string) error {
 		}
 	}
 	return nil
+}
+
+// hasStaleTemps reports whether p's folder holds any leftover temporary file
+// for p.name.
+func hasStaleTemps(p parent) (bool, error) {
+	names, err := listDir(p.dir)
+	if err != nil {
+		return false, err
+	}
+	prefix := "." + p.name + tempMarker
+	for _, n := range names {
+		if strings.HasPrefix(n, prefix) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // listDir lists an open folder's names through a duplicate descriptor, so

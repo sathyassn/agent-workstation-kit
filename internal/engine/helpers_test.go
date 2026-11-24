@@ -80,6 +80,31 @@ func worldAt(dir string) *world {
 	}
 }
 
+// wireHostnameRunner routes hostnamectl/scutil invocations launched inside
+// recorded containment to runner so SetState runs end-to-end through
+// Containment.Run in tests.
+func (w *world) wireHostnameRunner(runner platform.CommandRunner) {
+	w.cont.SetRun(func(ctx context.Context, spec platform.LaunchSpec) (contract.CommandResult, error) {
+		if len(spec.Argv) > 0 && (spec.Argv[0] == "/usr/bin/hostnamectl" || spec.Argv[0] == "/usr/sbin/scutil") {
+			res, err := runner.Run(ctx, platform.ExecSpec{
+				Argv: spec.Argv,
+				Env:  spec.Env,
+				Dir:  spec.Dir,
+			})
+			if spec.Output != nil {
+				if res.Stdout != "" {
+					_, _ = spec.Output.Write([]byte(res.Stdout))
+				}
+				if res.Stderr != "" {
+					_, _ = spec.Output.Write([]byte(res.Stderr))
+				}
+			}
+			return contract.CommandResult{ExitCode: res.ExitCode, Duration: res.Duration}, err
+		}
+		return contract.CommandResult{}, nil
+	})
+}
+
 // engine returns an engine with a new live identity in the world's table.
 func (w *world) engine(t testing.TB, mod ...func(*engine.Options)) (*engine.Engine, platform.ProcessIdentity) {
 	t.Helper()
@@ -194,11 +219,15 @@ func show(s map[string]*string) string {
 	return b.String()
 }
 
-// testUnit writes, runs a command, edits a block, removes and creates. Its
-// Apply refuses to start from anything but the original state, so a reapply
-// proves the restore ran first.
+// testUnit writes, runs a command, edits a block, removes and creates. When
+// hostProv is set it also declares and updates hostname.static through
+// tx.SetState. Its Apply refuses to start from anything but the original
+// state, so a reapply proves the restore ran first.
 type testUnit struct {
 	root string
+	// hostProv, when non-nil, exercises SetState during Apply and verifies
+	// hostname restoration before reapply.
+	hostProv contract.StateProvider
 	// pkg runs the command as a package-manager transaction.
 	pkg bool
 	// afterRun runs inside Apply after the command.
@@ -207,13 +236,22 @@ type testUnit struct {
 	verifyOutcome contract.Outcome
 }
 
+const (
+	testOrigHostname    = "lab-fault-orig"
+	testAppliedHostname = "lab-fault-applied"
+)
+
 func (u *testUnit) ID() contract.UnitID { return contract.UnitShell }
 
 func (u *testUnit) Describe(context.Context) (contract.Description, error) {
-	return contract.Description{
+	desc := contract.Description{
 		Unit: contract.UnitShell, Scope: contract.ScopeUser,
 		OwnedPaths: []string{pathA, pathB, pathC, pathD},
-	}, nil
+	}
+	if u.hostProv != nil {
+		desc.OwnedStateKeys = []contract.StateKey{platform.HostnameKeyStatic}
+	}
+	return desc, nil
 }
 
 func testPlan() contract.Plan {
@@ -238,6 +276,12 @@ func (u *testUnit) Apply(ctx context.Context, tx contract.Tx, _ contract.Plan) e
 	if !sameState(u.read(), originalState()) {
 		return errNotRestored
 	}
+	if u.hostProv != nil {
+		got, err := u.hostProv.Read(ctx, platform.HostnameKeyStatic)
+		if err != nil || got.Value != testOrigHostname {
+			return errNotRestored
+		}
+	}
 	owner := contract.Owner{UID: os.Getuid(), GID: os.Getgid()}
 	if err := tx.WriteFile(ctx, pathA, []byte("new-a\n"), 0o644, owner); err != nil {
 		return err
@@ -254,6 +298,11 @@ func (u *testUnit) Apply(ctx context.Context, tx contract.Tx, _ contract.Plan) e
 			return err
 		}
 	}
+	if u.hostProv != nil {
+		if err := tx.SetState(ctx, u.hostProv, platform.HostnameKeyStatic, contract.State{Value: testAppliedHostname}); err != nil {
+			return err
+		}
+	}
 	if err := tx.EnsureBlock(ctx, pathB, contract.ManagedBlock{ID: "wskit-b", Begin: "# BEGIN wskit-b", End: "# END wskit-b", Body: "managed"}); err != nil {
 		return err
 	}
@@ -263,10 +312,16 @@ func (u *testUnit) Apply(ctx context.Context, tx contract.Tx, _ contract.Plan) e
 	return tx.WriteFile(ctx, pathD, []byte("new-d\n"), 0o600, owner)
 }
 
-func (u *testUnit) Verify(context.Context, contract.Plan) (contract.Result, error) {
+func (u *testUnit) Verify(ctx context.Context, _ contract.Plan) (contract.Result, error) {
 	out := contract.OutcomeFailed
 	if sameState(u.read(), appliedState()) {
 		out = contract.OutcomeVerified
+	}
+	if out == contract.OutcomeVerified && u.hostProv != nil {
+		got, err := u.hostProv.Read(ctx, platform.HostnameKeyStatic)
+		if err != nil || got.Value != testAppliedHostname {
+			out = contract.OutcomeFailed
+		}
 	}
 	if u.verifyOutcome != "" {
 		out = u.verifyOutcome

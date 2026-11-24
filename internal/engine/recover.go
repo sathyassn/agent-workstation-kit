@@ -264,7 +264,8 @@ func (e *Engine) recoverLocked(ctx context.Context, l *locks, self platform.Proc
 	if receipt == nil || rec.Status != StatusRestored {
 		m, err := e.readManifest(rec.RunID)
 		if err != nil {
-			return res, err
+			_ = k.stopRenewing()
+			return res, errors.Join(fmt.Errorf("%w: %w", ErrRestoreFailed, err), e.dropClaim(bk, l, rec.RunID, self))
 		}
 		rec.RestoreOnly = rec.RestoreOnly || o.RestoreOnly
 		if err := k.err(); err != nil {
@@ -281,7 +282,7 @@ func (e *Engine) recoverLocked(ctx context.Context, l *locks, self platform.Proc
 		return res, err
 	}
 	if next == StatusIdle {
-		rec.Claim = nil
+		rec.Status, rec.Claim = StatusIdle, nil
 		return res, l.withJournal(bk, func() error { return e.writeRecord(rec) })
 	}
 
