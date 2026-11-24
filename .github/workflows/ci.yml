@@ -73,6 +73,12 @@ jobs:
           persist-credentials: false
 
       - name: Run pinned Gitleaks
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.sha }}
         run: |
           version="8.30.0"
           expected="79a3ab579b53f71efd634f3aaf7e04a0fa0cf206b7ed434638d1547a2470a66e"
@@ -89,7 +95,16 @@ jobs:
           set -e
           rm -f negative-fixture.txt
           test "$fixture_exit" -eq 7
-          ./gitleaks git --redact --no-banner --exit-code 1 .
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            git cat-file -e "${PR_BASE_SHA}^{commit}"
+            git cat-file -e "${PR_HEAD_SHA}^{commit}"
+            ./gitleaks git --redact --no-banner --exit-code 1 --log-opts="${PR_BASE_SHA}..${PR_HEAD_SHA}" .
+          elif [ "$EVENT_NAME" = "push" ] && [ -n "$PUSH_BEFORE" ] && [ "$PUSH_BEFORE" != "0000000000000000000000000000000000000000" ] && git cat-file -e "${PUSH_BEFORE}^{commit}" 2>/dev/null; then
+            git cat-file -e "${PUSH_AFTER}^{commit}"
+            ./gitleaks git --redact --no-banner --exit-code 1 --log-opts="${PUSH_BEFORE}..${PUSH_AFTER}" .
+          else
+            ./gitleaks git --redact --no-banner --exit-code 1 --log-opts="HEAD" .
+          fi
 
   macos-host-lock:
     runs-on: macos-latest
@@ -113,13 +128,22 @@ jobs:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Run deterministic public-release scan on Linux (non-authoritative)
-        run: make public-check
+        run: python3 -I -B tests/check_public_release.py --identity-source ci
 
       - name: Run public-scan unit and hardening tests on Linux (non-authoritative)
-        run: make unit-public-scan-check
+        run: |
+          set -euo pipefail
+          set +e
+          out=$(python3 -B -m unittest discover -s tests -t tests -p 'test_public_*.py' -v 2>&1)
+          status=$?
+          set -e
+          printf '%s\n' "$out"
+          test "$status" -eq 0
+          printf '%s\n' "$out" | grep -Eq '^Ran [1-9][0-9]* tests? in '
 
   macos-public-scan:
     # Non-authoritative head-code self-test on macOS; authoritative privacy
@@ -131,10 +155,11 @@ jobs:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Run deterministic public-release scan on macOS (non-authoritative)
-        run: python3 -I -B tests/check_public_release.py
+        run: python3 -I -B tests/check_public_release.py --identity-source ci
 
       - name: Run public-scan unit and hardening tests on macOS
         run: |

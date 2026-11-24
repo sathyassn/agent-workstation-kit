@@ -561,7 +561,7 @@ def run_pre_push(
             gate_env.pop(inherited_git_key, None)
         try:
             result = subprocess.run(
-                ["make", "ci-check"],
+                ["make", "IDENTITY_SOURCE=local", "ci-check"],
                 cwd=ROOT,
                 check=False,
                 timeout=600,
@@ -596,7 +596,14 @@ def run_pre_push(
                         seen_commits.add(sha)
                         commits.append(sha)
             if commits or tag_objects:
-                cmd = [sys.executable, "-I", "-B", str(scanner)]
+                cmd = [
+                    sys.executable,
+                    "-I",
+                    "-B",
+                    str(scanner),
+                    "--identity-source",
+                    "local",
+                ]
                 if commits:
                     cmd.extend(["--commits", *commits])
                 if tag_objects:
