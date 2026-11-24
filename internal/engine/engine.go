@@ -78,6 +78,9 @@ type Options struct {
 	LockPoll time.Duration
 	// CallTimeout bounds each supervisor inspection and signal.
 	CallTimeout time.Duration
+	// traceFn, set only by tests in this package, sees every folder entry
+	// and folder fsync for the durability model.
+	traceFn func(op, dir, name string)
 	// Fault is called at every Point. Nil uses the build's default, which
 	// is no hook unless the binary is built with the faultinject tag.
 	Fault FaultFunc
@@ -86,9 +89,6 @@ type Options struct {
 // Engine runs unit transactions against one journal.
 type Engine struct {
 	opts Options
-	// traceFn, set only by tests, sees every folder entry and folder fsync
-	// for the durability model.
-	traceFn func(op, dir, name string)
 }
 
 // New checks opts and fills in defaults.
@@ -105,7 +105,7 @@ func New(opts Options) (*Engine, error) {
 	case !opts.Scope.Valid():
 		return nil, fmt.Errorf("%w: scope %q", ErrInvalidOptions, opts.Scope)
 	}
-	if err := os.MkdirAll(opts.JournalDir, privateMode); err != nil {
+	if err := (&Engine{opts: opts}).mkdirAllDurable(opts.JournalDir); err != nil {
 		return nil, fmt.Errorf("create journal folder: %w", err)
 	}
 	if err := platform.CheckPrivateDir(opts.JournalDir); err != nil {

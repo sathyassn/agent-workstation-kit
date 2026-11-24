@@ -71,8 +71,9 @@ func (u oneFileUnit) Status(context.Context) (contract.Status, error) {
 	return contract.Status{Unit: contract.UnitShell}, nil
 }
 
-// TestBackupIsDurableBeforeIntent is finding 6: under the power-loss model,
-// when the intent record becomes durable, the journal folders, the run's
+// TestBackupIsDurableBeforeIntent is finding 6 and round 3, item 6: under the power-loss model,
+// when the intent record becomes durable, the journal folder and every
+// ancestor New had to create, the journal folders, the run's
 // backup folder, every backup file and the manifest are durable too. A
 // power cut can then never keep the intent and the changes but lose the
 // backup.
@@ -89,16 +90,17 @@ func TestBackupIsDurableBeforeIntent(t *testing.T) {
 		t.Fatal(err)
 	}
 	table := platformtest.NewProcessTable("boot")
-	journal := filepath.Join(dir, "journal")
+	// The journal's two parent folders do not exist yet.
+	journal := filepath.Join(dir, "state", "wskit", "journal")
+	m := &powerLossModel{pending: map[string]bool{}, durable: map[string]bool{}, record: filepath.Join(journal, recordFile)}
 	e, err := New(Options{
 		JournalDir: journal, HostLock: filepath.Join(dir, "host.lock"), Root: root, Scope: contract.ScopeUser,
 		Containment: platformtest.NewContainment(table), Inspector: table.Inspector(table.Spawn()),
+		traceFn: m.trace,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := &powerLossModel{pending: map[string]bool{}, durable: map[string]bool{}, record: filepath.Join(journal, recordFile)}
-	e.traceFn = m.trace
 	if err := e.Apply(context.Background(), oneFileUnit{path: "/etc/x.conf"}, contract.Plan{ID: "p", Unit: contract.UnitShell, Digest: "d"}); err != nil {
 		t.Fatal(err)
 	}
@@ -111,6 +113,9 @@ func TestBackupIsDurableBeforeIntent(t *testing.T) {
 	}
 	run := e.backupDir(rec.RunID)
 	for _, p := range []string{
+		filepath.Join(dir, "state"),
+		filepath.Join(dir, "state", "wskit"),
+		journal,
 		filepath.Join(journal, backupsDir),
 		filepath.Join(journal, receiptsDir),
 		run,

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 
 	"golang.org/x/sys/unix"
@@ -174,6 +176,37 @@ func (e *Engine) mkdirDurable(path string) error {
 	return e.syncDir(p)
 }
 
+// mkdirAllDurable creates path and every missing ancestor, each with mkdir
+// and an fsync of its parent, so no new folder entry is lost to power loss.
+// The deepest existing ancestor is resolved once; each new folder is then
+// created through the no-follow walk.
+func (e *Engine) mkdirAllDurable(path string) error {
+	var missing []string
+	p := filepath.Clean(path)
+	for {
+		_, err := os.Lstat(p)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, fs.ErrNotExist) || p == "/" {
+			return fmt.Errorf("stat %q: %w", p, err)
+		}
+		missing = append(missing, filepath.Base(p))
+		p = filepath.Dir(p)
+	}
+	base, err := canonical(p)
+	if err != nil {
+		return err
+	}
+	for _, name := range slices.Backward(missing) {
+		base = filepath.Join(base, name)
+		if err := e.mkdirDurable(base); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func chownFile(f *os.File, o contract.Owner) error {
 	info, err := f.Stat()
 	if err != nil {
@@ -196,7 +229,7 @@ const (
 )
 
 func (e *Engine) trace(op, dir, name string) {
-	if e.traceFn != nil {
-		e.traceFn(op, dir, name)
+	if e.opts.traceFn != nil {
+		e.opts.traceFn(op, dir, name)
 	}
 }
