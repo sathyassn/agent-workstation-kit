@@ -1,0 +1,11 @@
+id = "TSK-047"
+uid = "75a51d47-1535-4cd8-9a04-5eaee24bb717"
+kind = "TSK"
+title = "Host health reports and the reboot plan"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-24T00:34:16Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
