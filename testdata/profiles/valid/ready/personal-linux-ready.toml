@@ -1,0 +1,81 @@
+schema_version = 3
+profile = "personal"
+state = "approved"
+
+[deployment]
+namespace = "lab"
+context = "personal"
+ownership = "individual"
+
+[machine]
+hostname = "lab-ws-001"
+display_name = "Juniper"
+uuid = "55555555-5555-4555-8555-555555555555"
+asset_tag = "LAB-001"
+platform = "linux"
+os_family = "ubuntu"
+hardware_profile = "generic-64gb"
+role = "agent-workstation"
+
+[accounts]
+agent = "agent-01"
+humans = ["alice"]
+admins = ["admin-01"]
+admin_assignments = { "admin-01" = "alice" }
+services = []
+operators = ["alice"]
+viewers = []
+ssh_users = ["alice", "admin-01"]
+
+[remote]
+tailscale_tailnet = "example.com"
+tailscale_tags = ["tag:lab-workstation"]
+nomachine_port = 4000
+kvm = "not-required"
+preferred_kvm = "glinet-comet-x-gl-rm4pe"
+fallback_kvm = "glinet-comet-poe-gl-rm1pe"
+desktop_lock_mode = "locked"
+
+[tooling]
+install_agents = true
+gws = "install"
+secrets_provider = "1password"
+antidote_ref = "v1.9.10"
+
+[source_control]
+gitlab_host = "gitlab.com"
+gitlab_identity = "none"
+gitlab_principal = "none"
+github_host = "github.com"
+github_identity = "machine-user"
+github_principal = "lab-agent-dev"
+
+[collaboration]
+atlassian_site = "company.atlassian.net"
+atlassian_identity = "named-human"
+atlassian_principal = "alice@example.com"
+atlassian_mcp_auth = "oauth-2.1"
+
+[model_auth]
+codex = "named-human"
+claude = "named-human"
+grok = "named-human"
+
+[security]
+disk_encryption_required = true
+secure_boot_required = true
+remote_scope = "tailscale-only"
+endpoint_management = "not-required"
+
+[resources]
+policy = "measured-balanced"
+os_cpu_reserve_threads = 2
+
+[backup]
+target = "local-nas"
+retention_days = 14
+
+[maintenance]
+timezone = "UTC"
+update_window = "Sunday 03:00-04:00"
+owner = "alice"

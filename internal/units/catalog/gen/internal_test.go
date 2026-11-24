@@ -98,8 +98,10 @@ milestone = "alpha"
 	root := t.TempDir()
 	for _, dir := range []string{
 		"registry",
+		"schema",
 		filepath.Join("internal", "contract"),
 		filepath.Join("internal", "units", "catalog"),
+		filepath.Join("internal", "schema"),
 		filepath.Join("docs", "plan"),
 		filepath.Join("docs", "design"),
 		filepath.Join("project-management", "specs"),
@@ -110,6 +112,34 @@ milestone = "alpha"
 	}
 	if err := os.WriteFile(filepath.Join(root, "registry", "units.toml"), []byte(initialCatalog), 0o600); err != nil {
 		t.Fatalf("write units.toml: %v", err)
+	}
+	const initialSchema = `
+meta_version = 1
+schema_version = 3
+
+[[safety_floor]]
+key = "safety.backups"
+rule = "safety-floor-backups"
+what = "Mandatory backups."
+why = "Enables restore on failure."
+risk = "Disabling breaks recovery."
+undo = "Not configurable."
+
+[[field]]
+key = "schema_version"
+type = "int"
+required = true
+default = 3
+min = 3
+max = 3
+stage = "baseline"
+what = "Schema version."
+why = "Pins format."
+risk = "Mismatch fails validation."
+undo = "Restore profile."
+`
+	if err := os.WriteFile(filepath.Join(root, "schema", "profile.toml"), []byte(initialSchema), 0o600); err != nil {
+		t.Fatalf("write schema/profile.toml: %v", err)
 	}
 	catalogSrc, err := fs.ReadFile(os.DirFS(".."), "catalog.go")
 	if err != nil {
@@ -133,6 +163,7 @@ milestone = "alpha"
 	targets := []string{
 		"internal/contract/enums_gen.go",
 		"internal/units/catalog/catalog_gen.go",
+		"internal/schema/types_gen.go",
 	}
 	targets = append(targets, DocTargets()...)
 	before := make(map[string][]byte, len(targets))
@@ -159,41 +190,43 @@ milestone = "alpha"
 		t.Fatalf("write updated units.toml: %v", err)
 	}
 
-	injected := errors.New("injected second write failure")
-	calls := 0
-	ops := defaultFileOps()
-	ops.writeTemp = func(targetPath string, data []byte) (string, error) {
-		calls++
-		if calls == 2 {
-			return "", injected
+	for _, failAt := range []int{2, 3} {
+		injected := errors.New("injected write failure")
+		calls := 0
+		ops := defaultFileOps()
+		ops.writeTemp = func(targetPath string, data []byte) (string, error) {
+			calls++
+			if calls == failAt {
+				return "", injected
+			}
+			return writeTempFile(targetPath, data)
 		}
-		return writeTempFile(targetPath, data)
-	}
 
-	err = writeRepoWithOps(root, ops)
-	if !errors.Is(err, injected) {
-		t.Fatalf("writeRepoWithOps() error = %v, want injected error", err)
-	}
+		err = writeRepoWithOps(root, ops)
+		if !errors.Is(err, injected) {
+			t.Fatalf("writeRepoWithOps(failAt=%d) error = %v, want injected error", failAt, err)
+		}
 
-	for _, rel := range targets {
-		after, err := fs.ReadFile(rootFS, rel)
-		if err != nil {
-			t.Fatalf("read %s after failure: %v", rel, err)
+		for _, rel := range targets {
+			after, err := fs.ReadFile(rootFS, rel)
+			if err != nil {
+				t.Fatalf("read %s after failure: %v", rel, err)
+			}
+			if !bytes.Equal(before[rel], after) {
+				t.Errorf("target %s was modified despite injected failure at write %d", rel, failAt)
+			}
 		}
-		if !bytes.Equal(before[rel], after) {
-			t.Errorf("target %s was modified despite injected failure on second write", rel)
-		}
-	}
 
-	for _, rel := range targets {
-		dir := filepath.Join(root, filepath.Dir(filepath.FromSlash(rel)))
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			t.Fatalf("readdir %s: %v", dir, err)
-		}
-		for _, entry := range entries {
-			if strings.Contains(entry.Name(), ".tmp-") {
-				t.Errorf("leftover temp file %s in %s", entry.Name(), dir)
+		for _, rel := range targets {
+			dir := filepath.Join(root, filepath.Dir(filepath.FromSlash(rel)))
+			entries, err := os.ReadDir(dir)
+			if err != nil {
+				t.Fatalf("readdir %s: %v", dir, err)
+			}
+			for _, entry := range entries {
+				if strings.Contains(entry.Name(), ".tmp-") {
+					t.Errorf("leftover temp file %s in %s", entry.Name(), dir)
+				}
 			}
 		}
 	}

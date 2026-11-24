@@ -453,6 +453,7 @@ func ValidatePresets(cat Catalog, data []byte) []error {
 type GeneratedFiles struct {
 	ContractEnums []byte
 	CatalogTable  []byte
+	SchemaTypes   []byte
 	DocsTable     string
 }
 
@@ -495,7 +496,25 @@ func loadAndGenerateRepo(repoRoot string) (GeneratedFiles, error) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return GeneratedFiles{}, fmt.Errorf("read %s: %w", presetsPath, err)
 	}
-	return Generate(cat)
+	out, err := Generate(cat)
+	if err != nil {
+		return GeneratedFiles{}, err
+	}
+	schemaPath := filepath.Join(repoRoot, "schema", "profile.toml")
+	schemaData, err := os.ReadFile(schemaPath) //nolint:gosec // path is caller-supplied repository root
+	if err != nil {
+		return GeneratedFiles{}, fmt.Errorf("read %s: %w", schemaPath, err)
+	}
+	ps, err := ParseProfileSchema(schemaData)
+	if err != nil {
+		return GeneratedFiles{}, err
+	}
+	schemaTypes, err := RenderSchemaTypes(ps)
+	if err != nil {
+		return GeneratedFiles{}, err
+	}
+	out.SchemaTypes = schemaTypes
+	return out, nil
 }
 
 type docUpdate struct {
@@ -643,6 +662,9 @@ func writeRepoWithOps(repoRoot string, ops fileOps) error {
 	if err := TypeCheckSources(out.ContractEnums, out.CatalogTable, extraContract, extraCatalog); err != nil {
 		return err
 	}
+	if err := TypeCheckSchemaSource(out.SchemaTypes); err != nil {
+		return err
+	}
 
 	docUpdates, err := planDocUpdates(repoRoot, out.DocsTable)
 	if err != nil {
@@ -651,10 +673,12 @@ func writeRepoWithOps(repoRoot string, ops fileOps) error {
 
 	enumsPath := filepath.Join(contractDir, "enums_gen.go")
 	catalogPath := filepath.Join(catalogDir, "catalog_gen.go")
-	writes := make([]plannedWrite, 0, 2+len(docUpdates))
+	schemaTypesPath := filepath.Join(repoRoot, "internal", "schema", "types_gen.go")
+	writes := make([]plannedWrite, 0, 3+len(docUpdates))
 	writes = append(writes,
 		plannedWrite{label: "internal/contract/enums_gen.go", path: enumsPath, data: out.ContractEnums},
 		plannedWrite{label: "internal/units/catalog/catalog_gen.go", path: catalogPath, data: out.CatalogTable},
+		plannedWrite{label: "internal/schema/types_gen.go", path: schemaTypesPath, data: out.SchemaTypes},
 	)
 	for _, upd := range docUpdates {
 		if !upd.stale {
@@ -693,6 +717,7 @@ func CheckRepo(repoRoot string) error {
 
 	checkFile("internal/contract/enums_gen.go", out.ContractEnums)
 	checkFile("internal/units/catalog/catalog_gen.go", out.CatalogTable)
+	checkFile("internal/schema/types_gen.go", out.SchemaTypes)
 
 	docUpdates, err := planDocUpdates(repoRoot, out.DocsTable)
 	if err != nil {

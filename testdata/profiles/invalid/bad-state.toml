@@ -1,0 +1,85 @@
+schema_version = 3
+profile = "work"
+state = "pending"
+
+[deployment]
+namespace = "acme"
+context = "work"
+ownership = "organization"
+
+[machine]
+hostname = "acme-ws-001"
+display_name = "Atlas"
+uuid = "11111111-1111-4111-8111-111111111111"
+asset_tag = "ACME-10001"
+platform = "linux"
+os_family = "ubuntu"
+hardware_profile = "generic-64gb"
+role = "agent-workstation"
+
+[accounts]
+agent = "agent-01"
+humans = ["alice", "bob"]
+admins = ["admin-01", "admin-02"]
+admin_assignments = { "admin-01" = "alice", "admin-02" = "bob" }
+services = ["svc-backup"]
+operators = ["alice"]
+viewers = ["bob"]
+ssh_users = ["alice", "bob", "admin-01", "admin-02"]
+
+[remote]
+tailscale_tailnet = "organization.example"
+tailscale_tags = ["tag:acme-workstation"]
+nomachine_port = 4000
+kvm = "deferred"
+preferred_kvm = "glinet-comet-x-gl-rm4pe"
+fallback_kvm = "glinet-comet-poe-gl-rm1pe"
+desktop_lock_mode = "dedicated-shared"
+
+[tooling]
+apt_packages = ["ripgrep", "sqlite3=3.0"]
+install_agents = true
+gws = "skip"
+secrets_provider = "organization-vault"
+antidote_ref = "v1.9.10"
+
+[source_control]
+gitlab_host = "gitlab.com"
+gitlab_identity = "service-account"
+gitlab_principal = "acme-agent-dev"
+github_host = "github.com"
+github_identity = "app"
+github_principal = "acme-agent-dev"
+
+[collaboration]
+atlassian_site = "company.atlassian.net"
+atlassian_identity = "service-account"
+atlassian_principal = "acmeagentdev"
+atlassian_mcp_auth = "service-account-api-key"
+
+[model_auth]
+codex = "api-workload"
+claude = "enterprise-federated"
+grok = "none"
+
+[security]
+disk_encryption_required = true
+secure_boot_required = true
+remote_scope = "tailscale-only"
+endpoint_management = "mdm-and-edr"
+
+[resources]
+policy = "measured-balanced"
+os_cpu_reserve_threads = 2
+reserve_fixed_gib = 8.5
+reserve_cores = 2
+cpu_weight = 50
+
+[backup]
+target = "corporate-backup"
+retention_days = 30
+
+[maintenance]
+timezone = "America/Toronto"
+update_window = "Sunday 02:00-04:00"
+owner = "platform-team"

@@ -1,6 +1,6 @@
 // Command gen regenerates or checks internal/contract/enums_gen.go,
-// internal/units/catalog/catalog_gen.go and the catalog Markdown tables
-// from registry/units.toml.
+// internal/units/catalog/catalog_gen.go, internal/schema/types_gen.go and
+// the catalog Markdown tables from registry/units.toml and schema/profile.toml.
 package main
 
 import (

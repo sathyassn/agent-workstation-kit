@@ -15,6 +15,7 @@ import (
 const (
 	contractPkgPath = "github.com/sathyassn/agent-workstation-kit/internal/contract"
 	catalogPkgPath  = "github.com/sathyassn/agent-workstation-kit/internal/units/catalog"
+	schemaPkgPath   = "github.com/sathyassn/agent-workstation-kit/internal/schema"
 )
 
 type packageMapImporter struct {
@@ -61,6 +62,21 @@ func TypeCheckSources(enumsSrc, catalogGenSrc []byte, extraContract, extraCatalo
 	}
 	if _, err := catalogCfg.Check(catalogPkgPath, fset, catalogFiles, nil); err != nil {
 		return fmt.Errorf("type-check catalog package: %w", err)
+	}
+	return nil
+}
+
+// TypeCheckSchemaSource parses and type-checks the generated internal/schema
+// Go file before writing any output to disk.
+func TypeCheckSchemaSource(schemaGenSrc []byte) error {
+	fset := token.NewFileSet()
+	schemaFiles, err := parsePackageSources(fset, "types_gen.go", schemaGenSrc, nil)
+	if err != nil {
+		return fmt.Errorf("parse schema package: %w", err)
+	}
+	schemaCfg := &types.Config{Importer: importer.Default()}
+	if _, err := schemaCfg.Check(schemaPkgPath, fset, schemaFiles, nil); err != nil {
+		return fmt.Errorf("type-check schema package: %w", err)
 	}
 	return nil
 }

@@ -222,7 +222,7 @@ func NewRootCommand(opts Options) *cobra.Command {
 		&cobra.Group{ID: groupConfig, Title: "Configuration commands:"},
 		&cobra.Group{ID: groupUnits, Title: "Unit commands (wskit UNIT VERB):"},
 	)
-	for _, c := range matrixCommands() {
+	for _, c := range matrixCommands(opts, flags) {
 		if c.GroupID == "" {
 			c.GroupID = groupWorkflow
 		}
@@ -251,7 +251,7 @@ func addSharedFlags(root *cobra.Command, f *sharedFlags) {
 }
 
 // matrixCommands returns the top-level commands of SPC-001's command matrix.
-func matrixCommands() []*cobra.Command {
+func matrixCommands(opts Options, flags *sharedFlags) []*cobra.Command {
 	// Per-command flags from SPC-001 and ADR 0005 section 2b. They are
 	// declared now so the tree is complete; each command reads them when it
 	// is built.
@@ -271,18 +271,11 @@ func matrixCommands() []*cobra.Command {
 	disarm := newStubCommand(contract.VerbDisarm.String(), "Disarm an armed dead-man timer")
 	disarm.Flags().String(flagRun, "", "the run ID whose timer to disarm")
 
-	config := newGroupCommand(contract.CmdConfig.String(), "Show, change and check layered configuration")
-	config.GroupID = groupConfig
+	config := newConfigCommand(opts, flags)
 	interview := newStubCommand(contract.CmdInterview.String(), "Answer questions to write a configuration")
 	interview.GroupID = groupConfig
 	migrate := newStubCommand(contract.CmdMigrate.String(), "Migrate configuration to the current schema")
 	migrate.GroupID = groupConfig
-	config.AddCommand(
-		newStubCommand(cmdConfigGet, "Show a value and the layer it comes from"),
-		newStubCommand(cmdConfigSet, "Set a value (previews unless --apply is given)"),
-		newStubCommand(contract.VerbExplain.String(), "Explain a configuration field"),
-		newStubCommand(cmdConfigVal, "Check configuration against the schema"),
-	)
 
 	return []*cobra.Command{
 		plan,

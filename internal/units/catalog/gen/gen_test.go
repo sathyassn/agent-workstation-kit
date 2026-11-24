@@ -598,13 +598,70 @@ milestone = "alpha"
 	}
 }
 
+const minimalValidSchema = `
+meta_version = 1
+schema_version = 3
+
+[[enum]]
+name = "ProfileKind"
+doc = "ProfileKind distinguishes work and personal profiles."
+values = ["work", "personal"]
+
+[[safety_floor]]
+key = "safety.backups"
+rule = "safety-floor-backups"
+what = "Mandatory backups."
+why = "Enables restore on failure."
+risk = "Disabling breaks recovery."
+undo = "Not configurable."
+
+[[field]]
+key = "schema_version"
+type = "int"
+required = true
+default = 3
+min = 3
+max = 3
+stage = "baseline"
+what = "Schema version."
+why = "Pins format."
+risk = "Mismatch fails validation."
+undo = "Restore profile."
+
+[[field]]
+key = "profile"
+type = "enum"
+enum = "ProfileKind"
+required = true
+default = "work"
+stage = "baseline"
+what = "Profile kind."
+why = "Selects work or personal policy."
+risk = "Wrong mode alters sharing rules."
+undo = "Change profile."
+
+[[field]]
+key = "backup.retention_days"
+type = "int"
+required = true
+default = 30
+min = 1
+stage = "resources"
+what = "Backup retention days."
+why = "Sets recovery window."
+risk = "Too short limits recovery."
+undo = "Restore previous value."
+`
+
 func setupTempRepo(t *testing.T, unitsTOML string) string {
 	t.Helper()
 	root := t.TempDir()
 	for _, dir := range []string{
 		"registry",
+		"schema",
 		filepath.Join("internal", "contract"),
 		filepath.Join("internal", "units", "catalog"),
+		filepath.Join("internal", "schema"),
 		filepath.Join("docs", "plan"),
 		filepath.Join("docs", "design"),
 		filepath.Join("project-management", "specs"),
@@ -615,6 +672,9 @@ func setupTempRepo(t *testing.T, unitsTOML string) string {
 	}
 	if err := os.WriteFile(filepath.Join(root, "registry", "units.toml"), []byte(unitsTOML), 0o600); err != nil {
 		t.Fatalf("write units.toml: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "schema", "profile.toml"), []byte(minimalValidSchema), 0o600); err != nil {
+		t.Fatalf("write schema/profile.toml: %v", err)
 	}
 	catalogSrc, err := fs.ReadFile(os.DirFS(".."), "catalog.go")
 	if err != nil {
@@ -648,6 +708,7 @@ func TestWriteRepoGeneratesCleanCode(t *testing.T) {
 	paths := []string{
 		"internal/contract/enums_gen.go",
 		"internal/units/catalog/catalog_gen.go",
+		"internal/schema/types_gen.go",
 	}
 	for _, p := range paths {
 		data, err := fs.ReadFile(rootFS, p)
@@ -924,5 +985,74 @@ milestone = "alpha"
 	}
 	if string(gotEnums) != string(origEnums) {
 		t.Fatal("enums_gen.go was modified despite failure on second write")
+	}
+}
+
+func TestSingleEditStalesSchemaTypesAndRegenerates(t *testing.T) {
+	t.Parallel()
+
+	root := setupTempRepo(t, minimalValidCatalog)
+	if err := gen.WriteRepo(root); err != nil {
+		t.Fatalf("initial WriteRepo: %v", err)
+	}
+	if err := gen.CheckRepo(root); err != nil {
+		t.Fatalf("initial CheckRepo: %v", err)
+	}
+
+	edited := replaceOnce(t, minimalValidSchema, `default = 30`, `default = 45`)
+	if err := os.WriteFile(filepath.Join(root, "schema", "profile.toml"), []byte(edited), 0o600); err != nil {
+		t.Fatalf("write edited schema/profile.toml: %v", err)
+	}
+
+	err := gen.CheckRepo(root)
+	if err == nil {
+		t.Fatal("CheckRepo unexpectedly passed after editing schema/profile.toml")
+	}
+	if !strings.Contains(err.Error(), "internal/schema/types_gen.go") {
+		t.Fatalf("CheckRepo error = %q, want internal/schema/types_gen.go", err.Error())
+	}
+
+	if err := gen.WriteRepo(root); err != nil {
+		t.Fatalf("regeneration WriteRepo: %v", err)
+	}
+	if err := gen.CheckRepo(root); err != nil {
+		t.Fatalf("CheckRepo after regeneration: %v", err)
+	}
+}
+
+func TestParseAndValidateProfileSchemaErrors(t *testing.T) {
+	t.Parallel()
+
+	if _, err := gen.ParseProfileSchema([]byte("meta_version = 2\nschema_version = 3\n")); err == nil {
+		t.Error("expected error for meta_version = 2")
+	}
+	if _, err := gen.ParseProfileSchema([]byte("meta_version = 1\nschema_version = 3\nextra = true\n")); err == nil {
+		t.Error("expected error for unknown top-level key")
+	}
+	badSchema := replaceOnce(t, minimalValidSchema, `enum = "ProfileKind"`, `enum = "NoSuchEnum"`)
+	ps, err := gen.ParseProfileSchema([]byte(badSchema))
+	if err != nil {
+		t.Fatalf("ParseProfileSchema: %v", err)
+	}
+	if errs := gen.ValidateProfileSchema(ps); len(errs) == 0 || !strings.Contains(errs[0].Error(), "unknown enum") {
+		t.Fatalf("expected unknown enum error, got %v", errs)
+	}
+
+	// Bad schema must write nothing to disk.
+	root := setupTempRepo(t, minimalValidCatalog)
+	if err := os.WriteFile(filepath.Join(root, "schema", "profile.toml"), []byte(badSchema), 0o600); err != nil {
+		t.Fatalf("write bad schema: %v", err)
+	}
+	if err := gen.WriteRepo(root); err == nil {
+		t.Fatal("WriteRepo unexpectedly succeeded with invalid schema")
+	}
+	for _, p := range []string{
+		filepath.Join(root, "internal", "contract", "enums_gen.go"),
+		filepath.Join(root, "internal", "units", "catalog", "catalog_gen.go"),
+		filepath.Join(root, "internal", "schema", "types_gen.go"),
+	} {
+		if _, statErr := os.Stat(p); !os.IsNotExist(statErr) {
+			t.Errorf("expected %s not to be written when schema validation fails", p)
+		}
 	}
 }

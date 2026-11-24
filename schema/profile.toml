@@ -1,0 +1,1298 @@
+# Machine profile Schema 3 declaration (single source of truth).
+# Drives generated Go types/constants in internal/schema/types_gen.go,
+# validation metadata, layered config resolution, and `wskit config explain`.
+#
+# Edit this file and run `go generate ./...` to regenerate Go code.
+
+meta_version = 1
+schema_version = 3
+
+# ---------------------------------------------------------------------------
+# Closed enumerations
+# ---------------------------------------------------------------------------
+
+[[enum]]
+name = "ProfileKind"
+doc = "ProfileKind distinguishes shared work workstations from personal workstations."
+values = ["work", "personal"]
+
+[[enum]]
+name = "ProfileState"
+doc = "ProfileState tracks whether a profile is a draft or approved for apply."
+values = ["draft", "approved"]
+
+[[enum]]
+name = "Ownership"
+doc = "Ownership records whether the machine is owned by an individual or an organisation."
+values = ["individual", "organization"]
+
+[[enum]]
+name = "Platform"
+doc = "Platform selects the target operating system family."
+values = ["linux", "macos"]
+
+[[enum]]
+name = "OSFamily"
+doc = "OSFamily identifies the operating system distribution for the target platform."
+values = ["ubuntu", "macos"]
+
+[[enum]]
+name = "MacOSProvisioning"
+doc = "MacOSProvisioning selects managed MDM accounts or local account creation on macOS."
+values = ["local", "managed"]
+
+[[enum]]
+name = "KVMState"
+doc = "KVMState records remote-KVM readiness for out-of-band console recovery."
+values = ["deferred", "installed", "not-required"]
+
+[[enum]]
+name = "DesktopLockMode"
+doc = "DesktopLockMode defines how the remote desktop session locks on disconnect."
+values = ["ask", "dedicated-shared", "locked"]
+
+[[enum]]
+name = "GWSMode"
+doc = "GWSMode controls whether Google Workspace CLI tooling is installed."
+values = ["ask", "install", "skip"]
+
+[[enum]]
+name = "SecretsProvider"
+doc = "SecretsProvider records which approved secrets manager is used for human sign-ins."
+values = ["ask", "1password", "bitwarden", "both", "organization-vault"]
+
+[[enum]]
+name = "GitLabIdentity"
+doc = "GitLabIdentity selects the non-secret GitLab identity model for the workstation."
+values = ["service-account", "none"]
+
+[[enum]]
+name = "GitHubIdentity"
+doc = "GitHubIdentity selects the non-secret GitHub identity model for the workstation."
+values = ["app", "machine-user", "none"]
+
+[[enum]]
+name = "AtlassianIdentity"
+doc = "AtlassianIdentity selects the Atlassian identity model for collaboration tooling."
+values = ["ask", "service-account", "named-human", "none"]
+
+[[enum]]
+name = "AtlassianMCPAuth"
+doc = "AtlassianMCPAuth selects the authentication flow for Atlassian MCP access."
+values = ["ask", "service-account-api-key", "oauth-2.1", "none"]
+
+[[enum]]
+name = "ModelAuthMode"
+doc = "ModelAuthMode records the authentication model for an AI coding harness."
+values = ["api-workload", "enterprise-federated", "named-human", "none"]
+
+[[enum]]
+name = "RemoteScope"
+doc = "RemoteScope restricts incoming remote access to the mesh VPN tailnet."
+values = ["tailscale-only"]
+
+[[enum]]
+name = "EndpointManagement"
+doc = "EndpointManagement records whether MDM or EDR endpoint protection is enrolled."
+values = ["ask", "mdm", "edr", "mdm-and-edr", "not-required"]
+
+[[enum]]
+name = "ResourcePolicy"
+doc = "ResourcePolicy names the cgroup and memory-reserve policy profile."
+values = ["measured-balanced"]
+
+# ---------------------------------------------------------------------------
+# Safety floor (non-configurable invariants refused across every layer)
+# ---------------------------------------------------------------------------
+
+[[safety_floor]]
+key = "safety.backups"
+rule = "safety-floor-backups"
+what = "Mandatory pre-mutation file and state backups."
+why = "Every mutation must capture a durable backup manifest before touching the host."
+risk = "Disabling backups would make failed or interrupted applies unrecoverable."
+undo = "Not configurable; always enforced."
+
+[[safety_floor]]
+key = "safety.undo"
+rule = "safety-floor-undo"
+what = "Mandatory revert and undo support for every kit-managed unit."
+why = "Operators must be able to return to a prior stable point or baseline."
+risk = "Disabling undo breaks the kit's reversibility guarantee."
+undo = "Not configurable; always enforced."
+
+[[safety_floor]]
+key = "safety.dead_man_timer"
+rule = "safety-floor-dead-man-timer"
+what = "Mandatory dead-man rollback timer for remote SSH and firewall mutations."
+why = "Protects against remote lockout when firewall or SSH settings change."
+risk = "Disabling the dead-man timer can permanently lock operators out of remote hosts."
+undo = "Not configurable; always enforced."
+
+[[safety_floor]]
+key = "safety.secret_handling"
+rule = "safety-floor-secret-handling"
+what = "Mandatory secret exclusion from config, logs and terminal output."
+why = "Desired-state profiles and logs must never store or leak credentials."
+risk = "Relaxing secret handling exposes tokens, keys and recovery material."
+undo = "Not configurable; always enforced."
+
+[[safety_floor]]
+key = "safety.root_approval_phrase"
+rule = "safety-floor-root-approval"
+what = "Mandatory typed plan-digest approval phrase for privileged applies."
+why = "Ensures a human reviewed the exact staged plan before root execution."
+risk = "Bypassing the approval phrase allows unreviewed privileged host changes."
+undo = "Not configurable; always enforced."
+
+[[safety_floor]]
+key = "safety.staged_root_binary"
+rule = "safety-floor-staged-root"
+what = "Mandatory execution of root steps from the root-owned staged binary path."
+why = "Prevents privilege escalation through a user-writable checkout."
+risk = "Running root steps from an unstaged path allows local tampering."
+undo = "Not configurable; always enforced."
+
+# Profile security invariants that cannot be weakened in any config layer.
+[[safety_floor]]
+key = "security.disk_encryption_required"
+rule = "safety-floor-disk-encryption"
+required_value = true
+what = "Require full-disk encryption (LUKS on Linux, FileVault on macOS)."
+why = "Protects local repositories, caches and credentials at rest."
+risk = "Disabling disk encryption exposes workstation data if hardware is lost or stolen."
+undo = "Not weaken-able; must remain true."
+
+[[safety_floor]]
+key = "security.secure_boot_required"
+rule = "safety-floor-secure-boot"
+required_value = true
+what = "Require verified boot integrity (Secure Boot on Linux, Apple Silicon boot security on macOS)."
+why = "Prevents unsigned kernel or boot-chain tampering."
+risk = "Disabling verified boot weakens tamper resistance of the host."
+undo = "Not weaken-able; must remain true."
+
+[[safety_floor]]
+key = "security.remote_scope"
+rule = "safety-floor-remote-scope"
+required_value = "tailscale-only"
+what = "Restrict remote access strictly to the mesh VPN interface."
+why = "Keeps SSH and remote desktop off LAN and public interfaces."
+risk = "Broadening remote_scope exposes administrative listeners outside the tailnet."
+undo = "Not weaken-able; must remain tailscale-only."
+
+[[safety_floor]]
+key = "tooling.install_agents"
+rule = "safety-floor-required-agents"
+required_value = true
+what = "Install the required baseline AI coding agent CLIs."
+why = "Every agent workstation profile includes the baseline agent harness set."
+risk = "Turning off install_agents breaks the workstation baseline contract."
+undo = "Not weaken-able; must remain true."
+
+# ---------------------------------------------------------------------------
+# Top-level fields
+# ---------------------------------------------------------------------------
+
+[[field]]
+key = "schema_version"
+type = "int"
+required = true
+default = 3
+min = 3
+max = 3
+stage = "baseline"
+what = "Profile schema version number."
+why = "Requires explicit migration when profile structure changes."
+options = ["3: current machine profile schema"]
+recommended = "3"
+risk = "Using an unsupported schema version causes fail-closed validation rejection."
+undo = "Restore the previous profile revision in Git."
+requires = []
+manual_equivalent = "Set schema_version = 3 at the top of the machine profile TOML."
+
+[[field]]
+key = "profile"
+type = "enum"
+enum = "ProfileKind"
+required = true
+default = "work"
+stage = "baseline"
+what = "Whether the workstation is a shared work host or a personal host."
+why = "Controls ownership, model-auth and collaboration sharing restrictions."
+options = ["work: organisation-owned shared workstation", "personal: individual-owned single-operator workstation"]
+recommended = "work for team hosts; personal for a single person's host"
+risk = "Choosing personal on a shared host weakens multi-operator identity isolation."
+undo = "Change profile and matching deployment fields, then re-validate."
+requires = []
+manual_equivalent = "Set profile in the machine profile TOML."
+
+[[field]]
+key = "state"
+type = "enum"
+enum = "ProfileState"
+required = true
+default = "draft"
+stage = "baseline"
+what = "Review lifecycle state of the profile."
+why = "Prevents applying an unreviewed draft profile with unresolved placeholders."
+options = ["draft: work in progress; allows unresolved ask fields", "approved: reviewed and ready for apply and audit"]
+recommended = "draft while editing; approved only after review"
+risk = "Marking a profile approved before review bypasses draft gating."
+undo = "Revert state back to draft in the fleet repository."
+requires = []
+manual_equivalent = "Set state in the machine profile TOML."
+
+# ---------------------------------------------------------------------------
+# [deployment]
+# ---------------------------------------------------------------------------
+
+[[field]]
+key = "deployment.namespace"
+type = "string"
+required = true
+stage = "identity"
+what = "Short 2-8 character lowercase alphanumeric organisation or environment prefix."
+why = "Namespaces hostnames, tailnet tags and service principals consistently across a fleet."
+options = ["2-8 lowercase ASCII letters or digits, for example acme or lab"]
+recommended = "A short neutral fleet prefix"
+risk = "Changing namespace after provisioning requires renaming the host and identity record."
+undo = "Revert the profile change and re-run the identity stage."
+requires = []
+manual_equivalent = "Update [deployment].namespace and matching machine.hostname prefix."
+
+[[field]]
+key = "deployment.context"
+type = "enum"
+enum = "ProfileKind"
+required = true
+default = "work"
+stage = "baseline"
+what = "Deployment context mirrored from the top-level profile kind."
+why = "Prevents accidental cross-copying of work and personal deployment sections."
+options = ["work: matches profile = work", "personal: matches profile = personal"]
+recommended = "Same value as top-level profile"
+risk = "Mismatching profile fails validation immediately."
+undo = "Align deployment.context with top-level profile."
+requires = []
+manual_equivalent = "Set [deployment].context in the machine profile TOML."
+
+[[field]]
+key = "deployment.ownership"
+type = "enum"
+enum = "Ownership"
+required = true
+default = "organization"
+stage = "baseline"
+what = "Legal and operational owner of the workstation hardware."
+why = "Work profiles must be organisation-owned so endpoint and identity policies apply."
+options = ["organization: organisation-owned machine", "individual: personally owned machine"]
+recommended = "organization for work profiles; individual for personal profiles"
+risk = "Setting individual on a work profile is rejected by policy."
+undo = "Restore the previous ownership setting in the profile."
+requires = []
+manual_equivalent = "Set [deployment].ownership in the machine profile TOML."
+
+# ---------------------------------------------------------------------------
+# [machine]
+# ---------------------------------------------------------------------------
+
+[[field]]
+key = "machine.hostname"
+type = "string"
+required = true
+stage = "identity"
+what = "Technical hostname following <namespace>-<class>-<NNN>."
+why = "Provides a unique, immutable fleet identifier tied to namespace and platform class."
+options = ["<namespace>-(ws|mac|hv|vws|nas|mgmt|srv)-<NNN>; macOS requires class mac"]
+recommended = "Allocated once by fleet init, for example ac-ws-001 or ac-mac-001"
+risk = "Renaming an active host invalidates identity records and SSH host bindings."
+undo = "Revert the identity unit to restore the previous hostname."
+requires = []
+manual_equivalent = "hostnamectl set-hostname on Linux or scutil --set HostName on macOS."
+
+[[field]]
+key = "machine.display_name"
+type = "string"
+required = true
+stage = "identity"
+what = "Human-friendly, fleet-unique ASCII machine label."
+why = "Makes machines easy to distinguish in dashboards without using it for authorisation."
+options = ["1-64 trimmed ASCII letters, digits, single spaces, dots, underscores or hyphens"]
+recommended = "A memorable fleet-unique name such as Atlas or Orchard"
+risk = "Deceptive lookalike Unicode or duplicate names confuse operators."
+undo = "Revert the identity unit to restore the previous display name."
+requires = []
+manual_equivalent = "hostnamectl set-hostname --pretty on Linux or scutil --set ComputerName on macOS."
+
+[[field]]
+key = "machine.uuid"
+type = "string"
+required = true
+stage = "identity"
+what = "Canonical lowercase UUIDv4 generated once per machine."
+why = "Uniquely tracks a machine record across renames and re-imaging."
+options = ["canonical lowercase RFC 4122 UUIDv4"]
+recommended = "Generated once at profile creation"
+risk = "Reusing a UUID across machines breaks fleet uniqueness checks."
+undo = "Restore the machine's original UUID in the profile."
+requires = []
+manual_equivalent = "Recorded in the root-owned local identity.toml."
+
+[[field]]
+key = "machine.asset_tag"
+type = "string"
+required = true
+ready_required = true
+default = "ask"
+stage = "identity"
+what = "Hardware inventory asset tag."
+why = "Links the logical machine profile to physical asset tracking."
+options = ["trimmed NFKC printable string (1-128 chars, not starting with '-')"]
+recommended = "Organisation asset tag, resolved before approval"
+risk = "Leaving ask blocks ready validation; leading '-' is refused as option-shaped."
+undo = "Restore the previous asset tag and re-run identity."
+requires = []
+manual_equivalent = "Recorded in the root-owned local identity.toml."
+
+[[field]]
+key = "machine.platform"
+type = "enum"
+enum = "Platform"
+required = true
+default = "linux"
+stage = "baseline"
+what = "Target operating system platform."
+why = "Selects OS-specific packages, identity tools, account rules and units."
+options = ["linux: Ubuntu LTS workstation", "macos: Apple Silicon macOS workstation"]
+recommended = "Match the physical target machine"
+risk = "Wrong platform prevents plan execution on the target host."
+undo = "Select the matching platform in the profile."
+requires = []
+manual_equivalent = "Set [machine].platform in the machine profile TOML."
+
+[[field]]
+key = "machine.os_family"
+type = "enum"
+enum = "OSFamily"
+required = true
+default = "ubuntu"
+stage = "baseline"
+what = "Operating system family corresponding to machine.platform."
+why = "Explicitly records the supported distribution family."
+options = ["ubuntu: required when platform = linux", "macos: required when platform = macos"]
+recommended = "ubuntu on Linux; macos on macOS"
+risk = "Mismatching machine.platform fails validation."
+undo = "Align os_family with machine.platform."
+requires = []
+manual_equivalent = "Set [machine].os_family in the machine profile TOML."
+
+[[field]]
+key = "machine.hardware_profile"
+type = "string"
+required = true
+default = "generic"
+stage = "baseline"
+what = "Hardware class label describing the workstation model."
+why = "Documents hardware-specific driver and resource expectations."
+options = ["trimmed NFKC printable string (1-128 chars, not starting with '-')"]
+recommended = "Match the hardware profile guide, for example generic-64gb"
+risk = "Incorrect hardware profile can mislead driver or sizing review."
+undo = "Update hardware_profile in the profile."
+requires = []
+manual_equivalent = "Set [machine].hardware_profile in the machine profile TOML."
+
+[[field]]
+key = "machine.role"
+type = "string"
+required = true
+default = "agent-workstation"
+stage = "identity"
+what = "Operational role recorded in the local identity manifest."
+why = "Identifies the workstation's intended workload role during audits."
+options = ["trimmed NFKC printable string (1-128 chars, not starting with '-')"]
+recommended = "agent-workstation"
+risk = "Changing role alters the local identity record checked by audit."
+undo = "Restore machine.role and re-run identity."
+requires = []
+manual_equivalent = "Recorded in the root-owned local identity.toml."
+
+# ---------------------------------------------------------------------------
+# [accounts]
+# ---------------------------------------------------------------------------
+
+[[field]]
+key = "accounts.agent"
+type = "string"
+required = true
+default = "agent-01"
+stage = "identity"
+what = "Unprivileged runtime Unix account for AI coding agents."
+why = "Isolates agent processes from administrator privileges and personal SSH accounts."
+options = ["Unix username matching agent-NN, for example agent-01"]
+recommended = "agent-01"
+risk = "Sharing this name with a human, admin or service account violates isolation."
+undo = "Revert accounts unit (archives home before removal)."
+requires = []
+manual_equivalent = "adduser / dscl account creation for the dedicated agent user."
+
+[[field]]
+key = "accounts.humans"
+type = "string_list"
+required = true
+stage = "identity"
+what = "Named daily human operator Unix accounts."
+why = "Provides attributable non-admin accounts for people who use or supervise the host."
+options = ["non-empty list of unique valid Unix usernames"]
+recommended = "One stable handle per named operator"
+risk = "Overlapping with admins or services breaks role separation."
+undo = "Revert accounts unit to remove kit-created human accounts."
+requires = []
+manual_equivalent = "Create non-admin human accounts and group memberships."
+
+[[field]]
+key = "accounts.admins"
+type = "string_list"
+required = true
+stage = "identity"
+what = "Dedicated administrator Unix accounts used only for privileged tasks."
+why = "Separates daily work from sudo/admin elevation."
+options = ["list of unique Unix usernames matching admin-NN"]
+recommended = "One admin-NN account per assigned administrator"
+risk = "Omitting admins removes SSH recovery authority."
+undo = "Revert accounts unit after confirming another recovery account works."
+requires = []
+manual_equivalent = "Create admin-NN accounts in sudo (Linux) or admin (macOS) group."
+
+[[field]]
+key = "accounts.admin_assignments"
+type = "string_map"
+required = true
+stage = "identity"
+what = "One-to-one mapping from each admin-NN account to its owning named human."
+why = "Maintains clear individual accountability for every administrator account."
+options = ["table mapping every accounts.admins key to a distinct accounts.humans entry"]
+recommended = "Assign each admin-NN to a unique named human"
+risk = "Shared or unassigned admin accounts fail accountability validation."
+undo = "Update admin_assignments in the fleet repository."
+requires = []
+manual_equivalent = "Document admin ownership in the fleet profile."
+
+[[field]]
+key = "accounts.services"
+type = "string_list"
+required = true
+default = []
+stage = "identity"
+what = "Dedicated non-human service Unix accounts."
+why = "Separates background service identities from human, admin and agent accounts."
+options = ["list of unique valid Unix usernames starting with svc-"]
+recommended = "[] unless a specific service account is needed"
+risk = "Reusing a human or admin account for services blurs audit trails."
+undo = "Revert accounts unit."
+requires = []
+manual_equivalent = "Create svc-* system accounts."
+
+[[field]]
+key = "accounts.operators"
+type = "string_list"
+required = true
+stage = "identity"
+what = "Named humans authorised to operate the agent session broker."
+why = "Populates the <agent>-operators group for scoped broker access."
+options = ["subset of accounts.humans with no duplicates"]
+recommended = "Named humans responsible for driving agent sessions"
+risk = "Granting operator access to undeclared accounts is refused."
+undo = "Update operators and re-apply the accounts unit."
+requires = []
+manual_equivalent = "Manage membership of the <agent>-operators Unix group."
+
+[[field]]
+key = "accounts.viewers"
+type = "string_list"
+required = true
+default = []
+stage = "identity"
+what = "Named humans authorised for read-only observation of agent sessions."
+why = "Populates the <agent>-viewers group without granting control."
+options = ["subset of accounts.humans with no duplicates"]
+recommended = "[] unless read-only observers are needed"
+risk = "Listing undeclared humans fails validation."
+undo = "Update viewers and re-apply the accounts unit."
+requires = []
+manual_equivalent = "Manage membership of the <agent>-viewers Unix group."
+
+[[field]]
+key = "accounts.ssh_users"
+type = "string_list"
+required = true
+stage = "remote"
+what = "Exact AllowUsers list permitted to sign in over SSH."
+why = "Restricts SSH access to declared humans and at least one recovery administrator, never the agent."
+options = ["non-empty subset of accounts.humans union accounts.admins containing at least one admin"]
+recommended = "All declared humans and admins"
+risk = "Removing every administrator can lock out SSH recovery."
+undo = "Revert ssh unit under the dead-man timer."
+requires = []
+manual_equivalent = "AllowUsers in /etc/ssh/sshd_config.d/ on Linux or com.apple.access_ssh on macOS."
+
+[[field]]
+key = "accounts.macos_provisioning"
+type = "enum"
+enum = "MacOSProvisioning"
+required = false
+default = "managed"
+stage = "identity"
+what = "Account provisioning mode on macOS hosts."
+why = "Defaults to verifying MDM-provisioned accounts; local creation requires explicit opt-in."
+options = ["managed: verify MDM-provisioned accounts", "local: create missing accounts locally with hidden password prompts"]
+recommended = "managed for MDM-enrolled Macs"
+risk = "Using local without an approved local-account policy bypasses MDM lifecycle."
+undo = "Switch back to managed in the profile."
+requires = []
+manual_equivalent = "Pass --management managed|local to macOS account setup."
+
+# ---------------------------------------------------------------------------
+# [remote]
+# ---------------------------------------------------------------------------
+
+[[field]]
+key = "remote.tailscale_tailnet"
+type = "string"
+required = true
+ready_required = true
+default = "ask"
+stage = "remote"
+what = "Tailscale tailnet name or domain identifier."
+why = "Documents which tailnet the workstation joins for private remote access."
+options = ["non-empty trimmed string (resolved from ask before approval)"]
+recommended = "Your organisation's tailnet identifier"
+risk = "Enrolling into the wrong tailnet breaks ACLs and SSH reachability."
+undo = "Re-enrol Tailscale on the intended tailnet."
+requires = []
+manual_equivalent = "Check tailscale status and tailnet DNS settings."
+
+[[field]]
+key = "remote.tailscale_tags"
+type = "string_list"
+required = true
+stage = "remote"
+what = "Tailscale ACL tags applied to the workstation device."
+why = "Binds the host to tailnet ACL grants rather than a personal user identity."
+options = ["non-empty list of tag:* strings"]
+recommended = "['tag:<namespace>-workstation']"
+risk = "Missing or overly broad tags can expose or block remote access."
+undo = "Re-advertise tags through tailscale up and tailnet ACLs."
+requires = []
+manual_equivalent = "tailscale up --advertise-tags=..."
+
+[[field]]
+key = "remote.nomachine_port"
+type = "int"
+required = true
+default = 4000
+min = 1
+max = 65535
+stage = "remote"
+what = "TCP port opened on the tailnet interface for NoMachine remote desktop."
+why = "Allows firewall and audit rules to pin the exact remote-desktop port."
+options = ["integer from 1 through 65535"]
+recommended = "4000"
+risk = "Changing the port without updating NoMachine breaks remote desktop connectivity."
+undo = "Revert remote-desktop and firewall units under the dead-man timer."
+requires = []
+manual_equivalent = "UFW rule for the selected port on tailscale0 and NoMachine server.cfg."
+
+[[field]]
+key = "remote.kvm"
+type = "enum"
+enum = "KVMState"
+required = true
+default = "deferred"
+stage = "remote"
+what = "Deployment status of out-of-band hardware KVM access."
+why = "Tracks whether physical console recovery is available remotely."
+options = ["deferred: hardware KVM planned later", "installed: hardware KVM verified", "not-required: physical console is directly reachable"]
+recommended = "installed for unattended hosts; deferred during supervised pilot"
+risk = "Operating without tested console recovery increases lockout risk."
+undo = "Update remote.kvm in the profile."
+requires = []
+manual_equivalent = "Record hardware KVM status in fleet inventory."
+
+[[field]]
+key = "remote.preferred_kvm"
+type = "string"
+required = true
+default = "glinet-comet-x-gl-rm4pe"
+stage = "remote"
+what = "Primary approved hardware KVM model for the workstation."
+why = "Standardises out-of-band recovery hardware across the fleet."
+options = ["non-empty trimmed inventory identifier"]
+recommended = "glinet-comet-x-gl-rm4pe"
+risk = "Unvetted KVM hardware may lack documented security controls."
+undo = "Update remote.preferred_kvm in the profile."
+requires = []
+manual_equivalent = "Hardware inventory record."
+
+[[field]]
+key = "remote.fallback_kvm"
+type = "string"
+required = true
+default = "glinet-comet-poe-gl-rm1pe"
+stage = "remote"
+what = "Fallback approved hardware KVM model when the primary model is unavailable."
+why = "Keeps hardware procurement aligned with reviewed models."
+options = ["non-empty trimmed inventory identifier"]
+recommended = "glinet-comet-poe-gl-rm1pe"
+risk = "Unvetted fallback models may differ in PoE or firmware support."
+undo = "Update remote.fallback_kvm in the profile."
+requires = []
+manual_equivalent = "Hardware inventory record."
+
+[[field]]
+key = "remote.desktop_lock_mode"
+type = "enum"
+enum = "DesktopLockMode"
+required = true
+ready_required = true
+default = "ask"
+stage = "remote"
+what = "Screen-lock and session-sharing mode for the remote desktop."
+why = "Balances physical console privacy with remote desktop usability."
+options = ["ask: unresolved draft", "dedicated-shared: dedicated shared workstation session", "locked: lock physical session on disconnect"]
+recommended = "locked on accessible desks; dedicated-shared in locked racks"
+risk = "An unlocked physical console in a shared office exposes agent sessions."
+undo = "Update desktop_lock_mode and re-apply remote-desktop."
+requires = []
+manual_equivalent = "Configure NoMachine / macOS Screen Sharing lock-on-disconnect settings."
+
+# ---------------------------------------------------------------------------
+# [tooling]
+# ---------------------------------------------------------------------------
+
+[[field]]
+key = "tooling.install_agents"
+type = "bool"
+required = true
+default = true
+stage = "agent"
+what = "Install the baseline AI coding agent CLIs (Codex, Claude Code, Grok Build)."
+why = "Required baseline capability of an agent workstation."
+options = ["true: required baseline"]
+recommended = "true"
+risk = "Setting false is refused by baseline policy."
+undo = "Not weaken-able; must remain true."
+requires = []
+manual_equivalent = "Install pinned agent CLIs in the agent account."
+
+[[field]]
+key = "tooling.gws"
+type = "enum"
+enum = "GWSMode"
+required = true
+ready_required = true
+default = "ask"
+stage = "agent"
+what = "Whether to install Google Workspace CLI tooling."
+why = "Keeps optional cloud productivity CLIs explicit per host."
+options = ["ask: unresolved draft", "install: install pinned gws CLI", "skip: omit gws CLI"]
+recommended = "skip unless the machine needs Google Workspace access"
+risk = "Installing unused CLIs increases surface area and update maintenance."
+undo = "Set to skip and revert the tools unit."
+requires = []
+manual_equivalent = "Install or remove gws in the agent account."
+
+[[field]]
+key = "tooling.secrets_provider"
+type = "enum"
+enum = "SecretsProvider"
+required = true
+ready_required = true
+default = "ask"
+stage = "agent"
+what = "Approved secrets manager used by operators for workstation sign-ins."
+why = "Documents how credentials are stored outside Git and profile files."
+options = ["ask: unresolved draft", "1password: 1Password", "bitwarden: Bitwarden", "both: 1Password and Bitwarden", "organization-vault: organisation vault"]
+recommended = "Match your organisation's approved secrets manager"
+risk = "Unapproved secret storage weakens credential governance."
+undo = "Update secrets_provider in the profile."
+requires = []
+manual_equivalent = "Documented operator workflow."
+
+[[field]]
+key = "tooling.antidote_ref"
+type = "string"
+required = true
+ready_required = true
+default = "ask"
+stage = "agent"
+what = "Pinned Antidote zsh plugin manager release tag or full commit SHA."
+why = "Avoids floating shell plugin manager downloads at setup time."
+options = ["ask (draft only) or a reviewed release ref matching [A-Za-z0-9._/-]+ not starting with '-'"]
+recommended = "A reviewed full commit SHA or pinned release tag"
+risk = "Floating or unreviewed refs can execute untrusted shell code."
+undo = "Revert the shell unit or pin the prior ref."
+requires = []
+manual_equivalent = "Clone antidote at the exact ref in ~/.antidote."
+
+[[field]]
+key = "tooling.apt_packages"
+type = "string_list"
+required = false
+default = []
+stage = "packages"
+what = "Additional approved APT packages to install on Linux workstations."
+why = "Extends the Linux baseline package set without ad hoc manual installs."
+options = ["list of unique APT package specs (name[:arch][=version]); Linux only"]
+recommended = "[] unless extra system packages are needed"
+risk = "Unneeded root packages widen the attack surface."
+undo = "Remove from apt_packages and revert the packages unit."
+requires = []
+manual_equivalent = "apt-get install <packages>"
+
+[[field]]
+key = "tooling.brew_formulae"
+type = "string_list"
+required = false
+default = []
+stage = "packages-user"
+what = "Additional approved core Homebrew formulae to install on macOS workstations."
+why = "Extends the macOS CLI package set cleanly without third-party taps."
+options = ["list of unique core Homebrew formula names; macOS only"]
+recommended = "[] unless extra CLI formulae are needed"
+risk = "Homebrew does not keep prior formula versions for automatic downgrade."
+undo = "Remove from brew_formulae and uninstall via brew."
+requires = []
+manual_equivalent = "brew install --formula <formulae>"
+
+[[field]]
+key = "tooling.brew_casks"
+type = "string_list"
+required = false
+default = []
+stage = "packages-user"
+what = "Additional approved Homebrew casks to install on macOS workstations."
+why = "Extends the macOS desktop app set cleanly without third-party taps."
+options = ["list of unique core Homebrew cask names; macOS only"]
+recommended = "[] unless extra macOS apps are needed"
+risk = "GUI casks may request system permissions or self-update."
+undo = "Remove from brew_casks and uninstall via brew."
+requires = []
+manual_equivalent = "brew install --cask <casks>"
+
+[[field]]
+key = "tooling.mise_version"
+type = "string"
+required = false
+stage = "agent"
+what = "Pinned mise binary version for Linux bootstrap."
+why = "Installs an exact, independently checksummed mise binary on Linux."
+options = ["version matching 202[6-9].M.P; Linux only, must be paired with mise_sha256"]
+recommended = "Omit to use the kit default pin, or set with reviewed mise_sha256"
+risk = "Setting mise_version on macOS conflicts with Homebrew mise and is refused."
+undo = "Remove mise_version and mise_sha256 from the profile."
+requires = []
+manual_equivalent = "Download the pinned mise release binary and verify its SHA-256."
+
+[[field]]
+key = "tooling.mise_sha256"
+type = "string"
+required = false
+stage = "agent"
+what = "Expected lowercase 64-hex SHA-256 digest of the pinned Linux mise binary."
+why = "Verifies integrity of the downloaded mise binary before execution."
+options = ["64 lowercase hex characters; Linux only, must be paired with mise_version"]
+recommended = "Independently verified SHA-256 from the mise release"
+risk = "A mismatched checksum fails closed during installation."
+undo = "Remove mise_version and mise_sha256 from the profile."
+requires = []
+manual_equivalent = "sha256sum verification of the mise archive."
+
+# ---------------------------------------------------------------------------
+# [source_control]
+# ---------------------------------------------------------------------------
+
+[[field]]
+key = "source_control.gitlab_host"
+type = "string"
+required = true
+default = "gitlab.com"
+stage = "agent"
+what = "GitLab server hostname without URL scheme or path."
+why = "Identifies the GitLab host for non-secret identity and SSH/CLI setup."
+options = ["bare hostname without :// or /"]
+recommended = "gitlab.com or your self-hosted GitLab hostname"
+risk = "Invalid hostnames break Git remote and CLI configuration."
+undo = "Restore gitlab_host in the profile."
+requires = []
+manual_equivalent = "Configure glab host and ~/.ssh/config entry."
+
+[[field]]
+key = "source_control.gitlab_identity"
+type = "enum"
+enum = "GitLabIdentity"
+required = true
+default = "service-account"
+stage = "agent"
+what = "Non-secret GitLab identity model used by the workstation."
+why = "Ensures shared hosts use scoped service accounts instead of personal tokens."
+options = ["service-account: dedicated GitLab service account", "none: GitLab unused on this host"]
+recommended = "service-account when using GitLab; none otherwise"
+risk = "At least one of gitlab_identity or github_identity must be enabled."
+undo = "Update gitlab_identity and gitlab_principal."
+requires = []
+manual_equivalent = "Sign in or revoke the GitLab identity."
+
+[[field]]
+key = "source_control.gitlab_principal"
+type = "string"
+required = true
+ready_required = true
+stage = "agent"
+what = "Non-secret GitLab principal label (username or account label, never a token)."
+why = "Records which GitLab identity is authorised for this workstation."
+options = ["none when gitlab_identity = none; else 2-100 char [A-Za-z0-9._-] label"]
+recommended = "<namespace>-agent-dev"
+risk = "Credential-shaped prefixes are refused to keep secrets out of profiles."
+undo = "Update gitlab_principal in the profile."
+requires = []
+manual_equivalent = "Audit GitLab project/group membership for the principal."
+
+[[field]]
+key = "source_control.github_host"
+type = "string"
+required = true
+default = "github.com"
+stage = "agent"
+what = "GitHub server hostname without URL scheme or path."
+why = "Identifies the GitHub host for CLI and Git identity setup."
+options = ["bare hostname without :// or /"]
+recommended = "github.com or your GitHub Enterprise hostname"
+risk = "Invalid hostnames break gh CLI and Git remote configuration."
+undo = "Restore github_host in the profile."
+requires = []
+manual_equivalent = "Configure gh auth host and ~/.ssh/config entry."
+
+[[field]]
+key = "source_control.github_identity"
+type = "enum"
+enum = "GitHubIdentity"
+required = true
+default = "app"
+stage = "agent"
+what = "Non-secret GitHub identity model used by the workstation."
+why = "Distinguishes GitHub App installations from machine users or unused GitHub."
+options = ["app: GitHub App installation", "machine-user: dedicated machine user account", "none: GitHub unused on this host"]
+recommended = "app for organisations; machine-user for personal hosts"
+risk = "At least one of gitlab_identity or github_identity must be enabled."
+undo = "Update github_identity and github_principal."
+requires = []
+manual_equivalent = "Sign in or revoke the GitHub identity."
+
+[[field]]
+key = "source_control.github_principal"
+type = "string"
+required = true
+ready_required = true
+stage = "agent"
+what = "Non-secret GitHub principal label (app slug or machine username, never a token)."
+why = "Records which GitHub identity is authorised for this workstation."
+options = ["none when github_identity = none; else 2-100 char [A-Za-z0-9._-] label"]
+recommended = "<namespace>-agent-dev"
+risk = "Credential-shaped prefixes are refused to keep secrets out of profiles."
+undo = "Update github_principal in the profile."
+requires = []
+manual_equivalent = "Audit GitHub App installation or repository collaborator access."
+
+# ---------------------------------------------------------------------------
+# [collaboration]
+# ---------------------------------------------------------------------------
+
+[[field]]
+key = "collaboration.atlassian_site"
+type = "string"
+required = true
+ready_required = true
+default = "ask"
+stage = "agent"
+what = "Atlassian site hostname without URL scheme or path."
+why = "Targets Jira and Confluence MCP integration at a single reviewed tenant."
+options = ["ask (draft only), none (when unused), or bare hostname such as company.atlassian.net"]
+recommended = "Your Atlassian site hostname, or none if unused"
+risk = "Pointing at the wrong site can direct issue queries to the wrong tenant."
+undo = "Set to none and revert the mcp unit."
+requires = []
+manual_equivalent = "Configure Atlassian MCP server endpoint."
+
+[[field]]
+key = "collaboration.atlassian_identity"
+type = "enum"
+enum = "AtlassianIdentity"
+required = true
+ready_required = true
+default = "ask"
+stage = "agent"
+what = "Identity model for Atlassian collaboration tools."
+why = "Prevents sharing one person's Atlassian identity on a work or multi-operator host."
+options = ["ask: unresolved draft", "service-account: Atlassian service account", "named-human: single-operator personal host only", "none: Atlassian unused"]
+recommended = "service-account on work hosts; none if Atlassian is unused"
+risk = "Named-human on a work or multi-operator host is refused."
+undo = "Set to none and revoke tokens."
+requires = []
+manual_equivalent = "Revoke Atlassian API key or OAuth grant."
+
+[[field]]
+key = "collaboration.atlassian_principal"
+type = "string"
+required = true
+ready_required = true
+default = "ask"
+stage = "agent"
+what = "Non-secret Atlassian service-account name or named-human label/email."
+why = "Tracks which Atlassian principal is bound to the workstation."
+options = ["6-30 alphanumeric chars for service-account; approved label or email for named-human; none when unused"]
+recommended = "Alphanumeric service-account name such as acagentdev"
+risk = "Hyphenated service-account names or secret prefixes are refused."
+undo = "Update atlassian_principal in the profile."
+requires = []
+manual_equivalent = "Inspect Atlassian Admin service accounts."
+
+[[field]]
+key = "collaboration.atlassian_mcp_auth"
+type = "enum"
+enum = "AtlassianMCPAuth"
+required = true
+ready_required = true
+default = "ask"
+stage = "agent"
+what = "Authentication flow paired with collaboration.atlassian_identity."
+why = "Enforces matching auth method for service accounts versus OAuth 2.1."
+options = ["ask: unresolved draft", "service-account-api-key: required for service-account", "oauth-2.1: required for named-human", "none: required when unused"]
+recommended = "service-account-api-key for work; none when unused"
+risk = "Mismatched identity and auth mode fails validation."
+undo = "Update atlassian_mcp_auth and re-apply mcp."
+requires = []
+manual_equivalent = "Configure Atlassian MCP auth mode."
+
+# ---------------------------------------------------------------------------
+# [model_auth]
+# ---------------------------------------------------------------------------
+
+[[field]]
+key = "model_auth.codex"
+type = "enum"
+enum = "ModelAuthMode"
+required = true
+default = "api-workload"
+stage = "agent"
+what = "Authentication model for Codex CLI on this workstation."
+why = "Forbids sharing a personal subscription on work or multi-operator hosts."
+options = ["api-workload: workload API credentials", "enterprise-federated: enterprise SSO", "named-human: single-operator personal host only", "none: provider unused"]
+recommended = "api-workload or enterprise-federated on work hosts"
+risk = "Named-human on work or multi-operator hosts is refused."
+undo = "Sign out of Codex CLI and update model_auth.codex."
+requires = []
+manual_equivalent = "codex logout / codex login."
+
+[[field]]
+key = "model_auth.claude"
+type = "enum"
+enum = "ModelAuthMode"
+required = true
+default = "api-workload"
+stage = "agent"
+what = "Authentication model for Claude Code CLI on this workstation."
+why = "Forbids sharing a personal subscription on work or multi-operator hosts."
+options = ["api-workload: workload API credentials", "enterprise-federated: enterprise SSO", "named-human: single-operator personal host only", "none: provider unused"]
+recommended = "api-workload or enterprise-federated on work hosts"
+risk = "Named-human on work or multi-operator hosts is refused."
+undo = "Sign out of Claude Code CLI and update model_auth.claude."
+requires = []
+manual_equivalent = "claude auth logout / login."
+
+[[field]]
+key = "model_auth.grok"
+type = "enum"
+enum = "ModelAuthMode"
+required = true
+default = "api-workload"
+stage = "agent"
+what = "Authentication model for Grok Build CLI on this workstation."
+why = "Forbids sharing a personal subscription on work or multi-operator hosts."
+options = ["api-workload: workload API credentials", "enterprise-federated: enterprise SSO", "named-human: single-operator personal host only", "none: provider unused"]
+recommended = "api-workload or enterprise-federated on work hosts"
+risk = "Named-human on work or multi-operator hosts is refused."
+undo = "Sign out of Grok Build CLI and update model_auth.grok."
+requires = []
+manual_equivalent = "Grok Build CLI auth configuration."
+
+# ---------------------------------------------------------------------------
+# [security]
+# ---------------------------------------------------------------------------
+
+[[field]]
+key = "security.disk_encryption_required"
+type = "bool"
+required = true
+default = true
+stage = "baseline"
+what = "Require full-disk encryption (LUKS or FileVault) on the workstation."
+why = "Protects code, caches and OS state at rest."
+options = ["true: required safety-floor baseline"]
+recommended = "true"
+risk = "Cannot be disabled; disabling is refused by the safety floor."
+undo = "Not weaken-able; must remain true."
+requires = []
+manual_equivalent = "Verify LUKS (lsblk/cryptsetup) or FileVault (fdesetup status)."
+
+[[field]]
+key = "security.secure_boot_required"
+type = "bool"
+required = true
+default = true
+stage = "baseline"
+what = "Require verified boot security on the workstation."
+why = "Protects kernel and bootloader integrity."
+options = ["true: required safety-floor baseline"]
+recommended = "true"
+risk = "Cannot be disabled; disabling is refused by the safety floor."
+undo = "Not weaken-able; must remain true."
+requires = []
+manual_equivalent = "mokutil --sb-state on Linux or Apple Silicon Full Security on macOS."
+
+[[field]]
+key = "security.remote_scope"
+type = "enum"
+enum = "RemoteScope"
+required = true
+default = "tailscale-only"
+stage = "remote"
+what = "Network boundary permitted for incoming remote administration."
+why = "Keeps SSH and remote desktop reachable only over the mesh VPN."
+options = ["tailscale-only: required safety-floor baseline"]
+recommended = "tailscale-only"
+risk = "Broadening remote scope is refused by the safety floor."
+undo = "Not weaken-able; must remain tailscale-only."
+requires = []
+manual_equivalent = "Deny-by-default firewall allowing remote ports only on the tailnet interface."
+
+[[field]]
+key = "security.endpoint_management"
+type = "enum"
+enum = "EndpointManagement"
+required = true
+ready_required = true
+default = "ask"
+stage = "audit"
+what = "Endpoint management and EDR enrolment posture for the host."
+why = "Records required corporate MDM/EDR coverage for audits."
+options = ["ask: unresolved draft", "mdm: MDM only", "edr: EDR only", "mdm-and-edr: both MDM and EDR", "not-required: personal or exempt host"]
+recommended = "mdm-and-edr for work hosts; not-required for personal hosts"
+risk = "Leaving ask blocks ready validation."
+undo = "Update endpoint_management in the profile."
+requires = []
+manual_equivalent = "Verify MDM profile and EDR agent status."
+
+# ---------------------------------------------------------------------------
+# [resources]
+# ---------------------------------------------------------------------------
+
+[[field]]
+key = "resources.policy"
+type = "enum"
+enum = "ResourcePolicy"
+required = true
+default = "measured-balanced"
+stage = "resources"
+what = "Resource-ceiling policy applied to agent workloads."
+why = "Reserves memory and CPU headroom for the OS and desktop while capping agent work."
+options = ["measured-balanced: reserve-based memory and CPU ceiling"]
+recommended = "measured-balanced"
+risk = "Unsupported policies fail validation."
+undo = "Revert the resource-limits unit."
+requires = []
+manual_equivalent = "systemd user slice drop-ins for agent.slice and agent-work.slice."
+
+[[field]]
+key = "resources.os_cpu_reserve_threads"
+type = "int"
+required = true
+default = 2
+min = 1
+max = 8
+stage = "resources"
+what = "Baseline OS CPU reserve threads recorded in Schema 3 profiles."
+why = "Ensures the OS and desktop keep responsive CPU headroom."
+options = ["integer from 1 through 8"]
+recommended = "2"
+risk = "Too few reserved threads can starve desktop and SSH responsiveness."
+undo = "Revert resource-limits or restore the previous value."
+requires = []
+manual_equivalent = "Set CPUQuota in the agent-work slice drop-in."
+
+[[field]]
+key = "resources.os_memory_reserve_percent"
+type = "int"
+required = false
+min = 5
+max = 50
+stage = "resources"
+what = "Optional explicit OS memory reserve percentage override."
+why = "Allows overriding the default reserve formula by percentage of RAM."
+options = ["integer from 5 through 50; cannot be combined with reserve_fixed_gib"]
+recommended = "Omit to use the default reserve formula"
+risk = "Setting too small a reserve risks OOM thrashing; too large reduces agent headroom."
+undo = "Remove os_memory_reserve_percent and re-apply resource-limits."
+requires = []
+manual_equivalent = "Pass --memory-reserve-percent to resource policy."
+
+[[field]]
+key = "resources.os_memory_reserve_gib"
+type = "int"
+required = false
+deprecated = true
+min = 4
+max = 32
+stage = "resources"
+what = "Deprecated fixed GiB memory reserve kept for backwards compatibility."
+why = "Accepted so existing Schema 3 profiles remain valid while migrating to reserve_fixed_gib."
+options = ["integer from 4 through 32 (deprecated)"]
+recommended = "Omit; use reserve_fixed_gib when an explicit GiB override is needed"
+risk = "No longer applied by the resource policy script."
+undo = "Remove os_memory_reserve_gib from the profile."
+requires = []
+manual_equivalent = "Replace with resources.reserve_fixed_gib if overriding the default."
+
+[[field]]
+key = "resources.reserve_fixed_gib"
+type = "float"
+required = false
+stage = "resources"
+what = "Optional fixed RAM reserve override in GiB (plus 2% of RAM)."
+why = "Overrides the role default (8 GiB desktop or 2 GiB headless) when measured load differs."
+options = ["positive finite number below 1000000; cannot be combined with os_memory_reserve_percent"]
+recommended = "Omit to use 8 GiB desktop / 2 GiB headless default"
+risk = "Setting a value below measured non-agent memory use risks host stalls."
+undo = "Remove reserve_fixed_gib and re-apply resource-limits."
+requires = []
+manual_equivalent = "Pass --reserve-fixed-gib to resource policy."
+
+[[field]]
+key = "resources.reserve_cores"
+type = "int"
+required = false
+min = 0
+max = 1024
+stage = "resources"
+what = "Optional reserved CPU core count override for the OS and desktop."
+why = "Overrides the default clamp(ceil(cores * 5%), 2, 4) core reserve."
+options = ["integer from 0 through 1024"]
+recommended = "Omit to use the automatic core-reserve formula"
+risk = "Setting 0 removes dedicated CPU headroom for the OS and desktop."
+undo = "Remove reserve_cores and re-apply resource-limits."
+requires = []
+manual_equivalent = "Pass --reserve-cores to resource policy."
+
+[[field]]
+key = "resources.cpu_weight"
+type = "int"
+required = false
+default = 50
+min = 1
+max = 10000
+stage = "resources"
+what = "Optional systemd CPUWeight for agent.slice relative to desktop slices (100)."
+why = "Keeps interactive desktop and SSH sessions responsive under heavy agent CPU load."
+options = ["integer from 1 through 10000"]
+recommended = "50"
+risk = "Raising above 100 prioritises background agent work over interactive sessions."
+undo = "Remove cpu_weight and re-apply resource-limits."
+requires = []
+manual_equivalent = "CPUWeight= in /etc/systemd/user/agent.slice.d/50-agent-workstation-kit.conf."
+
+# ---------------------------------------------------------------------------
+# [backup]
+# ---------------------------------------------------------------------------
+
+[[field]]
+key = "backup.target"
+type = "string"
+required = true
+ready_required = true
+default = "ask"
+stage = "resources"
+what = "Backup destination identifier for workstation data."
+why = "Documents where workstation backups are stored and verified."
+options = ["non-empty trimmed string (resolved from ask before approval)"]
+recommended = "Approved corporate or personal encrypted backup target"
+risk = "Leaving ask blocks ready validation."
+undo = "Update backup.target in the profile."
+requires = []
+manual_equivalent = "Configure the host backup client target."
+
+[[field]]
+key = "backup.retention_days"
+type = "int"
+required = true
+default = 30
+min = 1
+stage = "resources"
+what = "Minimum number of days workstation backups are retained."
+why = "Ensures accidental deletion or corruption can be recovered within policy."
+options = ["positive integer (>= 1)"]
+recommended = "30"
+risk = "Too short a retention window reduces recovery horizon."
+undo = "Restore the previous retention_days value."
+requires = []
+manual_equivalent = "Configure backup retention policy."
+
+# ---------------------------------------------------------------------------
+# [maintenance]
+# ---------------------------------------------------------------------------
+
+[[field]]
+key = "maintenance.timezone"
+type = "string"
+required = true
+default = "America/Toronto"
+stage = "identity"
+what = "IANA timezone identifier for maintenance windows and logs."
+why = "Makes update windows and audit timestamps unambiguous across a fleet."
+options = ["recognised IANA timezone name, for example UTC or America/Toronto"]
+recommended = "America/Toronto or your host's operating IANA timezone"
+risk = "Unrecognised timezone names fail validation."
+undo = "Restore maintenance.timezone in the profile."
+requires = []
+manual_equivalent = "timedatectl set-timezone on Linux or systemsetup -settimezone on macOS."
+
+[[field]]
+key = "maintenance.update_window"
+type = "string"
+required = true
+ready_required = true
+default = "ask"
+stage = "audit"
+what = "Scheduled maintenance window for OS reboots and planned updates."
+why = "Coordinates updates so reboots do not interrupt active work."
+options = ["non-empty trimmed string (resolved from ask before approval)"]
+recommended = "A recurring low-traffic window, for example Sunday 02:00-04:00"
+risk = "Leaving ask blocks ready validation."
+undo = "Update maintenance.update_window in the profile."
+requires = []
+manual_equivalent = "Documented maintenance window."
+
+[[field]]
+key = "maintenance.owner"
+type = "string"
+required = true
+ready_required = true
+default = "ask"
+stage = "audit"
+what = "Team or role responsible for upkeep and incident response on this workstation."
+why = "Assigns clear operational ownership for audits and patching."
+options = ["non-empty trimmed string (resolved from ask before approval)"]
+recommended = "Neutral team or role label such as platform-team"
+risk = "Leaving ask blocks ready validation."
+undo = "Update maintenance.owner in the profile."
+requires = []
+manual_equivalent = "Documented maintenance owner."
