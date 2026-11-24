@@ -317,19 +317,20 @@ PHONE_PAREN_RE = re.compile(
 PHONE_SEP_RE = re.compile(
     r"(?<![A-Za-z0-9.-])((?:1[-. \t])?\d{3}([-. \t])\d{3}\2\d{4})(?![A-Za-z0-9.-])"
 )
-# Linear-time, token-boundary-anchored phone key matcher (no unanchored leading
-# wildcard, avoiding ReDoS and avoiding false positives like hotel_id/intel_serial).
+# Pure bounded token regex for phone-context keys (no trailing whitespace,
+# separator, or value matching); forward walking is done linearly in Python.
 PHONE_KEY_RE = re.compile(
-    r"(?:"
-    r"(?<![A-Za-z])(?:[cC][eE][lL][lL][pP][hH][oO][nN][eE]|[sS][mM][aA][rR][tT][pP][hH][oO][nN][eE]|[tT][eE][lL][eE][pP][hH][oO][nN][eE]|[pP][hH][oO][nN][eE]|[mM][oO][bB][iI][lL][eE]|[tT][eE][lL]|[cC][eE][lL][lL]|[fF][aA][xX]|[sS][mM][sS]|[wW][hH][aA][tT][sS][aA][pP][pP])[sS]?(?![a-z])"
-    r"|(?<=[a-z])(?:Phone|Mobile|Tel|Cell|Fax|Sms|Whatsapp)[sS]?(?![a-z])"
-    r"|(?<![A-Za-z0-9_])(?:[cC][oO][nN][tT][aA][cC][tT]|[cC][aA][lL][lL])[sS]?(?![a-z])"
-    r")"
-    r"(?:[._-]{1,2}[A-Za-z0-9]{1,20}|[ \t]{1,2}[A-Za-z][A-Za-z0-9]{0,19}|[A-Z][A-Za-z0-9]{0,19}|[0-9]{1,2}(?![0-9])){0,2}"
-    r"[\"']?(?:[ \t]*(?:=>|[:=])[ \t]*|[ \t]+)"
+    r"(?:cellphone|smartphone|telephone|phone|mobile|tel|cell|fax|sms|whatsapp|contact|call)s?",
+    re.IGNORECASE,
 )
-PHONE_KEY_ANCHOR_RE = re.compile(r"(?:=>|[:=]|[ \t]+)[ \t]*(?=[\"'+\(\d\[\n])")
-YAML_LIST_ITEM_RE = re.compile(r"[ \t]*-[ \t]+")
+PHONE_HS_RE = re.compile(r"[ \t]+")
+PHONE_THREE_DIGITS_RE = re.compile(r"\d{3}")
+PHONE_ATTACHED_SUFFIX_RE = re.compile(
+    r"(?:[._-]{1,2}[A-Za-z0-9]{1,20}|[A-Z][A-Za-z0-9]{0,19}|[0-9]{1,2}(?![0-9]))"
+)
+PHONE_LABEL_WORD_RE = re.compile(
+    r"(?:[A-Za-z][A-Za-z0-9._-]{0,19}|#?[0-9]{1,2}(?![0-9]))"
+)
 PHONE_VALUE_AT_RE = re.compile(
     r"[\"']?(\+?1?\d{10}|\+[1-9]\d{7,14}|(?:1[ \t.-]?)?\(?\d{3}\)?[ \t.-]?\d{3}[ \t.-]\d{4})(?![A-Za-z0-9])"
 )
@@ -746,6 +747,97 @@ def _normalize_phone_candidate(raw: str) -> str | None:
     return folded
 
 
+def _is_valid_phone_key_token(text: str, start: int, end: int) -> bool:
+    """Reject mid-word collisions like hotel_id, intel_serial, and cancellation_id."""
+    if end < len(text) and "a" <= text[end] <= "z":
+        return False
+    if start == 0:
+        return True
+    prev = text[start - 1]
+    token = text[start:end]
+    if token[:4].casefold() in ("cont", "call"):
+        return not (prev.isalnum() or prev == "_")
+    if not prev.isalpha():
+        return True
+    return "a" <= prev <= "z" and "A" <= token[0] <= "Z"
+
+
+def _yaml_list_item_start(line: str) -> int | None:
+    """Return value index after a YAML '- ' list marker in strictly linear time."""
+    ws = PHONE_HS_RE.match(line)
+    pos = ws.end() if ws is not None else 0
+    if pos >= len(line) or line[pos] != "-":
+        return None
+    ws2 = PHONE_HS_RE.match(line, pos + 1)
+    if ws2 is None:
+        return None
+    return ws2.end()
+
+
+def _walk_after_phone_key(text: str, start: int) -> tuple[int, bool] | None:
+    """Advance linearly past attached key suffixes, short label words, and a separator.
+
+    Returns (value_pos, had_colon) or None. Uses plain bounded index arithmetic
+    plus non-backtracking single-class whitespace skips so padded inputs stay O(n).
+    """
+    n = len(text)
+    pos = start
+    for _ in range(3):
+        m = PHONE_ATTACHED_SUFFIX_RE.match(text, pos)
+        if m is None:
+            break
+        pos = m.end()
+    if pos < n and text[pos] in "\"'":
+        pos += 1
+
+    had_ws = False
+    for _ in range(4):
+        ws_start = pos
+        ws_m = PHONE_HS_RE.match(text, pos)
+        if ws_m is not None:
+            pos = ws_m.end()
+            had_ws = True
+        ws_len = pos - ws_start
+        if pos >= n:
+            return None
+        if text[pos : pos + 2] == "=>":
+            pos += 2
+            ws_m = PHONE_HS_RE.match(text, pos)
+            if ws_m is not None:
+                pos = ws_m.end()
+            return (pos, False)
+        if text[pos] in ":=":
+            had_colon = text[pos] == ":"
+            pos += 1
+            ws_m = PHONE_HS_RE.match(text, pos)
+            if ws_m is not None:
+                pos = ws_m.end()
+            return (pos, had_colon)
+        if had_ws and text[pos] in "\"'+([0123456789":
+            if text[pos].isdigit():
+                lbl = PHONE_LABEL_WORD_RE.match(text, pos)
+                if lbl is not None:
+                    after_lbl = lbl.end()
+                    ws2 = PHONE_HS_RE.match(text, after_lbl)
+                    if ws2 is not None:
+                        after_lbl = ws2.end()
+                    if after_lbl < n and (
+                        text[after_lbl] in ":=" or text[after_lbl : after_lbl + 2] == "=>"
+                    ):
+                        pos = lbl.end()
+                        continue
+            return (pos, False)
+        if had_ws and ws_len <= 16:
+            lbl = PHONE_LABEL_WORD_RE.match(text, pos)
+            if lbl is not None:
+                pos = lbl.end()
+                if pos < n and text[pos] in "\"'":
+                    pos += 1
+                continue
+        return None
+    return None
+
+
 def detect_phone(text: str) -> list[str]:
     has_plus = "+" in text
     has_paren = "(" in text
@@ -765,7 +857,7 @@ def detect_phone(text: str) -> list[str]:
         patterns.append(PHONE_E164_RE)
     if has_paren and PHONE_PAREN_HINT_RE.search(text) is not None:
         patterns.append(PHONE_PAREN_RE)
-    if has_sep:
+    if has_sep and PHONE_THREE_DIGITS_RE.search(text) is not None:
         patterns.append(PHONE_SEP_RE)
     if has_phone_kw and "tel:" in lower:
         patterns.append(PHONE_TEL_URI_RE)
@@ -784,18 +876,24 @@ def detect_phone(text: str) -> list[str]:
             record(match.group(1))
 
     if has_phone_kw:
-        for anchor in PHONE_KEY_ANCHOR_RE.finditer(text):
-            end_pos = anchor.end()
-            window_start = max(0, anchor.start() - 72)
-            key_match: re.Match[str] | None = None
-            for cand in PHONE_KEY_RE.finditer(text, window_start, end_pos):
-                if cand.end() == end_pos:
-                    key_match = cand
-                    break
-            if key_match is None:
+        text_len = len(text)
+        for key_match in PHONE_KEY_RE.finditer(text):
+            start = key_match.start()
+            end = key_match.end()
+            if end < text_len and "a" <= text[end] <= "z":
                 continue
-            pos = end_pos
-            if pos >= len(text):
+            if start > 0:
+                prev = text[start - 1]
+                if prev.isalpha() and not ("a" <= prev <= "z" and "A" <= text[start] <= "Z"):
+                    continue
+                if text[start] in "cC" and text[start : start + 4].casefold() in ("cont", "call"):
+                    if prev.isalnum() or prev == "_":
+                        continue
+            walked = _walk_after_phone_key(text, end)
+            if walked is None:
+                continue
+            pos, had_colon = walked
+            if pos >= text_len:
                 continue
             if text[pos] == "[":
                 end_bracket = text.find("]", pos, pos + 256)
@@ -803,22 +901,22 @@ def detect_phone(text: str) -> list[str]:
                 stop = end_bracket if end_bracket != -1 else (end_nl if end_nl != -1 else pos + 256)
                 for item in PHONE_LIST_ITEM_RE.finditer(text, pos + 1, stop):
                     record(item.group(1))
-            elif text[pos] == "\n" and ":" in key_match.group(0):
+            elif text[pos] == "\n" and had_colon:
                 line_start = pos + 1
                 for _ in range(64):
-                    if line_start >= len(text):
+                    if line_start >= text_len:
                         break
                     line_end = text.find("\n", line_start)
                     if line_end == -1:
-                        line_end = len(text)
+                        line_end = text_len
                     item_line = text[line_start:line_end]
                     if not item_line.strip():
                         line_start = line_end + 1
                         continue
-                    item_m = YAML_LIST_ITEM_RE.match(item_line)
-                    if item_m is None:
+                    item_val_pos = _yaml_list_item_start(item_line)
+                    if item_val_pos is None:
                         break
-                    val_m = PHONE_VALUE_AT_RE.match(item_line, item_m.end())
+                    val_m = PHONE_VALUE_AT_RE.match(item_line, item_val_pos)
                     if val_m is not None:
                         record(val_m.group(1))
                     line_start = line_end + 1
@@ -1908,13 +2006,13 @@ class Scanner:
                     stripped = line.lstrip(" \t")
                     indent = len(line) - len(stripped)
                     if stripped:
-                        item_m = YAML_LIST_ITEM_RE.match(line)
-                        if item_m is not None and indent >= yaml_phone_indent:
+                        item_pos = _yaml_list_item_start(line)
+                        if item_pos is not None and indent >= yaml_phone_indent:
                             for lv in line_variants:
-                                lm = YAML_LIST_ITEM_RE.match(lv)
-                                if lm is None:
+                                lv_item_pos = _yaml_list_item_start(lv)
+                                if lv_item_pos is None:
                                     continue
-                                vm = PHONE_VALUE_AT_RE.match(lv, lm.end())
+                                vm = PHONE_VALUE_AT_RE.match(lv, lv_item_pos)
                                 if vm is None:
                                     continue
                                 folded = _normalize_phone_candidate(vm.group(1))
@@ -1927,9 +2025,16 @@ class Scanner:
                             yaml_phone_indent = None
             if phone_triggered and line.rstrip(" \t").endswith(":"):
                 for lv in line_variants:
-                    km = PHONE_KEY_RE.search(lv)
-                    if km is not None and km.end() == len(lv) and ":" in km.group(0):
-                        yaml_phone_indent = len(line) - len(line.lstrip(" \t"))
+                    found_yaml_key = False
+                    for km in PHONE_KEY_RE.finditer(lv):
+                        if not _is_valid_phone_key_token(lv, km.start(), km.end()):
+                            continue
+                        walked = _walk_after_phone_key(lv, km.end())
+                        if walked is not None and walked == (len(lv), True):
+                            yaml_phone_indent = len(line) - len(line.lstrip(" \t"))
+                            found_yaml_key = True
+                            break
+                    if found_yaml_key:
                         break
         return None, raw_hits, False
 

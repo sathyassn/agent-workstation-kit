@@ -1735,5 +1735,38 @@ class Round4ReviewRegressionTests(unittest.TestCase):
             self.assertNotIn("SHADOWED_TESTS_PACKAGE", r2.stdout + r2.stderr)
 
 
+class Round5ReviewRegressionTests(unittest.TestCase):
+    """Regression tests for PR #42 final review blocker (linear detect_phone + phone list label)."""
+
+    def test_phone_list_label_is_caught(self) -> None:
+        digits = join("415", "867", "5309")
+        self.assertEqual(
+            ["docs/sample.txt:1: matched rule 'phone'"],
+            scan_line(f"phone list 1: {digits}").failures,
+        )
+        # Also verify YAML block list under multi-word phone label.
+        self.assertEqual(
+            ["docs/sample.txt:2: matched rule 'phone'"],
+            scan_line(f"phone list 1:\n  - {digits}\n").failures,
+        )
+
+    def test_detect_phone_whitespace_padding_is_linear_time(self) -> None:
+        # Test N=2000 before N=20000 so any regression fails fast on N=2000.
+        for n in (2000, 20000):
+            for label, payload in (
+                (f"padded_colon_N{n}", "phone" + (" " * n) + ":" + (" " * n) + "1"),
+                (f"padded_list_N{n}", "phone list 1:" + (" " * n)),
+            ):
+                t0 = time.perf_counter()
+                hits = scan.detect_phone(payload)
+                elapsed_ms = (time.perf_counter() - t0) * 1000.0
+                self.assertEqual([], hits, label)
+                self.assertLess(
+                    elapsed_ms,
+                    50.0,
+                    f"detect_phone({label}) took {elapsed_ms:.1f}ms (expected < 50ms)",
+                )
+
+
 if __name__ == "__main__":
     unittest.main()
