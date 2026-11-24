@@ -93,7 +93,7 @@ Every detector defaults to `block` mode in `tests/public_scan_modes.json`:
 | Rule | Detects | Exact allow list (matched only after folding) |
 |---|---|---|
 | `email` | Email addresses | Exact domains `example.com`, `example.org`, `example.net`, `example.invalid` |
-| `phone` | International E.164 and formatted phone numbers | Documented placeholder numbers (`+1-555-555-0100`, `+1-555-555-0101`, `+1-555-555-0199`, `+44 20 7946 0000`) |
+| `phone` | International E.164, formatted phone numbers, and digits-only phone values under any key containing `phone`, `mobile`, `tel`, or `cell` | Documented placeholder numbers (`+1-555-555-0100`, `+1-555-555-0101`, `+1-555-555-0199`, `+44 20 7946 0000`) |
 | `ipv4` | Private and public IPv4 addresses, plus partial private prefixes (RFC 1918, RFC 6598 CGNAT, RFC 3927 link-local) | Documentation ranges `192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`; loopback `127.0.0.1`, `127.0.1.1`; `0.0.0.0`, `255.255.255.255` |
 | `ipv6` | Private and public IPv6 addresses | Documentation range `2001:db8::/32`; loopback `::1`; unspecified `::` |
 | `mac-address` | Colon, hyphen, and dot-quad MAC addresses | RFC 7042 documentation range `00:00:5e:00:53:00` through `00:00:5e:00:53:ff`; null and broadcast |
@@ -103,12 +103,17 @@ Every detector defaults to `block` mode in `tests/public_scan_modes.json`:
 | `chat-tracker-id` | Slack, Discord, Atlassian/Jira, and explicit chat/tracker user IDs | Documented placeholder IDs (`U00000000`, `U00EXAMPLE`, `000000000000000000`, `000000:00000000-0000-0000-0000-000000000000`) |
 | `secret` | Cloud access keys, GitHub/GitLab/Slack/Tailscale/Google tokens, private key headers | AWS documentation example access key ID |
 
-Before detection, inputs are decoded (UTF-8, UTF-16 with or without BOM, JSON
-`\u` and `\/` escapes, URL `%XX` escapes) and folded (NFKD/NFKC, format and
-combining marks, Cyrillic/Greek/punctuation lookalikes, case, zero-padded
-octets, and glued prefixes). Any file containing NUL bytes is refused as binary
-unless `tests/public_scan_binary_exceptions.json` names its exact path and
-SHA-256 content hash.
+Before detection, inputs are decoded (UTF-8, UTF-16 with BOM or strictly
+validated printable UTF-16 text, JSON `\u` and `\/` escapes, URL `%XX` escapes)
+across original, every intermediate stage, and final decoded forms up to 4 levels
+deep, and folded (NFKD/NFKC, format and combining marks,
+Cyrillic/Greek/punctuation lookalikes, case, zero-padded octets, and glued
+prefixes). Accepted limits: bare digit runs with no phone context (no `+`,
+phone separators, or phone/mobile/tel/cell key) are out of scope to avoid false
+positives on timestamps and numeric IDs; harmless text nested deeper than 4 levels
+of escape encoding fails closed. Any file containing NUL bytes is refused
+as binary unless `tests/public_scan_binary_exceptions.json` names its exact path
+and SHA-256 content hash.
 
 Findings print only the file, line, and rule, never the matched text. If a file
 path itself triggers a detector, the entire path is printed as `<redacted-ID>`.
@@ -188,8 +193,11 @@ Hash-bound binary exceptions live in `tests/public_scan_binary_exceptions.json`:
   `scan_verified=true`. The aggregator job publishes the exact GitHub check
   context `public-scan / result` (via `name: public-scan / result`) and fails
   closed unless both Linux and macOS succeeded and reported `scan_verified=true`.
-- Head-run jobs in `.github/workflows/ci.yml` (`repository-validation`,
-  `macos-public-scan (non-authoritative head self-test)`) execute pull-request
+- Required jobs in `.github/workflows/ci.yml` (`repository-validation`,
+  `secret-scan`, `macos-host-lock`) run no head-controlled privacy or
+  public-release scan steps (`repository-validation` runs `make repo-ci-check`,
+  which omits `public-draft-check`). The separate `linux-public-scan` and
+  `macos-public-scan` jobs in `.github/workflows/ci.yml` execute pull-request
   head code and are non-authoritative self-tests only: no required privacy or
   identity verdict comes from `.github/workflows/ci.yml`.
 - Require `public-scan / result` on `main`, next to the existing required
@@ -199,9 +207,10 @@ Hash-bound binary exceptions live in `tests/public_scan_binary_exceptions.json`:
   binary exceptions, scan workflows, and `.github/CODEOWNERS` itself) depends on
   the repository protection setup in `TSK-040`.
 - Locally, the `pre-push` hook runs `make ci-check` (worktree check) and scans
-  every new commit in the pushed range via `tests/check_public_release.py --commits`,
-  so a leak in an earlier unpushed commit is blocked even if a later commit
-  redacted the tip.
+  every new commit pushed to the destination remote across all pushed refs
+  (branches and tags alike, excluding only commits already on the destination
+  remote via `--remotes=<remote>`) through `tests/check_public_release.py --commits`,
+  so leaks known only to another remote or reachable only from a tag are blocked.
 
 ## Private fleet repositories
 

@@ -1078,5 +1078,274 @@ class Round1ReviewRegressionTests(unittest.TestCase):
         self.assertIn("Ran [1-9]", ci_yml)
 
 
+class Round2ReviewRegressionTests(unittest.TestCase):
+    """Regression tests for PR #42 round 2 review findings (R1, R2, R3, R5, R6, R7)."""
+
+    def _make_pre_push_repo(self, base: Path) -> tuple[Path, Path]:
+        public_remote = base / "origin.git"
+        repo = base / "work"
+        subprocess.run(["git", "init", "--bare", "-q", str(public_remote)], check=True)
+        git(base, "init", "-q", "-b", "main", str(repo))
+
+        (repo / ".codeflow").mkdir()
+        shutil.copyfile(ROOT / ".codeflow/policy.json", repo / ".codeflow/policy.json")
+        shutil.copytree(ROOT / ".codeflow/git-hooks", repo / ".codeflow/git-hooks")
+        (repo / "scripts").mkdir()
+        shutil.copyfile(ROOT / "scripts/check_git_discipline.py", repo / "scripts/check_git_discipline.py")
+        (repo / "tests").mkdir()
+        shutil.copyfile(ROOT / "tests/check_public_release.py", repo / "tests/check_public_release.py")
+        write_scan_configs(repo)
+        for req in scan.REQUIRED:
+            target = repo / req
+            if not target.exists():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.touch()
+        (repo / "VERSION").write_text("1.0.0\n", encoding="utf-8")
+        (repo / "CHANGELOG.md").write_text(
+            "# Changelog\n\n## [Unreleased]\n\nPlanned as release 1.0.0.\n",
+            encoding="utf-8",
+        )
+        (repo / "README.md").write_text("Version 1.0.0\n", encoding="utf-8")
+        (repo / "templates/private-fleet/kit.lock").write_text("1.0.0\n", encoding="utf-8")
+        (repo / ".github/dependabot.yml").write_text("".join(scan.DEPENDABOT_COMMIT_POLICY), encoding="utf-8")
+        (repo / "Makefile").write_text(
+            "ci-check:\n\t@python3 -I -B tests/check_public_release.py --allow-missing-license\n",
+            encoding="utf-8",
+        )
+        git(repo, "add", "-A")
+        git(repo, "commit", "-q", "-m", "chore: initial clean base")
+        git(repo, "remote", "add", "origin", str(public_remote))
+        git(repo, "push", "-q", "origin", "main")
+        return repo, public_remote
+
+    def test_r1_commit_on_private_remote_is_refused_when_pushed_to_public_remote(self) -> None:
+        leak_email = join("jdoe", "@", "acme-corp", ".com")
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            repo, public_remote = self._make_pre_push_repo(base)
+            private_remote = base / "private.git"
+            subprocess.run(["git", "init", "--bare", "-q", str(private_remote)], check=True)
+            git(repo, "remote", "add", "private", str(private_remote))
+
+            # Commit a leak, fix the tip, and push ONLY to the private remote first
+            # (without hooks so the private remote holds the leaking history).
+            git(repo, "checkout", "-q", "-b", "feat/from-private")
+            (repo / "notes.txt").write_text(leak_email + "\n", encoding="utf-8")
+            git(repo, "add", "notes.txt")
+            git(repo, "commit", "-q", "-m", "docs: leak on private")
+            (repo / "notes.txt").write_text("alice@example.com\n", encoding="utf-8")
+            git(repo, "add", "notes.txt")
+            git(repo, "commit", "-q", "-m", "docs: clean tip")
+            git(repo, "push", "-q", "private", "feat/from-private")
+
+            # Enable hooks and push the new branch to the public remote (`origin`).
+            git(repo, "config", "core.hooksPath", ".codeflow/git-hooks")
+            res = git(repo, "push", "origin", "feat/from-private", check=False)
+            combined = res.stdout + res.stderr
+            self.assertNotEqual(0, res.returncode, combined)
+            self.assertIn("notes.txt:1: matched rule 'email'", combined)
+            self.assertNotIn(leak_email, combined)
+            remote_refs = git(public_remote, "for-each-ref", "refs/heads/feat/from-private").stdout.strip()
+            self.assertEqual("", remote_refs)
+
+    def test_r2_tag_push_to_leaking_commit_on_no_branch_is_refused(self) -> None:
+        leak_email = join("jdoe", "@", "acme-corp", ".com")
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            repo, public_remote = self._make_pre_push_repo(base)
+
+            # Create a leaking commit on a temporary branch, tag it (annotated + lightweight),
+            # then delete the branch and return to clean main.
+            git(repo, "checkout", "-q", "-b", "feat/temp-tag")
+            (repo / "secret_note.txt").write_text(leak_email + "\n", encoding="utf-8")
+            git(repo, "add", "secret_note.txt")
+            git(repo, "commit", "-q", "-m", "docs: commit for tag")
+            git(repo, "tag", "-a", "v0.0.1-leak", "-m", "annotated leak tag")
+            git(repo, "tag", "v0.0.1-light")
+            git(repo, "checkout", "-q", "main")
+            git(repo, "branch", "-D", "feat/temp-tag")
+
+            git(repo, "config", "core.hooksPath", ".codeflow/git-hooks")
+            for tag_name in ("v0.0.1-leak", "v0.0.1-light"):
+                with self.subTest(tag=tag_name):
+                    res = git(repo, "push", "origin", tag_name, check=False)
+                    combined = res.stdout + res.stderr
+                    self.assertNotEqual(0, res.returncode, combined)
+                    self.assertIn("secret_note.txt:1: matched rule 'email'", combined)
+                    self.assertNotIn(leak_email, combined)
+                    remote_tag = git(public_remote, "for-each-ref", f"refs/tags/{tag_name}").stdout.strip()
+                    self.assertEqual("", remote_tag)
+
+    def test_r3_no_required_ci_job_runs_head_privacy_or_public_release_scan(self) -> None:
+        # Structurally parse jobs and their run commands from .github/workflows/ci.yml.
+        ci_lines = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8").splitlines()
+        jobs: dict[str, list[str]] = {}
+        in_jobs = False
+        current_job: str | None = None
+        in_run_block = False
+        run_indent = 0
+        for line in ci_lines:
+            if not line.strip() or line.lstrip().startswith("#"):
+                continue
+            indent = len(line) - len(line.lstrip(" "))
+            if indent == 0:
+                in_jobs = line.strip() == "jobs:"
+                current_job = None
+                in_run_block = False
+                continue
+            if not in_jobs:
+                continue
+            if indent == 2 and line.rstrip().endswith(":"):
+                current_job = line.strip()[:-1]
+                jobs[current_job] = []
+                in_run_block = False
+                continue
+            if current_job is None:
+                continue
+            if in_run_block:
+                if indent > run_indent:
+                    jobs[current_job].append(line.strip())
+                    continue
+                in_run_block = False
+            stripped = line.lstrip()
+            if stripped.startswith("run:") or stripped.startswith("- run:"):
+                after = stripped.split("run:", 1)[1].strip()
+                if after in ("|", ">", "|-", ">-"):
+                    in_run_block = True
+                    run_indent = indent
+                elif after:
+                    jobs[current_job].append(after)
+
+        for required_job in ("repository-validation", "secret-scan", "macos-host-lock"):
+            self.assertIn(required_job, jobs, f"missing expected job {required_job}")
+            job_runs = "\n".join(jobs[required_job])
+            for forbidden in (
+                "check_public_release.py",
+                "make public-check",
+                "make public-draft-check",
+                "make ci-check",
+            ):
+                self.assertNotIn(
+                    forbidden,
+                    job_runs,
+                    f"required job {required_job!r} must not invoke head-controlled {forbidden!r}",
+                )
+
+        # Also verify Makefile's repo-ci-check target excludes public-draft-check / public-check.
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        repo_ci_lines = [line for line in makefile.splitlines() if line.startswith("repo-ci-check:")]
+        self.assertTrue(repo_ci_lines, "Makefile must define repo-ci-check for non-privacy CI")
+        for line in repo_ci_lines:
+            self.assertNotIn("public-draft-check", line)
+            self.assertNotIn("public-check", line)
+
+    def test_r5_phone_keys_with_prefix_or_suffix_and_e164(self) -> None:
+        digits = join("415", "867", "5309")
+        for hit_line in (
+            f"home_phone = {digits}",
+            f"work_phone: {digits}",
+            f"MOBILE_PHONE={digits}",
+            f'{{"contactPhone": "{digits}"}}',
+            f"user_cell_number = {digits}",
+            f"officeTel: {digits}",
+            join("+", "1", "415", "867", "5309"),
+        ):
+            with self.subTest(hit=hit_line[:16]):
+                self.assertEqual(["docs/sample.txt:1: matched rule 'phone'"], scan_line(hit_line).failures)
+
+        for clean_line in (
+            "timestamp = 1700000000",
+            "order_id = 4158675309",
+            "home_phone = 5555550100",
+            "contactPhone: 15555550199",
+        ):
+            with self.subTest(clean=clean_line):
+                self.assertEqual([], scan_line(clean_line).failures)
+
+        checklist = (ROOT / "docs/13-public-release-checklist.md").read_text(encoding="utf-8").lower()
+        self.assertIn("bare digit", checklist)
+
+    def test_r6_mixed_depth_encoding_caught_at_intermediate_stage(self) -> None:
+        # Stage 1 decodes the @ escape while the trailing dot escape is still %2e,
+        # exposing the synthetic email before stage 2 turns %2e123 into an invalid .123 TLD.
+        mixed = join("jdoe", "%40", "acme-corp", ".com", "%252e", "123")
+        res = scan_line(mixed)
+        self.assertEqual(["docs/sample.txt:1: matched rule 'email'"], res.failures)
+
+        # 5-level nested encoding still fails closed.
+        deep = "jdoe" + "%" + ("25" * 5) + "40" + "acme-corp" + ".com"
+        res_deep = scan_line(deep)
+        self.assertTrue(any("decode failed" in f for f in res_deep.failures), res_deep.failures)
+
+        checklist = (ROOT / "docs/13-public-release-checklist.md").read_text(encoding="utf-8").lower()
+        self.assertIn("4 levels", checklist)
+
+    def test_r7_aggregator_behaviour_rejects_missing_marker_or_failed_platform(self) -> None:
+        # Extract the exact aggregator `run:` script from .github/workflows/public-scan.yml
+        # and execute it with controlled environment inputs.
+        lines = (ROOT / ".github/workflows/public-scan.yml").read_text(encoding="utf-8").splitlines()
+        in_result = False
+        in_run = False
+        run_indent = 0
+        script_lines: list[str] = []
+        for line in lines:
+            if line.strip() == "result:":
+                in_result = True
+                continue
+            if in_result and not in_run:
+                if line.lstrip().startswith("run: |"):
+                    in_run = True
+                    run_indent = len(line) - len(line.lstrip(" "))
+                continue
+            if in_run:
+                if line.strip() and (len(line) - len(line.lstrip(" "))) <= run_indent:
+                    break
+                script_lines.append(line[run_indent + 2 :] if len(line) >= run_indent + 2 else "")
+        script = "\n".join(script_lines)
+        self.assertIn("LINUX_VERIFIED", script)
+        self.assertIn("MACOS_VERIFIED", script)
+
+        cases = (
+            ("both_verified_passes", {"LINUX_RESULT": "success", "LINUX_VERIFIED": "true", "MACOS_RESULT": "success", "MACOS_VERIFIED": "true"}, 0),
+            ("missing_linux_marker_fails", {"LINUX_RESULT": "success", "LINUX_VERIFIED": "", "MACOS_RESULT": "success", "MACOS_VERIFIED": "true"}, 1),
+            ("missing_macos_marker_fails", {"LINUX_RESULT": "success", "LINUX_VERIFIED": "true", "MACOS_RESULT": "success", "MACOS_VERIFIED": ""}, 1),
+            ("linux_failed_fails", {"LINUX_RESULT": "failure", "LINUX_VERIFIED": "true", "MACOS_RESULT": "success", "MACOS_VERIFIED": "true"}, 1),
+            ("macos_skipped_fails", {"LINUX_RESULT": "success", "LINUX_VERIFIED": "true", "MACOS_RESULT": "skipped", "MACOS_VERIFIED": ""}, 1),
+        )
+        for name, env_vars, expected_rc in cases:
+            with self.subTest(case=name):
+                proc = subprocess.run(
+                    ["bash", "-c", script],
+                    env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), **env_vars},
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(expected_rc, proc.returncode, proc.stdout + proc.stderr)
+
+        # Also prove check_public_release.py emits PUBLIC_SCAN_VERIFIED=1 ONLY on clean pass.
+        leak = join("jdoe", "@", "acme-corp", ".com")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_scan_configs(root)
+            git(root, "init", "-q", "-b", "main")
+            (root / "a.txt").write_text("clean\n", encoding="utf-8")
+            git(root, "add", "-A")
+            git(root, "commit", "-q", "-m", "chore: clean")
+            clean_sha = git(root, "rev-parse", "HEAD").stdout.strip()
+            (root / "a.txt").write_text(leak + "\n", encoding="utf-8")
+            git(root, "add", "-A")
+            git(root, "commit", "-q", "-m", "chore: leak")
+            bad_sha = git(root, "rev-parse", "HEAD").stdout.strip()
+
+            rc_ok, out_ok, _ = run_main(["--root", str(root), "--tree", clean_sha])
+            self.assertEqual(0, rc_ok)
+            self.assertIn("PUBLIC_SCAN_VERIFIED=1", out_ok.splitlines())
+
+            rc_bad, out_bad, _ = run_main(["--root", str(root), "--tree", bad_sha])
+            self.assertEqual(1, rc_bad)
+            self.assertNotIn("PUBLIC_SCAN_VERIFIED=1", out_bad)
+
+
 if __name__ == "__main__":
     unittest.main()

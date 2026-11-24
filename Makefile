@@ -2,12 +2,17 @@ SHELL := /bin/sh
 PYTHON ?= python3
 BASH_BIN ?= bash
 
-.PHONY: bash-check check ci-check git-discipline-check go-check public-check public-draft-check repo-check skill-check shell-check unit-check python-check
+.PHONY: bash-check check ci-check git-discipline-check go-check public-check public-draft-check repo-check repo-ci-check skill-check shell-check unit-check python-check
 
 check: bash-check shell-check python-check unit-check skill-check repo-check git-discipline-check public-draft-check
 
 ci-check: REQUIRE_SHELLCHECK=1
 ci-check: check
+
+# Non-privacy repository gate for required PR-head CI (`repository-validation`).
+# The authoritative privacy verdict comes solely from `.github/workflows/public-scan.yml`.
+repo-ci-check: REQUIRE_SHELLCHECK=1
+repo-ci-check: bash-check shell-check python-check unit-check skill-check repo-check git-discipline-check
 
 public-check:
 	@$(PYTHON) tests/check_public_release.py

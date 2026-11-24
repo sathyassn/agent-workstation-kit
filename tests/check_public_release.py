@@ -318,8 +318,8 @@ PHONE_SEP_RE = re.compile(
     r"(?<![A-Za-z0-9.-])(\d{3}([-. ])\d{3}\2\d{4})(?![A-Za-z0-9.-])"
 )
 PHONE_CONTEXT_DIGITS_RE = re.compile(
-    r"\b(?:phone|tel|telephone|mobile|cell|fax|sms|whatsapp|call|contact)"
-    r"(?:[ \t_-]*(?:number|no|num|line))?[\"']?[ \t]*[:=]?[ \t]*[\"']?"
+    r"(?:[A-Za-z0-9_-]*(?:phone|mobile|tel|cell|fax|sms|whatsapp)[A-Za-z0-9_-]*|\b(?:call|contact)\b)"
+    r"(?:[\"']?[ \t]*[:=][ \t]*[\"']?|[ \t]+[\"']?)"
     r"(\+?1?\d{10}|\+[1-9]\d{7,14})(?!\d)",
     re.IGNORECASE,
 )
@@ -568,6 +568,44 @@ def _decode_escapes_once(text: str, *, decode_url: bool) -> str:
     return decoded
 
 
+def _fold_unicode(text: str, *, separate: bool) -> str:
+    if text.isascii():
+        return text
+    folded = unicodedata.normalize("NFKD", text)
+    if separate:
+        folded = "".join(
+            " " if unicodedata.category(ch) in ("Cf", "Mn") else ch
+            for ch in folded
+        )
+    else:
+        folded = "".join(
+            ch for ch in folded if unicodedata.category(ch) not in ("Cf", "Mn")
+        )
+    return unicodedata.normalize("NFKC", folded).translate(CONFUSABLES)
+
+
+def _decode_stages(text: str, *, decode_url: bool = True) -> tuple[str, ...]:
+    """Return original plus every intermediate and final bounded escape-decoded stage."""
+    if "\\u" not in text and "\\/" not in text and (not decode_url or "%" not in text):
+        return (text,)
+    stages: list[str] = [text]
+    current = text
+    for _ in range(MAX_DECODE_PASSES):
+        step_json = _decode_json_escapes(current)
+        if step_json != current and step_json not in stages:
+            stages.append(step_json)
+        step_next = _decode_url_escapes(step_json) if decode_url else step_json
+        if step_next != step_json and step_next not in stages:
+            stages.append(step_next)
+        if step_next == current:
+            break
+        current = step_next
+    else:
+        if _decode_escapes_once(current, decode_url=decode_url) != current:
+            raise ScanConfigError("nested escape encoding exceeds maximum decode depth")
+    return tuple(stages)
+
+
 def _normalize_text(text: str, separate: bool, decode_url: bool) -> str:
     if (
         text.isascii()
@@ -576,44 +614,31 @@ def _normalize_text(text: str, separate: bool, decode_url: bool) -> str:
         and (not decode_url or "%" not in text)
     ):
         return text
-    decoded = text
-    for _ in range(MAX_DECODE_PASSES):
-        next_decoded = _decode_escapes_once(decoded, decode_url=decode_url)
-        if next_decoded == decoded:
-            break
-        decoded = next_decoded
-    else:
-        if _decode_escapes_once(decoded, decode_url=decode_url) != decoded:
-            raise ScanConfigError("nested escape encoding exceeds maximum decode depth")
-    if not decoded.isascii():
-        decoded = unicodedata.normalize("NFKD", decoded)
-        if separate:
-            decoded = "".join(
-                " " if unicodedata.category(ch) in ("Cf", "Mn") else ch
-                for ch in decoded
-            )
-        else:
-            decoded = "".join(
-                ch for ch in decoded if unicodedata.category(ch) not in ("Cf", "Mn")
-            )
-        decoded = unicodedata.normalize("NFKC", decoded).translate(CONFUSABLES)
-    return decoded
+    stages = _decode_stages(text, decode_url=decode_url)
+    return _fold_unicode(stages[-1], separate=separate)
 
 
 def _line_variants(line: str) -> tuple[str, ...]:
-    """Return normalized text variants for a line without redundant work."""
+    """Return folded variants for original, every intermediate decode stage, and final form."""
     if line.isascii() and "\\u" not in line and "\\/" not in line and "%" not in line:
         return (line,)
-    primary = normalize_text(line, separate=False, decode_url=True)
-    variants = [primary]
-    if not line.isascii() or "\\u" in line or "%" in line:
-        separated = normalize_text(line, separate=True, decode_url=True)
-        if separated != primary:
-            variants.append(separated)
+    variants: list[str] = []
+    seen: set[str] = set()
+
+    def add(candidate: str) -> None:
+        if candidate not in seen:
+            seen.add(candidate)
+            variants.append(candidate)
+
+    for stage in _decode_stages(line, decode_url=True):
+        add(_fold_unicode(stage, separate=False))
+        if not stage.isascii():
+            add(_fold_unicode(stage, separate=True))
     if "%" in line:
-        no_url = normalize_text(line, separate=False, decode_url=False)
-        if no_url not in variants:
-            variants.append(no_url)
+        for stage in _decode_stages(line, decode_url=False):
+            add(_fold_unicode(stage, separate=False))
+            if not stage.isascii():
+                add(_fold_unicode(stage, separate=True))
     return tuple(variants)
 
 
@@ -1680,50 +1705,32 @@ class Scanner:
         return tuple(active)
 
     def _text_variants(self, text: str) -> tuple[str, ...]:
-        """Return normalized full-text variants with line count preserved.
+        """Return normalized full-text variants across every bounded decode stage.
 
         Only lines containing non-ASCII characters or escape markers are
         normalised, so large plain-ASCII files with a few punctuation marks
-        stay fast.
+        stay fast while preserving line alignment across every intermediate stage.
         """
         if text.isascii() and "\\u" not in text and "\\/" not in text and "%" not in text:
             return (text,)
         lines = text.split("\n")
-        primary_lines: list[str] = []
-        sep_lines: list[str] = []
-        no_url_lines: list[str] = []
-        has_sep_diff = False
-        has_url_diff = False
+        per_line: list[tuple[str, ...]] = []
+        max_variants = 1
         for line in lines:
             if line.isascii() and "\\u" not in line and "\\/" not in line and "%" not in line:
-                primary_lines.append(line)
-                sep_lines.append(line)
-                no_url_lines.append(line)
+                per_line.append((line,))
                 continue
-            p = normalize_text(line, separate=False, decode_url=True)
-            primary_lines.append(p)
-            if not line.isascii() or "\\u" in line or "%" in line:
-                s = normalize_text(line, separate=True, decode_url=True)
-                sep_lines.append(s)
-                if s != p:
-                    has_sep_diff = True
-            else:
-                sep_lines.append(p)
-            if "%" in line:
-                n = normalize_text(line, separate=False, decode_url=False)
-                no_url_lines.append(n)
-                if n != p:
-                    has_url_diff = True
-            else:
-                no_url_lines.append(p)
-        primary = "\n".join(primary_lines)
-        variants = [primary]
-        if has_sep_diff:
-            variants.append("\n".join(sep_lines))
-        if has_url_diff:
-            no_url = "\n".join(no_url_lines)
-            if no_url not in variants:
-                variants.append(no_url)
+            lv = _line_variants(line)
+            per_line.append(lv)
+            if len(lv) > max_variants:
+                max_variants = len(lv)
+        variants: list[str] = []
+        seen: set[str] = set()
+        for idx in range(max_variants):
+            joined = "\n".join(lv[idx] if idx < len(lv) else lv[-1] for lv in per_line)
+            if joined not in seen:
+                seen.add(joined)
+                variants.append(joined)
         return tuple(variants)
 
     def _run_detector_checked(
