@@ -38,7 +38,7 @@ unit it owns, and an interrupted revert that resumes (ADR 0005 section 2c).
 | Epic | Phase | Outcome: after it merges, ... | Depends on | Units |
 |---|---|---|---|---|
 | EPC-001 Foundation for the Go kit | P0 | contributors build, lint, test and release a signed `wskit` for Linux and macOS from a CodeFlow full-tier repository | none | none |
-| EPC-002 Public-safety scan hardening | P0 | the public scan matches private names by keyed HMAC and fails closed, without printing what it found | none | none |
+| EPC-002 Public-safety scan hardening | P0 | the public scan blocks personal and identifying details with detectors that need no list and the contributor's own identity, fails closed, and never prints what it found; a keyed list is optional and off by default | none | none |
 | EPC-003 CLI skeleton and contracts (T1a to T1c) | P1 | an agent runs `wskit plan` and `wskit next --json`, units register through the generated catalog, and root steps run only from the staged binary | EPC-001 | none |
 | EPC-004 Terminal UI and plain output (T1d) | P1 | people get the guided terminal UI and agents get stable JSON and plain output from the same events | EPC-003 | none |
 | EPC-005 Transaction engine (T2) | P1 | every unit change is previewed, backed up, applied under intent, verified, receipted and revertible, and the baseline is captured | EPC-003 | baseline |
