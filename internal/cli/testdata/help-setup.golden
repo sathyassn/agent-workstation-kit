@@ -1,0 +1,18 @@
+Run setup by stage (previews unless --apply is given)
+
+Usage:
+  wskit setup [flags]
+
+Flags:
+      --all          run every stage in order
+  -h, --help         help for setup
+      --unit units   select units by ID, comma separated or repeated
+
+Global Flags:
+      --apply           make the changes; without it, commands only preview
+      --config string   read configuration from this file
+      --json            write the result as versioned JSON on standard output and events as JSON lines on standard error
+      --plain           write plain lines with no styling and no prompts (also WSKIT_PLAIN=1)
+      --quiet           show only results and errors
+      --stage stage     select one setup stage by its ID
+      --verbose         show more detail
