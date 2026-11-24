@@ -30,6 +30,7 @@ type fileSpec struct {
 	data  []byte
 	perm  fs.FileMode
 	owner *contract.Owner // nil keeps the creating process's owner
+	meta  *FileMetadata   // nil applies no xattrs or ACL
 }
 
 // atomicWrite replaces path with spec: it writes a temporary file in the same
@@ -66,6 +67,13 @@ func (e *Engine) atomicWriteAt(p parent, spec fileSpec) error {
 	}
 	if err := tmp.Chmod(spec.perm & modeBits); err != nil {
 		return fail(fmt.Errorf("chmod %q: %w", tmp.Name(), err))
+	}
+	// Apply xattrs and ACLs after chmod on the temp file so the rename puts
+	// content, owner, mode, xattrs and ACL into place atomically.
+	if spec.meta != nil {
+		if err := e.meta().Apply(tmp, *spec.meta); err != nil {
+			return fail(err)
+		}
 	}
 	if err := tmp.Sync(); err != nil {
 		return fail(fmt.Errorf("fsync %q: %w", tmp.Name(), err))

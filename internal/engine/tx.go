@@ -2,10 +2,12 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"sync"
@@ -18,11 +20,12 @@ import (
 
 // State key prefixes for the typed operations, as the contract fakes use.
 const (
-	keyPackage   = "package:"
-	keyService   = "service:"
-	keyUserGroup = "user-group:"
-	newFileMode  = fs.FileMode(0o600)
-	systemPath   = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+	keyPackage    = "package:"
+	keyService    = "service:"
+	keyUserGroup  = "user-group:"
+	stateOpPrefix = "state-op-"
+	newFileMode   = fs.FileMode(0o600)
+	systemPath    = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 )
 
 // passEnv is the tool environment allowlist (SPC-001 "Interfaces and
@@ -46,14 +49,17 @@ type tx struct {
 	env   map[string]bool
 
 	// opMu serialises mutating calls; mu guards the fields below it.
-	opMu    sync.Mutex
-	mu      sync.Mutex
-	rec     *Record
-	changes []contract.AppliedChange
-	events  []contract.Event
-	seq     uint64
-	cmdSeq  int
-	failed  error
+	opMu        sync.Mutex
+	mu          sync.Mutex
+	rec         *Record
+	changes     []contract.AppliedChange
+	events      []contract.Event
+	backupFiles map[contract.BackupRef]string
+	providers   map[contract.StateProviderName]contract.StateProvider
+	seq         uint64
+	cmdSeq      int
+	stateOpSeq  int
+	failed      error
 }
 
 var _ contract.Tx = (*tx)(nil)
@@ -61,10 +67,17 @@ var _ contract.Tx = (*tx)(nil)
 func newTx(e *Engine, l *locks, rec *Record, desc contract.Description, m *Manifest) *tx {
 	t := &tx{
 		e: e, l: l, rec: rec, desc: desc, m: m,
-		paths: map[string]bool{}, keys: map[contract.StateKey]bool{}, env: map[string]bool{},
+		paths:       map[string]bool{},
+		keys:        map[contract.StateKey]bool{},
+		env:         map[string]bool{},
+		backupFiles: map[contract.BackupRef]string{},
+		providers:   map[contract.StateProviderName]contract.StateProvider{},
 	}
 	for _, en := range m.Entries {
 		t.paths[en.Path] = true
+		if en.Data != "" {
+			t.backupFiles[contract.BackupRef(string(m.RunID)+":"+en.Path)] = en.Data
+		}
 	}
 	for _, k := range desc.OwnedStateKeys {
 		t.keys[k] = true
@@ -87,6 +100,35 @@ func (t *tx) Events() []contract.Event {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return append([]contract.Event(nil), t.events...)
+}
+
+// Backup returns the backup bytes stored under ref in this run's backup
+// folder.
+func (t *tx) Backup(ref contract.BackupRef) ([]byte, bool) {
+	t.mu.Lock()
+	name, ok := t.backupFiles[ref]
+	t.mu.Unlock()
+	if !ok || name == "" {
+		return nil, false
+	}
+	data, err := readFileAt(filepath.Join(t.e.backupDir(t.m.RunID), name))
+	if err != nil {
+		return nil, false
+	}
+	return data, true
+}
+
+func (t *tx) seenProviders() map[contract.StateProviderName]contract.StateProvider {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.providers) == 0 {
+		return nil
+	}
+	out := make(map[contract.StateProviderName]contract.StateProvider, len(t.providers))
+	for k, v := range t.providers {
+		out[k] = v
+	}
+	return out
 }
 
 // sinkErr returns every failure that must stop the step: a failed event
@@ -194,14 +236,17 @@ func (t *tx) editBlock(ctx context.Context, path string, edit func(string) (stri
 		return fmt.Errorf("%w: %q is not a regular file", ErrUnsupportedTarget, path)
 	default:
 		spec.perm = unixMode(st)
+		spec.owner = &contract.Owner{UID: int(st.Uid), GID: int(st.Gid)}
 		f, err := p.open()
 		if err != nil {
 			return err
 		}
-		if err := checkMetadata(f); err != nil {
+		meta, metaErr := t.e.meta().Read(f)
+		if metaErr != nil {
 			_ = f.Close()
-			return err
+			return fmt.Errorf("read metadata of %q: %w", path, metaErr)
 		}
+		spec.meta = &meta
 		cur, err = io.ReadAll(f)
 		_ = f.Close()
 		if err != nil {
@@ -251,6 +296,113 @@ func (t *tx) Remove(ctx context.Context, path string) error {
 		return err
 	}
 	t.record(en, contract.ActionRemove, "")
+	return nil
+}
+
+// SetState updates one declared state key through p in SPC-001's exact order:
+// refuse an undeclared key before any provider call, take a Snapshot as the
+// durable backup, call Write, and only then record the receipt row. A failed
+// Write restores the snapshot under an uncancelled, bounded context and
+// records no receipt row; a failed restore is joined as ErrStateRestoreFailed.
+// One lock covers the whole sequence.
+func (t *tx) SetState(ctx context.Context, p contract.StateProvider, key contract.StateKey, want contract.State) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("set state %q: %w", key, err)
+	}
+	if p == nil {
+		return ErrNilStateProvider
+	}
+	t.opMu.Lock()
+	defer t.opMu.Unlock()
+	if !t.keys[key] {
+		return &contract.UndeclaredTargetError{Kind: contract.TargetStateKey, Target: string(key)}
+	}
+	target := string(p.Name()) + ":" + string(key)
+	return t.setStateLocked(ctx, p, key, target, want, contract.ActionSet, contract.RiskMedium)
+}
+
+func (t *tx) setStateLocked(
+	ctx context.Context,
+	p contract.StateProvider,
+	key contract.StateKey,
+	target string,
+	want contract.State,
+	action contract.ChangeAction,
+	risk contract.Risk,
+) error {
+	if !t.keys[key] {
+		return &contract.UndeclaredTargetError{Kind: contract.TargetStateKey, Target: string(key)}
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("set state %q: %w", key, err)
+	}
+	if err := t.sinkErr(); err != nil {
+		return err
+	}
+	name := p.Name()
+	snap, err := p.Snapshot(ctx)
+	if err != nil {
+		return fmt.Errorf("snapshot %s before set state %q: %w", name, key, err)
+	}
+	if snap.Provider != name {
+		return fmt.Errorf("%w: provider %q returned snapshot for %q", platform.ErrSnapshotProviderMismatch, name, snap.Provider)
+	}
+
+	t.stateOpSeq++
+	fileName := stateOpPrefix + strconv.Itoa(t.stateOpSeq)
+	dir := t.e.backupDir(t.m.RunID)
+	if err := t.e.atomicWrite(filepath.Join(dir, fileName), fileSpec{data: snap.Data, perm: 0o600}); err != nil {
+		return err
+	}
+	t.mu.Lock()
+	t.providers[name] = p
+	t.mu.Unlock()
+	if !t.m.hasState(name) {
+		t.m.States = append(t.m.States, ManifestState{
+			Provider: name,
+			Digest:   digest(snap.Data),
+			Data:     fileName,
+		})
+		if err := t.e.writeJSON(filepath.Join(dir, manifestFile), t.m); err != nil {
+			return err
+		}
+	}
+
+	var before contract.Digest
+	if prev, readErr := p.Read(ctx, key); readErr == nil {
+		before = digest([]byte(prev.Value))
+	}
+
+	if err := p.Write(ctx, key, want); err != nil {
+		writeErr := fmt.Errorf("write state %q: %w", key, err)
+		restoreCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), t.e.opts.StateRestoreTimeout)
+		defer cancel()
+		if restoreErr := p.Restore(restoreCtx, snap); restoreErr != nil {
+			return errors.Join(writeErr, fmt.Errorf("%w for %q: %w", ErrStateRestoreFailed, key, restoreErr))
+		}
+		return writeErr
+	}
+
+	ref := contract.BackupRef(string(t.m.RunID) + ":" + fileName)
+	after := digest([]byte(want.Value))
+	ch := contract.AppliedChange{
+		Change: contract.Change{
+			Target: target,
+			Action: action,
+			Before: before,
+			After:  after,
+			Risk:   risk,
+		},
+		Backup: ref,
+	}
+	t.mu.Lock()
+	t.backupFiles[ref] = fileName
+	t.changes = append(t.changes, ch)
+	t.mu.Unlock()
+	t.Emit(contract.Event{Kind: contract.EventChange, Data: map[contract.DataKey]string{
+		contract.DataPath: target, contract.DataAction: string(action), contract.DataDigest: string(after),
+	}})
+	t.e.fault(PointMutation)
 	return nil
 }
 
@@ -386,13 +538,6 @@ func (t *tx) Emit(ev contract.Event) {
 	}
 }
 
-func (t *tx) checkKey(key contract.StateKey) error {
-	if !t.keys[key] {
-		return &contract.UndeclaredTargetError{Kind: contract.TargetStateKey, Target: string(key)}
-	}
-	return fmt.Errorf("%w: state key %q", ErrUnsupported, key)
-}
-
 // RenderTemplate is not provided yet; the path check still runs first.
 func (t *tx) RenderTemplate(ctx context.Context, path string, _ contract.TemplateID, _ contract.TemplateVars, _ fs.FileMode, _ contract.Owner) error {
 	if _, err := t.begin(ctx, path); err != nil {
@@ -401,24 +546,78 @@ func (t *tx) RenderTemplate(ctx context.Context, path string, _ contract.Templat
 	return fmt.Errorf("%w: RenderTemplate", ErrUnsupported)
 }
 
-// Package is not provided yet; the declared-key check still runs first.
-func (t *tx) Package(_ context.Context, want contract.PackageState) error {
-	return t.checkKey(contract.StateKey(keyPackage + want.Name))
+// Package changes one declared package through the registered packages
+// StateProvider (package manager only, never package-database files).
+func (t *tx) Package(ctx context.Context, want contract.PackageState) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("package %q: %w", want.Name, err)
+	}
+	key := contract.StateKey(keyPackage + want.Name)
+	t.opMu.Lock()
+	defer t.opMu.Unlock()
+	if !t.keys[key] {
+		return &contract.UndeclaredTargetError{Kind: contract.TargetStateKey, Target: string(key)}
+	}
+	p, ok := t.e.opts.Providers[contract.ProviderPackages]
+	if !ok {
+		return fmt.Errorf("%w: state key %q", ErrUnsupported, key)
+	}
+	raw, err := json.Marshal(want)
+	if err != nil {
+		return fmt.Errorf("encode package %q: %w", want.Name, err)
+	}
+	action := contract.ActionCreate
+	if !want.Present {
+		action = contract.ActionRemove
+	}
+	return t.setStateLocked(ctx, p, key, string(key), contract.State{Value: string(raw)}, action, contract.RiskLow)
 }
 
-// Service is not provided yet; the declared-key check still runs first.
-func (t *tx) Service(_ context.Context, want contract.ServiceState) error {
-	return t.checkKey(contract.StateKey(keyService + want.Name))
+// Service changes one declared service through the registered service
+// StateProvider.
+func (t *tx) Service(ctx context.Context, want contract.ServiceState) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("service %q: %w", want.Name, err)
+	}
+	key := contract.StateKey(keyService + want.Name)
+	t.opMu.Lock()
+	defer t.opMu.Unlock()
+	if !t.keys[key] {
+		return &contract.UndeclaredTargetError{Kind: contract.TargetStateKey, Target: string(key)}
+	}
+	name := t.e.serviceProviderName()
+	if name == "" {
+		return fmt.Errorf("%w: state key %q", ErrUnsupported, key)
+	}
+	p := t.e.opts.Providers[name]
+	raw, err := json.Marshal(want)
+	if err != nil {
+		return fmt.Errorf("encode service %q: %w", want.Name, err)
+	}
+	return t.setStateLocked(ctx, p, key, string(key), contract.State{Value: string(raw)}, contract.ActionSet, contract.RiskMedium)
 }
 
-// UserGroup is not provided yet; the declared-key check still runs first.
-func (t *tx) UserGroup(_ context.Context, want contract.UserGroupState) error {
-	return t.checkKey(contract.StateKey(keyUserGroup + want.User + ":" + want.Group))
-}
-
-// SetState is not provided yet; the declared-key check still runs first.
-func (t *tx) SetState(_ context.Context, _ contract.StateProvider, key contract.StateKey, _ contract.State) error {
-	return t.checkKey(key)
+// UserGroup changes one declared user-group membership through the
+// registered accounts StateProvider.
+func (t *tx) UserGroup(ctx context.Context, want contract.UserGroupState) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("user-group %s:%s: %w", want.User, want.Group, err)
+	}
+	key := contract.StateKey(keyUserGroup + want.User + ":" + want.Group)
+	t.opMu.Lock()
+	defer t.opMu.Unlock()
+	if !t.keys[key] {
+		return &contract.UndeclaredTargetError{Kind: contract.TargetStateKey, Target: string(key)}
+	}
+	p, ok := t.e.opts.Providers[contract.ProviderAccounts]
+	if !ok {
+		return fmt.Errorf("%w: state key %q", ErrUnsupported, key)
+	}
+	raw, err := json.Marshal(want)
+	if err != nil {
+		return fmt.Errorf("encode user-group %s:%s: %w", want.User, want.Group, err)
+	}
+	return t.setStateLocked(ctx, p, key, string(key), contract.State{Value: string(raw)}, contract.ActionSet, contract.RiskMedium)
 }
 
 // Check is not provided yet.

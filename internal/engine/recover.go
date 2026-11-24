@@ -270,8 +270,9 @@ func (e *Engine) recoverLocked(ctx context.Context, l *locks, self platform.Proc
 		if err := k.err(); err != nil {
 			return res, err
 		}
-		if err := e.restoreRun(bk, l, rec, m, next); err != nil {
-			return res, err
+		if err := e.restoreRun(bk, l, rec, m, nil, next); err != nil {
+			_ = k.stopRenewing()
+			return res, errors.Join(err, e.dropClaim(bk, l, rec.RunID, self))
 		}
 	}
 	res.Action = ResumeRestored

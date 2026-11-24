@@ -86,10 +86,9 @@ func (p parent) open() (*os.File, error) {
 // errLinkTarget explains why a link target is refused.
 const errLinkTarget = "is a symbolic link; the unit description cannot declare link handling yet, so link targets are refused"
 
-// refuseUnsafeTarget runs before a target is replaced or removed. A
-// missing name is fine. A regular file must carry no ACL or extended
-// attributes (ErrUnsupportedMetadata). A symbolic link, a folder or any
-// other type is refused (ErrUnsupportedTarget).
+// refuseUnsafeTarget runs before a target is replaced or removed. A missing
+// name or regular file is accepted. A symbolic link, a folder or any other
+// type is refused (ErrUnsupportedTarget).
 func (p parent) refuseUnsafeTarget() error {
 	st, err := p.lstat()
 	if errors.Is(err, fs.ErrNotExist) {
@@ -100,28 +99,12 @@ func (p parent) refuseUnsafeTarget() error {
 	}
 	switch st.Mode & unix.S_IFMT {
 	case unix.S_IFREG:
+		return nil
 	case unix.S_IFLNK:
 		return fmt.Errorf("%w: %q %s", ErrUnsupportedTarget, p.path(), errLinkTarget)
 	default:
 		return fmt.Errorf("%w: %q is not a regular file", ErrUnsupportedTarget, p.path())
 	}
-	f, err := p.open()
-	if err != nil {
-		return err
-	}
-	defer func() { _ = f.Close() }()
-	return checkMetadata(f)
-}
-
-func checkMetadata(f *os.File) error {
-	what, err := extendedMetadata(f)
-	if err != nil {
-		return err
-	}
-	if what != "" {
-		return fmt.Errorf("%w: %q has %s; a full metadata backup is not built yet", ErrUnsupportedMetadata, f.Name(), what)
-	}
-	return nil
 }
 
 func (p parent) readlink() (string, error) {

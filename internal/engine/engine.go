@@ -31,14 +31,36 @@ type ProcessInspector interface {
 	Alive(ctx context.Context, id platform.ProcessIdentity) (bool, error)
 }
 
+// RestoreValidator checks host configuration after a restore replays the
+// manifest (for example sshd -t, visudo -c or ufw status). A non-nil error
+// fails the restore closed with exit 4, leaving the intent unfinished.
+type RestoreValidator interface {
+	Name() string
+	Validate(ctx context.Context) error
+}
+
+type validatorFunc struct {
+	name string
+	fn   func(ctx context.Context) error
+}
+
+func (v validatorFunc) Name() string                       { return v.name }
+func (v validatorFunc) Validate(ctx context.Context) error { return v.fn(ctx) }
+
+// NewValidator adapts a named function into a RestoreValidator.
+func NewValidator(name string, fn func(ctx context.Context) error) RestoreValidator {
+	return validatorFunc{name: name, fn: fn}
+}
+
 // Defaults for the bounds in Options.
 const (
-	DefaultGrace       = 10 * time.Second
-	DefaultKillWait    = 10 * time.Second
-	DefaultClaimTTL    = 5 * time.Minute
-	DefaultClaimRenew  = time.Minute
-	DefaultLockPoll    = 50 * time.Millisecond
-	DefaultCallTimeout = 10 * time.Second
+	DefaultGrace               = 10 * time.Second
+	DefaultKillWait            = 10 * time.Second
+	DefaultClaimTTL            = 5 * time.Minute
+	DefaultClaimRenew          = time.Minute
+	DefaultLockPoll            = 50 * time.Millisecond
+	DefaultCallTimeout         = 10 * time.Second
+	DefaultStateRestoreTimeout = 30 * time.Second
 )
 
 // Options configure an Engine. JournalDir, HostLock, Containment and
@@ -56,6 +78,13 @@ type Options struct {
 	Scope       contract.Scope
 	Containment Containment
 	Inspector   ProcessInspector
+	// Providers maps each StateProviderName to its StateProvider for
+	// pre-apply snapshots, declarative operations (Package, Service,
+	// UserGroup) and cross-process recovery restores.
+	Providers map[contract.StateProviderName]contract.StateProvider
+	// Validators run after a restore replays and verifies the manifest
+	// (ADR 0005 section 5). Any failure leaves the intent unfinished (exit 4).
+	Validators []RestoreValidator
 	// Sink receives events. If it also has an Err method that reports a
 	// failed write, the step fails closed on that error.
 	Sink contract.Sink
@@ -78,9 +107,15 @@ type Options struct {
 	LockPoll time.Duration
 	// CallTimeout bounds each supervisor inspection and signal.
 	CallTimeout time.Duration
+	// StateRestoreTimeout bounds the provider Restore call SetState runs
+	// after a failed Write, under an uncancelled context.
+	StateRestoreTimeout time.Duration
 	// traceFn, set only by tests in this package, sees every folder entry
 	// and folder fsync for the durability model.
 	traceFn func(op, dir, name string)
+	// metaOps, set only by tests in this package, overrides OS metadata
+	// capture and application (for example to simulate ENOTSUP).
+	metaOps metadataOps
 	// Fault is called at every Point. Nil uses the build's default, which
 	// is no hook unless the binary is built with the faultinject tag.
 	Fault FaultFunc
@@ -104,6 +139,26 @@ func New(opts Options) (*Engine, error) {
 		return nil, fmt.Errorf("%w: Containment and Inspector are required", ErrInvalidOptions)
 	case !opts.Scope.Valid():
 		return nil, fmt.Errorf("%w: scope %q", ErrInvalidOptions, opts.Scope)
+	}
+	if len(opts.Providers) > 0 {
+		copied := make(map[contract.StateProviderName]contract.StateProvider, len(opts.Providers))
+		for name, p := range opts.Providers {
+			if p == nil || name == "" || p.Name() != name {
+				return nil, fmt.Errorf("%w: invalid state provider entry %q", ErrInvalidOptions, name)
+			}
+			copied[name] = p
+		}
+		opts.Providers = copied
+	}
+	if len(opts.Validators) > 0 {
+		copied := make([]RestoreValidator, len(opts.Validators))
+		for i, v := range opts.Validators {
+			if v == nil || v.Name() == "" {
+				return nil, fmt.Errorf("%w: validator %d must be non-nil with a name", ErrInvalidOptions, i)
+			}
+			copied[i] = v
+		}
+		opts.Validators = copied
 	}
 	if err := checkExistingAncestors(opts.JournalDir); err != nil {
 		return nil, fmt.Errorf("journal folder: %w", err)
@@ -139,16 +194,27 @@ func New(opts Options) (*Engine, error) {
 	setDefault(&opts.ClaimRenew, DefaultClaimRenew)
 	setDefault(&opts.LockPoll, DefaultLockPoll)
 	setDefault(&opts.CallTimeout, DefaultCallTimeout)
+	setDefault(&opts.StateRestoreTimeout, DefaultStateRestoreTimeout)
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
 	if opts.LookupEnv == nil {
 		opts.LookupEnv = os.LookupEnv
 	}
+	if opts.metaOps == nil {
+		opts.metaOps = osMetadataOps{}
+	}
 	if opts.Fault == nil {
 		opts.Fault = defaultFault()
 	}
 	return &Engine{opts: opts}, nil
+}
+
+func (e *Engine) meta() metadataOps {
+	if e.opts.metaOps != nil {
+		return e.opts.metaOps
+	}
+	return osMetadataOps{}
 }
 
 func setDefault(d *time.Duration, v time.Duration) {
@@ -191,10 +257,11 @@ func (e *Engine) empty(ctx context.Context, name string, sup platform.ProcessIde
 	return nil
 }
 
-// Apply runs one unit's apply as a transaction: back up every declared path,
-// write the intent record, apply, verify, write the receipt. A failure
-// restores the backup and writes a failed receipt. Apply holds the host lock
-// throughout and the journal lock only while it touches the journal.
+// Apply runs one unit's apply as a transaction: back up every declared path
+// and matching state provider, write the intent record, apply, verify, write
+// the receipt. A failure restores the backup and writes a failed receipt.
+// Apply holds the host lock throughout and the journal lock only while it
+// touches the journal.
 //
 // If ctx ends, the step runs on for the grace period; if it has not finished
 // by then, its context is cancelled, the record is left for the next start,
@@ -283,7 +350,7 @@ func (e *Engine) runApply(ctx context.Context, l *locks, self platform.ProcessId
 		return fmt.Errorf("%w: run %s stopped after the grace period: %w", ErrCancelled, runID, stepErr)
 	}
 	if stepErr != nil {
-		return e.failRun(bk, l, rec, m, stepErr)
+		return e.failRun(bk, l, rec, m, t.seenProviders(), stepErr)
 	}
 	if err := e.writeReceipt(contract.Receipt{
 		RunID: runID, Unit: desc.Unit, PlanDigest: p.Digest, Changes: t.Changes(),
@@ -321,23 +388,25 @@ func (e *Engine) step(ctx context.Context, t *tx, u contract.Unit, p contract.Pl
 	return nil
 }
 
-// failRun restores a failed run and closes it with a failed receipt.
-func (e *Engine) failRun(ctx context.Context, l *locks, rec *Record, m *Manifest, cause error) error {
-	if err := e.restoreRun(ctx, l, rec, m, StatusIdle); err != nil {
+// failRun restores a failed run and closes it with a failed receipt. If the
+// restore or its validators fail, the intent stays StatusRestoring and the
+// error maps to exit 4.
+func (e *Engine) failRun(ctx context.Context, l *locks, rec *Record, m *Manifest, extra map[contract.StateProviderName]contract.StateProvider, cause error) error {
+	if err := e.restoreRun(ctx, l, rec, m, extra, StatusIdle); err != nil {
 		return errors.Join(cause, err)
 	}
 	return fmt.Errorf("%w: %w", ErrApplyFailed, cause)
 }
 
-// restoreRun marks the record restoring, restores the manifest, writes a
-// failed receipt for the run and moves the record to next.
-func (e *Engine) restoreRun(ctx context.Context, l *locks, rec *Record, m *Manifest, next Status) error {
+// restoreRun marks the record restoring, restores and validates the manifest,
+// writes a failed receipt for the run and moves the record to next.
+func (e *Engine) restoreRun(ctx context.Context, l *locks, rec *Record, m *Manifest, extra map[contract.StateProviderName]contract.StateProvider, next Status) error {
 	rec.Status = StatusRestoring
 	if err := l.withJournal(ctx, func() error { return e.writeRecord(rec) }); err != nil {
 		return err
 	}
 	e.fault(PointRestoreStart)
-	if err := e.restore(ctx, m); err != nil {
+	if err := e.restore(ctx, m, extra); err != nil {
 		return err
 	}
 	if err := e.writeReceipt(contract.Receipt{
