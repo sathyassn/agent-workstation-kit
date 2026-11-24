@@ -108,3 +108,35 @@ func TestLockWaitHonoursContext(t *testing.T) {
 		t.Fatalf("err = %v, want deadline exceeded", err)
 	}
 }
+
+// TestPackageDBPathGuard covers M4 across both darwin (case-insensitive APFS
+// and /System/Volumes/Data firmlinks) and linux.
+func TestPackageDBPathGuard(t *testing.T) {
+	tests := []struct {
+		path string
+		goos string
+		want bool
+	}{
+		{"/var/lib/dpkg/status", "linux", true},
+		{"/var/cache/debconf/config.dat", "linux", true},
+		{"/var/lib/ucf/hashfile", "linux", true},
+		{"/var/log/apt/history.log", "linux", true},
+		{"/Library/Apple/System/Library/Receipts/pkg.bom", "darwin", true},
+		{"/library/apple/system/library/receipts/pkg.bom", "darwin", true},
+		{"/opt/homebrew/cellar/zsh/5.9/bin/zsh", "darwin", true},
+		{"/OPT/HOMEBREW/CASKROOM/app", "darwin", true},
+		{"/System/Volumes/Data/opt/homebrew/Cellar/zsh/5.9/bin/zsh", "darwin", true},
+		{"/system/volumes/data/opt/homebrew/cellar/zsh/5.9/bin/zsh", "darwin", true},
+		{"/System/Volumes/Data/private/var/db/receipts/com.example.bom", "darwin", true},
+		{"/System/Volumes/Data/var/lib/dpkg/status", "linux", true},
+		{"/opt/homebrew/cellar/zsh/5.9/bin/zsh", "linux", false},
+		{"/etc/apt/sources.list.d/wskit.list", "linux", false},
+		{"/etc/apt/preferences.d/wskit", "linux", false},
+		{"/etc/wskit-test/a.conf", "darwin", false},
+	}
+	for _, tc := range tests {
+		if got := isPackageDBPathForOS(tc.path, tc.goos); got != tc.want {
+			t.Errorf("isPackageDBPathForOS(%q, %q) = %v, want %v", tc.path, tc.goos, got, tc.want)
+		}
+	}
+}

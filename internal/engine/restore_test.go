@@ -326,6 +326,9 @@ func TestRecoveryNeverRestoresPackageDBFiles(t *testing.T) {
 		"/var/lib/dpkg/info/zsh.list",
 		"/var/lib/apt/extended_states",
 		"/var/cache/apt/pkgcache.bin",
+		"/var/cache/debconf/config.dat",
+		"/var/lib/ucf/hashfile",
+		"/var/log/apt/history.log",
 		"/opt/homebrew/Cellar/zsh/5.9/bin/zsh",
 		"/opt/homebrew/Caskroom/app/1.0/app",
 		"/opt/homebrew/var/homebrew/locks/update",
@@ -333,6 +336,17 @@ func TestRecoveryNeverRestoresPackageDBFiles(t *testing.T) {
 		"/var/db/receipts/com.example.pkg.bom",
 		"/private/var/db/receipts/com.example.pkg.bom",
 		"/Library/Receipts/example.bom",
+		"/Library/Apple/System/Library/Receipts/com.apple.pkg.bom",
+		"/System/Volumes/Data/opt/homebrew/Cellar/zsh/5.9/bin/zsh",
+		"/System/Volumes/Data/private/var/db/receipts/com.example.pkg.bom",
+	}
+	if runtime.GOOS == "darwin" {
+		forbiddenPaths = append(forbiddenPaths,
+			"/opt/homebrew/cellar/zsh/5.9/bin/zsh",
+			"/OPT/HOMEBREW/Caskroom/app/1.0/app",
+			"/system/volumes/data/opt/homebrew/cellar/zsh/5.9/bin/zsh",
+			"/library/apple/system/library/receipts/com.apple.pkg.bom",
+		)
 	}
 
 	for _, p := range forbiddenPaths {
@@ -485,4 +499,353 @@ func (u *pkgUnit) Verify(context.Context, contract.Plan) (contract.Result, error
 func (u *pkgUnit) Revert(context.Context, contract.Tx, contract.Receipt) error { return nil }
 func (u *pkgUnit) Status(context.Context) (contract.Status, error) {
 	return contract.Status{Unit: contract.UnitPackages}, nil
+}
+
+// TestSetStateRefusesUnregisteredProvider is M2: SetState refuses a provider
+// not registered (or a different instance under the same name) before any
+// provider call.
+func TestSetStateRefusesUnregisteredProvider(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name     string
+		register bool
+	}{
+		{"provider not registered", false},
+		{"different instance with same name", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newWorld(t)
+			unreg := &countingStateProvider{
+				FakeStateProvider: contracttest.NewFakeStateProvider(contract.ProviderHostname, map[contract.StateKey]contract.State{
+					platform.HostnameKeyStatic: {Value: "lab-ws-orig"},
+				}),
+			}
+			var providers map[contract.StateProviderName]contract.StateProvider
+			if tc.register {
+				other := contracttest.NewFakeStateProvider(contract.ProviderHostname, map[contract.StateKey]contract.State{
+					platform.HostnameKeyStatic: {Value: "lab-ws-orig"},
+				})
+				providers = map[contract.StateProviderName]contract.StateProvider{contract.ProviderHostname: other}
+			}
+			e, _ := w.engine(t, func(o *engine.Options) { o.Providers = providers })
+			u := &fileAndStateUnit{root: w.root, hostProv: unreg, newHostname: "lab-ws-new"}
+			err := e.Apply(ctx, u, statePlan())
+			if !errors.Is(err, engine.ErrUnregisteredProvider) || engine.ExitCode(err) != contract.ExitRefused {
+				t.Fatalf("Apply err = %v (exit %d), want ErrUnregisteredProvider (exit 2)", err, engine.ExitCode(err))
+			}
+			if unreg.snapshots != 0 || unreg.writes != 0 || unreg.reads != 0 {
+				t.Fatalf("unregistered provider called: snapshots=%d writes=%d reads=%d; want 0", unreg.snapshots, unreg.writes, unreg.reads)
+			}
+		})
+	}
+
+	t.Run("registered provider recovers cleanly after kill post-Write", func(t *testing.T) {
+		w := newWorld(t)
+		runner := platformtest.NewHostnameRunner(platformtest.HostnameState{
+			Static: "lab-ws-orig", Pretty: "Lab Orig", Transient: "lab-ws-orig", Local: "lab-ws-orig",
+		})
+		hostProv := newHostnameProvider(runner)
+		providers := map[contract.StateProviderName]contract.StateProvider{contract.ProviderHostname: hostProv}
+		u := &fileAndStateUnit{root: w.root, hostProv: hostProv, newHostname: "lab-ws-mutated"}
+		// Crash right after the SetState mutation.
+		muts := 0
+		eCrash, self := w.engine(t, func(o *engine.Options) {
+			o.Providers = providers
+			o.Fault = func(p engine.Point) {
+				if p == engine.PointMutation {
+					muts++
+					if muts == 2 { // 1 = WriteFile, 2 = first SetState
+						panic(crashSentinel{})
+					}
+				}
+			}
+		})
+		if !runCrashing(func() { _ = eCrash.Apply(ctx, u, statePlan()) }) {
+			t.Fatal("apply did not crash after SetState Write")
+		}
+		w.table.Kill(self)
+
+		// Verify hostname was mutated before the crash, then Resume restores it.
+		if got, err := hostProv.Read(ctx, platform.HostnameKeyStatic); err != nil || got.Value != "lab-ws-mutated" {
+			t.Fatalf("hostname after crash = %+v, %v; want lab-ws-mutated", got, err)
+		}
+		e, _ := w.engine(t, func(o *engine.Options) { o.Providers = providers })
+		resolve := func(context.Context, contract.UnitID) (contract.Unit, contract.Plan, error) {
+			return u, statePlan(), nil
+		}
+		res, err := e.Resume(ctx, resolve, engine.ResumeOptions{RestoreOnly: true})
+		if err != nil || res.Action != engine.ResumeRestored {
+			t.Fatalf("Resume = %+v, %v; want restored", res, err)
+		}
+		if got, err := hostProv.Read(ctx, platform.HostnameKeyStatic); err != nil || got.Value != "lab-ws-orig" {
+			t.Fatalf("hostname after Resume = %+v, %v; want lab-ws-orig", got, err)
+		}
+	})
+}
+
+type countingStateProvider struct {
+	*contracttest.FakeStateProvider
+	reads     int
+	writes    int
+	snapshots int
+	restores  int
+	readErr   error
+}
+
+func (p *countingStateProvider) Read(ctx context.Context, key contract.StateKey) (contract.State, error) {
+	p.reads++
+	if p.readErr != nil {
+		return contract.State{}, p.readErr
+	}
+	return p.FakeStateProvider.Read(ctx, key)
+}
+
+func (p *countingStateProvider) Write(ctx context.Context, key contract.StateKey, want contract.State) error {
+	p.writes++
+	return p.FakeStateProvider.Write(ctx, key, want)
+}
+
+func (p *countingStateProvider) Snapshot(ctx context.Context) (contract.Snapshot, error) {
+	p.snapshots++
+	return p.FakeStateProvider.Snapshot(ctx)
+}
+
+func (p *countingStateProvider) Restore(ctx context.Context, s contract.Snapshot) error {
+	p.restores++
+	return p.FakeStateProvider.Restore(ctx, s)
+}
+
+// TestRestoreWriteFailureExits4 is M3: a file-write failure inside restoreOne
+// (such as EACCES in a read-only parent folder or a target replaced by a
+// folder) exits 4 and leaves the intent StatusRestoring.
+func TestRestoreWriteFailureExits4(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("atomicWriteAt failure exits 4", func(t *testing.T) {
+		w := newWorld(t)
+		parentDir := filepath.Join(w.root, filepath.Dir(pathA))
+		e, _ := w.engine(t)
+		u := &testUnit{root: w.root, afterRun: func(context.Context) error {
+			// Make target directory read-only so restoreOne's createTemp fails.
+			if err := os.Chmod(parentDir, 0o500); err != nil { //nolint:gosec // test temp directory made read-only to inject write error
+				return err
+			}
+			return errNotRestored
+		}}
+		t.Cleanup(func() { _ = os.Chmod(parentDir, 0o700) }) //nolint:gosec // restore test temp directory permissions for cleanup
+
+		err := e.Apply(ctx, u, testPlan())
+		if !errors.Is(err, engine.ErrRestoreFailed) || engine.ExitCode(err) != contract.ExitRecoveryBlocks {
+			t.Fatalf("Apply err = %v (exit %d), want ErrRestoreFailed and exit 4", err, engine.ExitCode(err))
+		}
+		if r := w.record(t); r == nil || r.Status != engine.StatusRestoring {
+			t.Fatalf("record = %+v, want StatusRestoring", r)
+		}
+	})
+
+	t.Run("absent target became a folder exits 4", func(t *testing.T) {
+		w := newWorld(t)
+		e, _ := w.engine(t)
+		u := &testUnit{root: w.root, afterRun: func(context.Context) error {
+			// pathD was absent before apply; make it a folder so restoreOne fails.
+			if err := os.Mkdir(filepath.Join(w.root, pathD), 0o700); err != nil {
+				return err
+			}
+			return errNotRestored
+		}}
+		err := e.Apply(ctx, u, testPlan())
+		if !errors.Is(err, engine.ErrRestoreFailed) || engine.ExitCode(err) != contract.ExitRecoveryBlocks {
+			t.Fatalf("Apply err = %v (exit %d), want ErrRestoreFailed and exit 4", err, engine.ExitCode(err))
+		}
+		if r := w.record(t); r == nil || r.Status != engine.StatusRestoring {
+			t.Fatalf("record = %+v, want StatusRestoring", r)
+		}
+	})
+}
+
+// TestServiceAndUserGroupReturnUnsupported is M5: Tx.Service and Tx.UserGroup
+// return ErrUnsupported after the declared-key check even when unit-masks,
+// launchd or accounts providers are registered.
+func TestServiceAndUserGroupReturnUnsupported(t *testing.T) {
+	ctx := context.Background()
+	w := newWorld(t)
+	providers := map[contract.StateProviderName]contract.StateProvider{
+		contract.ProviderUnitMasks: contracttest.NewFakeStateProvider(contract.ProviderUnitMasks, nil),
+		contract.ProviderLaunchd:   contracttest.NewFakeStateProvider(contract.ProviderLaunchd, nil),
+		contract.ProviderAccounts:  contracttest.NewFakeStateProvider(contract.ProviderAccounts, nil),
+	}
+	for _, tc := range []struct {
+		name string
+		key  contract.StateKey
+		op   func(context.Context, contract.Tx) error
+	}{
+		{
+			name: "Service declared",
+			key:  "service:ssh",
+			op: func(ctx context.Context, tx contract.Tx) error {
+				return tx.Service(ctx, contract.ServiceState{Name: "ssh", Enabled: true, Running: true})
+			},
+		},
+		{
+			name: "UserGroup declared",
+			key:  "user-group:agent-01:users",
+			op: func(ctx context.Context, tx contract.Tx) error {
+				return tx.UserGroup(ctx, contract.UserGroupState{User: "agent-01", Group: "users", Present: true})
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, _ := w.engine(t, func(o *engine.Options) { o.Providers = providers })
+			u := &declaredOpUnit{key: tc.key, op: tc.op}
+			err := e.Apply(ctx, u, testPlan())
+			if !errors.Is(err, engine.ErrUnsupported) {
+				t.Fatalf("Apply err = %v, want ErrUnsupported", err)
+			}
+		})
+	}
+}
+
+type declaredOpUnit struct {
+	key contract.StateKey
+	op  func(context.Context, contract.Tx) error
+}
+
+func (u *declaredOpUnit) ID() contract.UnitID { return contract.UnitShell }
+func (u *declaredOpUnit) Describe(context.Context) (contract.Description, error) {
+	return contract.Description{
+		Unit:           contract.UnitShell,
+		Scope:          contract.ScopeUser,
+		OwnedStateKeys: []contract.StateKey{u.key},
+	}, nil
+}
+func (u *declaredOpUnit) Plan(context.Context, contract.Inputs) (contract.Plan, error) {
+	return testPlan(), nil
+}
+func (u *declaredOpUnit) Apply(ctx context.Context, tx contract.Tx, _ contract.Plan) error {
+	return u.op(ctx, tx)
+}
+func (u *declaredOpUnit) Verify(context.Context, contract.Plan) (contract.Result, error) {
+	return contract.Result{Unit: contract.UnitShell, Outcome: contract.OutcomeVerified}, nil
+}
+func (u *declaredOpUnit) Revert(context.Context, contract.Tx, contract.Receipt) error { return nil }
+func (u *declaredOpUnit) Status(context.Context) (contract.Status, error) {
+	return contract.Status{Unit: contract.UnitShell}, nil
+}
+
+// TestRestoreValidatesWholeManifestBeforeReplayingState is L3: when a manifest
+// contains a forbidden package-DB entry, restore fails before replaying any
+// state provider snapshot.
+func TestRestoreValidatesWholeManifestBeforeReplayingState(t *testing.T) {
+	ctx := context.Background()
+	w := newWorld(t)
+	hostProv := &countingStateProvider{
+		FakeStateProvider: contracttest.NewFakeStateProvider(contract.ProviderHostname, map[contract.StateKey]contract.State{
+			platform.HostnameKeyStatic: {Value: "lab-ws-orig"},
+			platform.HostnameKeyPretty: {Value: "Lab Orig"},
+		}),
+	}
+	providers := map[contract.StateProviderName]contract.StateProvider{contract.ProviderHostname: hostProv}
+	u := &fileAndStateUnit{root: w.root, hostProv: hostProv, newHostname: "lab-ws-mutated"}
+	eCrash, self := w.engine(t, func(o *engine.Options) {
+		o.Providers = providers
+		o.Fault = crashAt(engine.PointApplied)
+	})
+	if !runCrashing(func() { _ = eCrash.Apply(ctx, u, statePlan()) }) {
+		t.Fatal("apply did not reach PointApplied")
+	}
+	w.table.Kill(self)
+
+	rec := w.record(t)
+	mPath := filepath.Join(w.journal, "backups", string(rec.RunID), "manifest.json")
+	raw, err := os.ReadFile(mPath) //nolint:gosec // test temp journal
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m engine.Manifest
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+	m.Entries = append(m.Entries, engine.ManifestEntry{
+		Path: "/var/lib/dpkg/status",
+		Kind: engine.KindFile,
+		Mode: 0o644,
+		UID:  os.Getuid(),
+		GID:  os.Getgid(),
+		Data: "0",
+	})
+	updated, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(mPath, updated, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	restoresBefore := hostProv.restores
+	e, _ := w.engine(t, func(o *engine.Options) { o.Providers = providers })
+	resolve := func(context.Context, contract.UnitID) (contract.Unit, contract.Plan, error) {
+		return u, statePlan(), nil
+	}
+	_, err = e.Resume(ctx, resolve, engine.ResumeOptions{RestoreOnly: true})
+	if !errors.Is(err, engine.ErrPackageDBPath) || engine.ExitCode(err) != contract.ExitRecoveryBlocks {
+		t.Fatalf("Resume err = %v (exit %d), want ErrPackageDBPath and exit 4", err, engine.ExitCode(err))
+	}
+	if hostProv.restores != restoresBefore {
+		t.Fatalf("state provider Restore called %d times despite invalid manifest; want 0", hostProv.restores-restoresBefore)
+	}
+}
+
+// TestSetStateFailsBeforeWriteOnReadError is L4: a non-not-found Read error
+// aborts SetState before Write is called, while ErrStateKeyNotFound proceeds
+// with an empty before digest.
+func TestSetStateFailsBeforeWriteOnReadError(t *testing.T) {
+	ctx := context.Background()
+	readBoom := errors.New("injected read failure")
+	w := newWorld(t)
+	hostProv := &countingStateProvider{
+		FakeStateProvider: contracttest.NewFakeStateProvider(contract.ProviderHostname, map[contract.StateKey]contract.State{
+			platform.HostnameKeyStatic: {Value: "lab-ws-orig"},
+		}),
+		readErr: readBoom,
+	}
+	providers := map[contract.StateProviderName]contract.StateProvider{contract.ProviderHostname: hostProv}
+	e, _ := w.engine(t, func(o *engine.Options) { o.Providers = providers })
+	u := &declaredOpUnit{
+		key: platform.HostnameKeyStatic,
+		op: func(ctx context.Context, tx contract.Tx) error {
+			return tx.SetState(ctx, hostProv, platform.HostnameKeyStatic, contract.State{Value: "lab-ws-new"})
+		},
+	}
+	err := e.Apply(ctx, u, testPlan())
+	if !errors.Is(err, readBoom) {
+		t.Fatalf("Apply err = %v, want %v", err, readBoom)
+	}
+	if hostProv.writes != 0 {
+		t.Fatalf("Write called %d times after Read failure; want 0", hostProv.writes)
+	}
+
+	t.Run("not-found Read proceeds with empty Before digest", func(t *testing.T) {
+		w2 := newWorld(t)
+		p2 := &countingStateProvider{
+			FakeStateProvider: contracttest.NewFakeStateProvider(contract.ProviderHostname, map[contract.StateKey]contract.State{}),
+			readErr:           platform.ErrStateKeyNotFound,
+		}
+		e2, _ := w2.engine(t, func(o *engine.Options) {
+			o.Providers = map[contract.StateProviderName]contract.StateProvider{contract.ProviderHostname: p2}
+		})
+		u2 := &declaredOpUnit{
+			key: platform.HostnameKeyStatic,
+			op: func(ctx context.Context, tx contract.Tx) error {
+				return tx.SetState(ctx, p2, platform.HostnameKeyStatic, contract.State{Value: "lab-ws-new"})
+			},
+		}
+		if err := e2.Apply(ctx, u2, testPlan()); err != nil {
+			t.Fatalf("Apply with not-found Read: %v", err)
+		}
+		rec := w2.record(t)
+		rc := w2.receipt(t, rec.RunID)
+		if rc == nil || len(rc.Changes) != 1 || rc.Changes[0].Before != "" {
+			t.Fatalf("receipt = %+v, want 1 change with empty Before digest", rc)
+		}
+	})
 }

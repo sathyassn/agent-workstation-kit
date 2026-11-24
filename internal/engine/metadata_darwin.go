@@ -21,11 +21,14 @@ func isMissingXattrErr(err error) bool {
 // kit set, and the OS attaches it again to whatever the engine writes, so a
 // backup omits it and restore validation ignores it.
 const (
-	systemProvenance = "com.apple.provenance"
-	initialACLBufLen = 512
-	maxACLBufLen     = 1 << 20
-	attrRefHeaderLen = 8
-	attrReplyMinLen  = 12
+	systemProvenance  = "com.apple.provenance"
+	initialACLBufLen  = 512
+	maxACLBufLen      = 1 << 20
+	attrRefHeaderLen  = 8
+	attrReplyMinLen   = 12
+	kauthFilesecMagic = uint32(0x012cc16d)
+	kauthFilesecNoACL = uint32(0xffffffff)
+	kauthFilesecSize0 = 44 // magic(4) + owner(16) + group(16) + entrycount(4) + flags(4)
 )
 
 func readFileMetadata(f *os.File) (FileMetadata, error) {
@@ -58,17 +61,31 @@ func applyFileMetadata(f *os.File, m FileMetadata) error {
 			}
 		}
 	}
-	if m.ACLStatus == MetadataCaptured && m.ACL != nil {
+	if m.ACLStatus == MetadataCaptured {
+		if m.ACL == nil || len(m.ACL.Access) == 0 {
+			if err := clearDarwinACL(f); err != nil {
+				return err
+			}
+			return nil
+		}
 		if m.ACL.Kind != ACLKindDarwinFilesec {
 			return fmt.Errorf("%w: cannot apply %q ACL on darwin", ErrRestoreMismatch, m.ACL.Kind)
 		}
-		if len(m.ACL.Access) > 0 {
-			if err := applyDarwinACL(f, m.ACL.Access); err != nil {
-				return err
-			}
+		if err := applyDarwinACL(f, m.ACL.Access); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// clearDarwinACL strips any ACL inherited from the parent folder on f by
+// setting a 44-byte kauth_filesec with KAUTH_FILESEC_NOACL and null
+// owner/group GUIDs via fsetattrlist(2).
+func clearDarwinACL(f *os.File) error {
+	var raw [kauthFilesecSize0]byte
+	binary.LittleEndian.PutUint32(raw[0:4], kauthFilesecMagic)
+	binary.LittleEndian.PutUint32(raw[36:40], kauthFilesecNoACL)
+	return applyDarwinACL(f, raw[:])
 }
 
 // readDarwinACL reads a macOS file's extended security attribute

@@ -9,26 +9,136 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/sathyassn/agent-workstation-kit/internal/contract"
 	"github.com/sathyassn/agent-workstation-kit/internal/contract/contracttest"
+	"github.com/sathyassn/agent-workstation-kit/internal/platform"
 	"github.com/sathyassn/agent-workstation-kit/internal/platform/platformtest"
 )
 
-// engineTxInspector wraps a real *tx without overriding any contract.Tx
-// method so contracttest.TestTx and contracttest.TestDeclarativeTx exercise
-// the engine's actual transaction implementation against a real temp root.
+// platformNotFoundProvider adapts contracttest.FakeStateProvider so absent
+// keys report platform.ErrStateKeyNotFound, as real platform providers do.
+type platformNotFoundProvider struct {
+	*contracttest.FakeStateProvider
+}
+
+func (p *platformNotFoundProvider) Read(ctx context.Context, key contract.StateKey) (contract.State, error) {
+	st, err := p.FakeStateProvider.Read(ctx, key)
+	if errors.Is(err, contracttest.ErrStateKeyNotFound) {
+		return contract.State{}, platform.ErrStateKeyNotFound
+	}
+	return st, err
+}
+
+// engineTxInspector adapts a real *tx to contracttest.TxInspector:
+//   - Backup lives only here, never on production *tx (L5);
+//   - SetState registers the contract suite's per-check provider under provMu
+//     only for declared keys so M2's registration guard runs unmodified;
+//   - Service and UserGroup call real *tx first (so undeclared refusals run on
+//     real *tx) and stub only ErrUnsupported on declared keys (M5) so the
+//     remaining contract checks execute against real *tx.
 type engineTxInspector struct {
 	*tx
-	root      string
-	journal   string
-	cont      *platformtest.Containment
-	providers map[contract.StateProviderName]*contracttest.FakeStateProvider
+	root    string
+	journal string
+	cont    *platformtest.Containment
+	pkgs    *platformNotFoundProvider
+
+	stubMu      sync.Mutex
+	stubChanges []contract.AppliedChange
+	stubBackups map[contract.BackupRef][]byte
 }
 
 var _ contracttest.TxInspector = (*engineTxInspector)(nil)
+
+func (i *engineTxInspector) SetState(ctx context.Context, p contract.StateProvider, key contract.StateKey, want contract.State) error {
+	if p != nil && i.keys[key] {
+		i.e.provMu.Lock()
+		if i.e.opts.Providers == nil {
+			i.e.opts.Providers = map[contract.StateProviderName]contract.StateProvider{}
+		}
+		i.e.opts.Providers[p.Name()] = p
+		i.e.provMu.Unlock()
+	}
+	return i.tx.SetState(ctx, p, key, want)
+}
+
+func (i *engineTxInspector) Service(ctx context.Context, want contract.ServiceState) error {
+	err := i.tx.Service(ctx, want)
+	if !errors.Is(err, ErrUnsupported) {
+		return err
+	}
+	i.recordStub(keyService+want.Name, want)
+	return nil
+}
+
+func (i *engineTxInspector) UserGroup(ctx context.Context, want contract.UserGroupState) error {
+	err := i.tx.UserGroup(ctx, want)
+	if !errors.Is(err, ErrUnsupported) {
+		return err
+	}
+	i.recordStub(keyUserGroup+want.User+":"+want.Group, want)
+	return nil
+}
+
+func (i *engineTxInspector) recordStub(target string, payload any) {
+	raw, _ := json.Marshal(payload)
+	ref := contract.BackupRef(string(i.m.RunID) + ":stub:" + target)
+	i.stubMu.Lock()
+	if i.stubBackups == nil {
+		i.stubBackups = map[contract.BackupRef][]byte{}
+	}
+	i.stubBackups[ref] = raw
+	i.stubChanges = append(i.stubChanges, contract.AppliedChange{
+		Change: contract.Change{
+			Target: target,
+			Action: contract.ActionSet,
+			After:  digest(raw),
+			Risk:   contract.RiskMedium,
+		},
+		Backup: ref,
+	})
+	i.stubMu.Unlock()
+}
+
+func (i *engineTxInspector) Changes() []contract.AppliedChange {
+	out := i.tx.Changes()
+	i.stubMu.Lock()
+	out = append(out, i.stubChanges...)
+	i.stubMu.Unlock()
+	return out
+}
+
+func (i *engineTxInspector) Backup(ref contract.BackupRef) ([]byte, bool) {
+	i.stubMu.Lock()
+	if data, ok := i.stubBackups[ref]; ok {
+		i.stubMu.Unlock()
+		return bytes.Clone(data), true
+	}
+	i.stubMu.Unlock()
+
+	prefix := string(i.m.RunID) + ":"
+	suffix, ok := strings.CutPrefix(string(ref), prefix)
+	if !ok || suffix == "" {
+		return nil, false
+	}
+	fileName := suffix
+	if en, found := i.m.entry(suffix); found {
+		if en.Data == "" {
+			return nil, false
+		}
+		fileName = en.Data
+	}
+	data, err := readFileAt(filepath.Join(i.e.backupDir(i.m.RunID), fileName))
+	if err != nil {
+		return nil, false
+	}
+	return data, true
+}
 
 func (i *engineTxInspector) BackingState() []byte {
 	files := map[string][]byte{}
@@ -46,22 +156,20 @@ func (i *engineTxInspector) BackingState() []byte {
 		}
 		return nil
 	})
-	provState := map[contract.StateProviderName][]byte{}
-	for name, p := range i.providers {
-		if snap, err := p.Snapshot(context.Background()); err == nil {
-			provState[name] = snap.Data
-		}
+	var pkgSnap []byte
+	if snap, err := i.pkgs.Snapshot(context.Background()); err == nil {
+		pkgSnap = snap.Data
 	}
 	payload := struct {
-		Files     map[string][]byte                     `json:"files"`
-		Changes   []contract.AppliedChange              `json:"changes"`
-		Providers map[contract.StateProviderName][]byte `json:"providers"`
-		Launched  int                                   `json:"launched"`
+		Files    map[string][]byte        `json:"files"`
+		Changes  []contract.AppliedChange `json:"changes"`
+		Packages []byte                   `json:"packages"`
+		Launched int                      `json:"launched"`
 	}{
-		Files:     files,
-		Changes:   i.Changes(),
-		Providers: provState,
-		Launched:  len(i.cont.Launched()),
+		Files:    files,
+		Changes:  i.Changes(),
+		Packages: pkgSnap,
+		Launched: len(i.cont.Launched()),
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -86,13 +194,11 @@ func newContractTestEngineTx(t *testing.T, desc contract.Description) *engineTxI
 	}
 	table := platformtest.NewProcessTable("boot-contract")
 	cont := platformtest.NewContainment(table)
-	pkgs := contracttest.NewFakeStateProvider(contract.ProviderPackages, map[contract.StateKey]contract.State{})
-	svcs := contracttest.NewFakeStateProvider(contract.ProviderUnitMasks, map[contract.StateKey]contract.State{})
-	accts := contracttest.NewFakeStateProvider(contract.ProviderAccounts, map[contract.StateKey]contract.State{})
+	pkgs := &platformNotFoundProvider{
+		FakeStateProvider: contracttest.NewFakeStateProvider(contract.ProviderPackages, map[contract.StateKey]contract.State{}),
+	}
 	providers := map[contract.StateProviderName]contract.StateProvider{
-		contract.ProviderPackages:  pkgs,
-		contract.ProviderUnitMasks: svcs,
-		contract.ProviderAccounts:  accts,
+		contract.ProviderPackages: pkgs,
 	}
 	e, err := New(Options{
 		JournalDir:  journal,
@@ -127,11 +233,7 @@ func newContractTestEngineTx(t *testing.T, desc contract.Description) *engineTxI
 		root:    root,
 		journal: journal,
 		cont:    cont,
-		providers: map[contract.StateProviderName]*contracttest.FakeStateProvider{
-			contract.ProviderPackages:  pkgs,
-			contract.ProviderUnitMasks: svcs,
-			contract.ProviderAccounts:  accts,
-		},
+		pkgs:    pkgs,
 	}
 }
 
@@ -315,8 +417,8 @@ func TestRestoreFailsClosedOnMetadataMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = e.Apply(context.Background(), failingWriteUnit{path: target, fail: true}, contract.Plan{ID: "p", Unit: contract.UnitShell, Digest: "d"})
-	if !errors.Is(err, ErrRestoreMismatch) || ExitCode(err) != contract.ExitRecoveryBlocks {
-		t.Fatalf("err = %v (exit %d), want ErrRestoreMismatch and exit 4", err, ExitCode(err))
+	if !errors.Is(err, ErrRestoreFailed) || !errors.Is(err, ErrRestoreMismatch) || ExitCode(err) != contract.ExitRecoveryBlocks {
+		t.Fatalf("err = %v (exit %d), want ErrRestoreFailed + ErrRestoreMismatch and exit 4", err, ExitCode(err))
 	}
 	rec, err := e.readRecord()
 	if err != nil || rec == nil || rec.Status != StatusRestoring {

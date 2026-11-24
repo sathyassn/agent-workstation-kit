@@ -174,35 +174,19 @@ func (e *Engine) matchedProviders(keys []contract.StateKey) []contract.StateProv
 
 func (e *Engine) providerNameForKey(key contract.StateKey) contract.StateProviderName {
 	s := string(key)
-	switch {
-	case strings.HasPrefix(s, keyPackage):
-		if _, ok := e.opts.Providers[contract.ProviderPackages]; ok {
+	if strings.HasPrefix(s, keyPackage) {
+		if _, ok := e.lookupProvider(contract.ProviderPackages); ok {
 			return contract.ProviderPackages
 		}
 		return ""
-	case strings.HasPrefix(s, keyUserGroup):
-		if _, ok := e.opts.Providers[contract.ProviderAccounts]; ok {
-			return contract.ProviderAccounts
-		}
-		return ""
-	case strings.HasPrefix(s, keyService):
-		return e.serviceProviderName()
 	}
+	e.provMu.RLock()
+	defer e.provMu.RUnlock()
 	for name := range e.opts.Providers {
 		ns := string(name)
 		if s == ns || strings.HasPrefix(s, ns+".") || strings.HasPrefix(s, ns+":") {
 			return name
 		}
-	}
-	return ""
-}
-
-func (e *Engine) serviceProviderName() contract.StateProviderName {
-	if _, ok := e.opts.Providers[contract.ProviderUnitMasks]; ok {
-		return contract.ProviderUnitMasks
-	}
-	if _, ok := e.opts.Providers[contract.ProviderLaunchd]; ok {
-		return contract.ProviderLaunchd
 	}
 	return ""
 }
@@ -279,18 +263,29 @@ func (e *Engine) readManifest(runID contract.RunID) (*Manifest, error) {
 	return &m, nil
 }
 
-// restore replays every state snapshot and file entry in m in reverse order,
-// verifies content and metadata against the manifest, and runs every
-// configured RestoreValidator. It is idempotent: a restore a kill interrupted
-// is finished by running it again. Any mismatch or validator failure fails
-// closed (exit 4, intent left unfinished).
-func (e *Engine) restore(ctx context.Context, m *Manifest, extra map[contract.StateProviderName]contract.StateProvider) error {
+// restore validates the whole manifest, replays every state snapshot and file
+// entry in m in reverse order, verifies content and metadata against the
+// manifest, and runs every configured RestoreValidator. It is idempotent: a
+// restore a kill interrupted is finished by running it again. Every error is
+// wrapped in ErrRestoreFailed so it fails closed with exit 4 and leaves the
+// intent unfinished.
+func (e *Engine) restore(ctx context.Context, m *Manifest) error {
+	if err := e.restoreInner(ctx, m); err != nil {
+		return fmt.Errorf("%w: %w", ErrRestoreFailed, err)
+	}
+	return nil
+}
+
+func (e *Engine) restoreInner(ctx context.Context, m *Manifest) error {
 	dir := e.backupDir(m.RunID)
+	if err := e.validateManifestForRestore(dir, m); err != nil {
+		return err
+	}
 	for _, st := range slices.Backward(m.States) {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("restore state %s: %w", st.Provider, err)
 		}
-		if err := e.restoreState(ctx, dir, st, extra); err != nil {
+		if err := e.restoreState(ctx, dir, st); err != nil {
 			return err
 		}
 		e.fault(PointRestoreEntry)
@@ -298,9 +293,6 @@ func (e *Engine) restore(ctx context.Context, m *Manifest, extra map[contract.St
 	for _, en := range slices.Backward(m.Entries) {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("restore: %w", err)
-		}
-		if isPackageDBPath(en.Path) {
-			return fmt.Errorf("%w: %w: %q", ErrRestoreMismatch, ErrPackageDBPath, en.Path)
 		}
 		if err := e.restoreOne(dir, en); err != nil {
 			return err
@@ -321,19 +313,44 @@ func (e *Engine) restore(ctx context.Context, m *Manifest, extra map[contract.St
 	return nil
 }
 
-func (e *Engine) lookupProvider(name contract.StateProviderName, extra map[contract.StateProviderName]contract.StateProvider) contract.StateProvider {
-	if p, ok := e.opts.Providers[name]; ok {
-		return p
+// validateManifestForRestore checks the whole manifest before replaying any
+// state snapshot or file entry, so a package-database path, tampered backup,
+// corrupt entry or missing provider never leaves a partial restore.
+func (e *Engine) validateManifestForRestore(dir string, m *Manifest) error {
+	for _, en := range m.Entries {
+		if isPackageDBPath(en.Path) {
+			return fmt.Errorf("%w: %w: %q", ErrRestoreMismatch, ErrPackageDBPath, en.Path)
+		}
+		switch en.Kind {
+		case KindAbsent, KindSymlink:
+		case KindFile:
+			data, err := readFileAt(filepath.Join(dir, en.Data))
+			if err != nil {
+				return fmt.Errorf("read backup of %q: %w", en.Path, err)
+			}
+			if digest(data) != en.Digest {
+				return fmt.Errorf("%w: %q", ErrBackupMismatch, en.Path)
+			}
+		default:
+			return fmt.Errorf("%w: entry kind %q", ErrCorruptRecord, en.Kind)
+		}
 	}
-	if extra != nil {
-		if p, ok := extra[name]; ok {
-			return p
+	for _, st := range m.States {
+		data, err := readFileAt(filepath.Join(dir, st.Data))
+		if err != nil {
+			return fmt.Errorf("%w: read state backup %q: %w", ErrRestoreMismatch, st.Provider, err)
+		}
+		if digest(data) != st.Digest {
+			return fmt.Errorf("%w: state %q", ErrBackupMismatch, st.Provider)
+		}
+		if _, ok := e.lookupProvider(st.Provider); !ok {
+			return fmt.Errorf("%w: no state provider registered for %q", ErrRestoreMismatch, st.Provider)
 		}
 	}
 	return nil
 }
 
-func (e *Engine) restoreState(ctx context.Context, dir string, st ManifestState, extra map[contract.StateProviderName]contract.StateProvider) error {
+func (e *Engine) restoreState(ctx context.Context, dir string, st ManifestState) error {
 	data, err := readFileAt(filepath.Join(dir, st.Data))
 	if err != nil {
 		return fmt.Errorf("%w: read state backup %q: %w", ErrRestoreMismatch, st.Provider, err)
@@ -341,8 +358,8 @@ func (e *Engine) restoreState(ctx context.Context, dir string, st ManifestState,
 	if digest(data) != st.Digest {
 		return fmt.Errorf("%w: state %q", ErrBackupMismatch, st.Provider)
 	}
-	p := e.lookupProvider(st.Provider, extra)
-	if p == nil {
+	p, ok := e.lookupProvider(st.Provider)
+	if !ok {
 		return fmt.Errorf("%w: no state provider registered for %q", ErrRestoreMismatch, st.Provider)
 	}
 	if err := p.Restore(ctx, contract.Snapshot{Provider: st.Provider, Data: data}); err != nil {

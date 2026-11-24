@@ -65,7 +65,15 @@ func applyFileMetadata(f *os.File, m FileMetadata) error {
 			}
 		}
 	}
-	if m.ACLStatus == MetadataCaptured && m.ACL != nil {
+	if m.ACLStatus == MetadataCaptured {
+		if m.ACL == nil {
+			for _, name := range []string{posixACLAccess, posixACLDefault} {
+				if err := unix.Fremovexattr(int(f.Fd()), name); err != nil && !isMissingXattrErr(err) && !isUnsupportedMetadataErr(err) {
+					return fmt.Errorf("clear %s on %q: %w", name, f.Name(), err)
+				}
+			}
+			return nil
+		}
 		if m.ACL.Kind != ACLKindLinuxPOSIX {
 			return fmt.Errorf("%w: cannot apply %q ACL on linux", ErrRestoreMismatch, m.ACL.Kind)
 		}

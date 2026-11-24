@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/sathyassn/agent-workstation-kit/internal/contract"
@@ -123,7 +124,15 @@ type Options struct {
 
 // Engine runs unit transactions against one journal.
 type Engine struct {
-	opts Options
+	opts   Options
+	provMu sync.RWMutex
+}
+
+func (e *Engine) lookupProvider(name contract.StateProviderName) (contract.StateProvider, bool) {
+	e.provMu.RLock()
+	defer e.provMu.RUnlock()
+	p, ok := e.opts.Providers[name]
+	return p, ok
 }
 
 // New checks opts and fills in defaults.
@@ -350,7 +359,7 @@ func (e *Engine) runApply(ctx context.Context, l *locks, self platform.ProcessId
 		return fmt.Errorf("%w: run %s stopped after the grace period: %w", ErrCancelled, runID, stepErr)
 	}
 	if stepErr != nil {
-		return e.failRun(bk, l, rec, m, t.seenProviders(), stepErr)
+		return e.failRun(bk, l, rec, m, stepErr)
 	}
 	if err := e.writeReceipt(contract.Receipt{
 		RunID: runID, Unit: desc.Unit, PlanDigest: p.Digest, Changes: t.Changes(),
@@ -391,8 +400,8 @@ func (e *Engine) step(ctx context.Context, t *tx, u contract.Unit, p contract.Pl
 // failRun restores a failed run and closes it with a failed receipt. If the
 // restore or its validators fail, the intent stays StatusRestoring and the
 // error maps to exit 4.
-func (e *Engine) failRun(ctx context.Context, l *locks, rec *Record, m *Manifest, extra map[contract.StateProviderName]contract.StateProvider, cause error) error {
-	if err := e.restoreRun(ctx, l, rec, m, extra, StatusIdle); err != nil {
+func (e *Engine) failRun(ctx context.Context, l *locks, rec *Record, m *Manifest, cause error) error {
+	if err := e.restoreRun(ctx, l, rec, m, StatusIdle); err != nil {
 		return errors.Join(cause, err)
 	}
 	return fmt.Errorf("%w: %w", ErrApplyFailed, cause)
@@ -400,13 +409,13 @@ func (e *Engine) failRun(ctx context.Context, l *locks, rec *Record, m *Manifest
 
 // restoreRun marks the record restoring, restores and validates the manifest,
 // writes a failed receipt for the run and moves the record to next.
-func (e *Engine) restoreRun(ctx context.Context, l *locks, rec *Record, m *Manifest, extra map[contract.StateProviderName]contract.StateProvider, next Status) error {
+func (e *Engine) restoreRun(ctx context.Context, l *locks, rec *Record, m *Manifest, next Status) error {
 	rec.Status = StatusRestoring
 	if err := l.withJournal(ctx, func() error { return e.writeRecord(rec) }); err != nil {
 		return err
 	}
 	e.fault(PointRestoreStart)
-	if err := e.restore(ctx, m, extra); err != nil {
+	if err := e.restore(ctx, m); err != nil {
 		return err
 	}
 	if err := e.writeReceipt(contract.Receipt{

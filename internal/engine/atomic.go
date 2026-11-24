@@ -69,10 +69,17 @@ func (e *Engine) atomicWriteAt(p parent, spec fileSpec) error {
 		return fail(fmt.Errorf("chmod %q: %w", tmp.Name(), err))
 	}
 	// Apply xattrs and ACLs after chmod on the temp file so the rename puts
-	// content, owner, mode, xattrs and ACL into place atomically.
+	// content, owner, mode, xattrs and ACL into place atomically. If clearing
+	// an inherited ACL was requested, re-apply chmod afterwards so the exact
+	// mode bits hold even when a parent default ACL masked initial mode bits.
 	if spec.meta != nil {
 		if err := e.meta().Apply(tmp, *spec.meta); err != nil {
-			return fail(err)
+			return fail(fmt.Errorf("apply metadata to %q: %w", tmp.Name(), err))
+		}
+		if spec.meta.ACLStatus == MetadataCaptured && spec.meta.ACL == nil {
+			if err := tmp.Chmod(spec.perm & modeBits); err != nil {
+				return fail(fmt.Errorf("chmod %q: %w", tmp.Name(), err))
+			}
 		}
 	}
 	if err := tmp.Sync(); err != nil {

@@ -54,6 +54,12 @@ var (
 	// ErrRestoreValidation reports a post-restore validator that failed.
 	// Exit 4, intent left unfinished.
 	ErrRestoreValidation = errors.New("post-restore validation failed")
+	// ErrRestoreFailed wraps any failure during the restore phase so every
+	// restore error maps to exit 4 with the intent left unfinished.
+	ErrRestoreFailed = errors.New("restore failed; intent left unfinished")
+	// ErrUnregisteredProvider reports SetState called with a StateProvider
+	// not registered in Options.Providers (so recovery could not replay it).
+	ErrUnregisteredProvider = errors.New("state provider is not registered on this engine")
 	// ErrPackageDBPath reports a declared or manifest path inside a
 	// package-manager database; packages are changed and reverted only
 	// through the package manager.
@@ -93,6 +99,7 @@ func ExitCode(err error) contract.ExitCode {
 		errors.Is(err, ErrRecoveryClaimed),
 		errors.Is(err, ErrRecoveryPending),
 		errors.Is(err, ErrEmptinessUnknown),
+		errors.Is(err, ErrRestoreFailed),
 		errors.Is(err, ErrBackupMismatch),
 		errors.Is(err, ErrRestoreMismatch),
 		errors.Is(err, ErrRestoreValidation),
@@ -101,6 +108,7 @@ func ExitCode(err error) contract.ExitCode {
 		return contract.ExitRecoveryBlocks
 	case errors.Is(err, contract.ErrUndeclaredTarget),
 		errors.Is(err, ErrPackageDBPath),
+		errors.Is(err, ErrUnregisteredProvider),
 		errors.Is(err, platform.ErrForbiddenEnv):
 		return contract.ExitRefused
 	default:

@@ -33,10 +33,21 @@ func xattrNameEmpty() string {
 	return "user.wskit-empty"
 }
 
+// failOrSkipInCI fails the test when CI is set so an unsupported runner
+// filesystem never passes AC-3 silently; outside CI it skips.
+func failOrSkipInCI(t testing.TB, format string, args ...any) {
+	t.Helper()
+	if os.Getenv("CI") != "" {
+		t.Fatalf(format, args...)
+		return
+	}
+	t.Skipf(format, args...)
+}
+
 func setXattrValue(t *testing.T, path, name string, val []byte) {
 	t.Helper()
 	if err := unix.Setxattr(path, name, val, 0); err != nil {
-		t.Skipf("extended attributes not supported here: %v", err)
+		failOrSkipInCI(t, "extended attributes not supported here: %v", err)
 	}
 }
 
@@ -105,15 +116,15 @@ func setACL(t *testing.T, path string) {
 	case "darwin":
 		// #nosec G204 -- fixed system tool on a test temp file.
 		if out, err := exec.Command("/bin/chmod", "+a", "everyone allow read", path).CombinedOutput(); err != nil {
-			t.Skipf("cannot set a macOS ACL here: %v %s", err, out)
+			failOrSkipInCI(t, "cannot set a macOS ACL here: %v %s", err, out)
 		}
 	case "linux":
 		acl := buildLinuxPOSIXACL(uint32(os.Getuid())) //nolint:gosec // current test UID is non-negative
 		if err := unix.Setxattr(path, "system.posix_acl_access", acl, 0); err != nil {
-			t.Skipf("POSIX ACLs not supported here: %v", err)
+			failOrSkipInCI(t, "POSIX ACLs not supported here: %v", err)
 		}
 	default:
-		t.Skip("unsupported OS for ACL fixture")
+		failOrSkipInCI(t, "unsupported OS for ACL fixture")
 	}
 }
 
@@ -269,4 +280,82 @@ func TestDarwinProvenanceNotRecordedInManifest(t *testing.T) {
 			}
 		}
 	}
+}
+
+// setInheritableDirACL attaches an inheritable ACL to dir so newly created
+// files inside dir automatically inherit an ACE.
+func setInheritableDirACL(t *testing.T, dir string) {
+	t.Helper()
+	switch runtime.GOOS {
+	case "darwin":
+		// #nosec G204 -- fixed system tool on a test temp folder.
+		if out, err := exec.Command("/bin/chmod", "+a", "everyone allow read,file_inherit", dir).CombinedOutput(); err != nil {
+			failOrSkipInCI(t, "cannot set inheritable macOS ACL here: %v %s", err, out)
+		}
+	case "linux":
+		acl := buildLinuxPOSIXACL(uint32(os.Getuid())) //nolint:gosec // current test UID is non-negative
+		if err := unix.Setxattr(dir, "system.posix_acl_default", acl, 0); err != nil {
+			failOrSkipInCI(t, "POSIX default ACLs not supported here: %v", err)
+		}
+	default:
+		failOrSkipInCI(t, "unsupported OS for inheritable ACL fixture")
+	}
+}
+
+// TestRestoreClearsInheritedDirACL is M1: a file that originally had no ACL
+// lives inside a directory that later gains an inheritable ACE. When an apply
+// fails and restore creates a fresh temp file in that directory, restore must
+// clear the inherited ACL so the restored file matches the manifest identically.
+func TestRestoreClearsInheritedDirACL(t *testing.T) {
+	w := newWorld(t)
+	dir := filepath.Join(w.root, filepath.Dir(pathA))
+	target := filepath.Join(w.root, pathA)
+
+	// Confirm target initially has no ACL, then add an inheritable ACE to its folder.
+	if got := readACLText(t, target); got != "" {
+		t.Fatalf("target unexpectedly started with ACL: %q", got)
+	}
+	setInheritableDirACL(t, dir)
+
+	e, _ := w.engine(t)
+	u := &testUnit{root: w.root, afterRun: func(context.Context) error { return errNotRestored }}
+	err := e.Apply(context.Background(), u, testPlan())
+	if !errors.Is(err, engine.ErrApplyFailed) || !errors.Is(err, errNotRestored) {
+		t.Fatalf("Apply err = %v (exit %d), want ErrApplyFailed wrapping errNotRestored", err, engine.ExitCode(err))
+	}
+	w.assertState(t, originalState(), "after restore in dir with inherited ACL")
+	if got := readACLText(t, target); got != "" {
+		t.Fatalf("restored target kept inherited ACL:\n%s", got)
+	}
+}
+
+type mockTB struct {
+	testing.TB
+	failed  bool
+	skipped bool
+}
+
+func (m *mockTB) Helper()               {}
+func (m *mockTB) Fatalf(string, ...any) { m.failed = true }
+func (m *mockTB) Skipf(string, ...any)  { m.skipped = true }
+
+// TestFailOrSkipInCI is H1: when CI is set, missing xattr or ACL support
+// fails the test rather than silently skipping it.
+func TestFailOrSkipInCI(t *testing.T) {
+	t.Run("CI set fails instead of skipping", func(t *testing.T) {
+		t.Setenv("CI", "true")
+		m := &mockTB{TB: t}
+		failOrSkipInCI(m, "unsupported")
+		if !m.failed || m.skipped {
+			t.Fatalf("failed=%v skipped=%v, want failed=true skipped=false", m.failed, m.skipped)
+		}
+	})
+	t.Run("CI unset skips", func(t *testing.T) {
+		t.Setenv("CI", "")
+		m := &mockTB{TB: t}
+		failOrSkipInCI(m, "unsupported")
+		if m.failed || !m.skipped {
+			t.Fatalf("failed=%v skipped=%v, want failed=false skipped=true", m.failed, m.skipped)
+		}
+	})
 }
