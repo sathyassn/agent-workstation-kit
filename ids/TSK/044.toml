@@ -1,0 +1,11 @@
+id = "TSK-044"
+uid = "62e4883f-0651-4b40-9416-f05a673c53c7"
+kind = "TSK"
+title = "Desktop-service ceilings and agent jobs in the ceiling"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-24T00:22:41Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
