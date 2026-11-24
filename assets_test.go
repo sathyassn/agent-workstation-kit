@@ -31,6 +31,7 @@ func TestEmbeddedAssets(t *testing.T) {
 		path string
 	}{
 		{name: "schema", fsys: wskit.SchemaFS(), path: "schema/README.md"},
+		{name: "schema_profile", fsys: wskit.SchemaFS(), path: "schema/profile.toml"},
 		{name: "registry_readme", fsys: wskit.RegistryFS(), path: "registry/README.md"},
 		{name: "registry_tools", fsys: wskit.RegistryFS(), path: "registry/tools.toml"},
 		{name: "registry_units", fsys: wskit.RegistryFS(), path: "registry/units.toml"},

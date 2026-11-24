@@ -222,7 +222,7 @@ func TestExecuteExitCodes(t *testing.T) {
 	}
 }
 
-func compileSchema(t *testing.T, name string) *jsonschema.Schema {
+func compileSchema(t *testing.T, name string) *jsonschema.Schema { //nolint:unparam // reusable for future CLI JSON schemas
 	t.Helper()
 	raw, err := fs.ReadFile(wskit.SchemaFS(), "schema/json/"+name+".schema.json")
 	if err != nil {

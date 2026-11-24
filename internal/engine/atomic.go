@@ -46,6 +46,70 @@ func (e *Engine) atomicWrite(path string, spec fileSpec) error {
 	return e.atomicWriteAt(p, spec)
 }
 
+// ReplaceFilePreservingMetadata atomically writes data to path via a synced
+// temporary file in the same directory, renames it into place, and fsyncs the
+// parent directory. When path already exists as a regular file, its owner,
+// mode bits (including setuid/setgid/sticky), extended attributes and OS-native
+// ACLs are captured from the open descriptor and applied to the replacement
+// before rename. Symbolic links, directories and hard-linked targets are
+// refused. When path does not exist, defaultPerm is used.
+func ReplaceFilePreservingMetadata(path string, data []byte, defaultPerm fs.FileMode) error {
+	return (&Engine{}).replaceFilePreservingMetadata(path, data, defaultPerm)
+}
+
+func (e *Engine) replaceFilePreservingMetadata(path string, data []byte, defaultPerm fs.FileMode) error {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("resolve %q: %w", path, err)
+	}
+	dir, base := filepath.Split(abs)
+	if base == "" || base == "." || base == ".." {
+		return fmt.Errorf("%w: %q has no final name", ErrPathLink, path)
+	}
+	canonDir, err := canonical(filepath.Clean(dir))
+	if err != nil {
+		return err
+	}
+	p, err := openParent(filepath.Join(canonDir, base))
+	if err != nil {
+		return err
+	}
+	defer p.close()
+	return e.replaceFileAt(p, data, defaultPerm)
+}
+
+func (e *Engine) replaceFileAt(p parent, data []byte, defaultPerm fs.FileMode) error {
+	st, err := p.lstat()
+	if errors.Is(err, fs.ErrNotExist) {
+		return e.atomicWriteAt(p, fileSpec{
+			data: data,
+			perm: defaultPerm & modeBits,
+		})
+	}
+	if err != nil {
+		return err
+	}
+	if err := p.refuseUnsafeTarget(); err != nil {
+		return err
+	}
+	f, fst, err := p.openChecked(st)
+	if err != nil {
+		return err
+	}
+	meta, metaErr := e.meta().Read(f)
+	_ = f.Close()
+	if metaErr != nil {
+		return fmt.Errorf("read metadata of %q: %w", p.path(), metaErr)
+	}
+	owner := contract.Owner{UID: int(fst.Uid), GID: int(fst.Gid)}
+	return e.atomicWriteAt(p, fileSpec{
+		data:  data,
+		perm:  unixMode(fst),
+		owner: &owner,
+		meta:  &meta,
+	})
+}
+
 func (e *Engine) atomicWriteAt(p parent, spec fileSpec) error {
 	tmpName, tmp, err := createTemp(p)
 	if err != nil {

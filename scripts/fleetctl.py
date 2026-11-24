@@ -252,7 +252,7 @@ def validate_profile(profile: dict[str, Any], *, ready: bool) -> list[Issue]:
         elif values and machine["platform"] != platform:
             issues.append(Issue(f"tooling.{key}", f"requires platform {platform}"))
     if "mise_version" in tooling or "mise_sha256" in tooling:
-        if not isinstance(tooling.get("mise_version"), str) or not re.fullmatch(r"202[6-9]\.\d{1,2}\.\d{1,2}", tooling.get("mise_version", "")):
+        if not isinstance(tooling.get("mise_version"), str) or not re.fullmatch(r"202[6-9]\.[0-9]{1,2}\.[0-9]{1,2}", tooling.get("mise_version", "")):
             issues.append(Issue("tooling.mise_version", "select an explicit reviewed version with its binary digest"))
         if not isinstance(tooling.get("mise_sha256"), str) or not re.fullmatch(r"[a-f0-9]{64}", tooling.get("mise_sha256", "")):
             issues.append(Issue("tooling.mise_sha256", "requires the independently reviewed official platform binary SHA-256"))

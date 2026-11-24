@@ -1,0 +1,86 @@
+# Personal example. Use fleetctl init so the UUID is generated exactly once.
+schema_version = 3
+profile = "personal"
+state = "draft"
+
+[deployment]
+namespace = "home"
+context = "personal"
+ownership = "individual"
+
+[machine]
+hostname = "home-ws-001"
+display_name = "Juniper"
+uuid = "22222222-2222-4222-8222-222222222222"
+asset_tag = "ask"
+platform = "linux"
+os_family = "ubuntu"
+hardware_profile = "generic-64gb"
+role = "agent-workstation"
+
+[accounts]
+agent = "agent-01"
+humans = ["alice"]
+admins = ["admin-01"]
+admin_assignments = { "admin-01" = "alice" }
+services = []
+operators = ["alice"]
+viewers = []
+ssh_users = ["alice", "admin-01"]
+
+[remote]
+tailscale_tailnet = "ask"
+tailscale_tags = ["tag:home-workstation"]
+nomachine_port = 4000
+kvm = "deferred"
+preferred_kvm = "glinet-comet-x-gl-rm4pe"
+fallback_kvm = "glinet-comet-poe-gl-rm1pe"
+desktop_lock_mode = "ask"
+
+[tooling]
+# apt_packages = ["ripgrep"] # Optional additions from approved APT repositories.
+install_agents = true
+gws = "ask"
+secrets_provider = "ask"
+antidote_ref = "ask"
+
+[source_control]
+gitlab_host = "gitlab.com"
+gitlab_identity = "none"
+gitlab_principal = "none"
+github_host = "github.com"
+github_identity = "machine-user"
+github_principal = "personal-agent-dev"
+
+[collaboration]
+atlassian_site = "none"
+atlassian_identity = "none"
+atlassian_principal = "none"
+atlassian_mcp_auth = "none"
+
+[model_auth]
+codex = "named-human"
+claude = "named-human"
+grok = "named-human"
+
+[security]
+disk_encryption_required = true
+secure_boot_required = true
+remote_scope = "tailscale-only"
+endpoint_management = "not-required"
+
+[resources]
+policy = "measured-balanced"
+# reserve_fixed_gib = 8 # Optional. The default fixed RAM reserve is 8 GiB desktop or 2 GiB headless, plus 2% of RAM; any other number is an override.
+# reserve_cores = 2 # Optional reserved CPU core override (default: clamp(ceil(cores * 0.05), 2, 4)).
+# cpu_weight = 50 # Optional CPUWeight override for agent.slice, the parent of agent-work.slice (default: 50; app.slice and session.slice keep 100).
+os_cpu_reserve_threads = 2
+
+[backup]
+target = "ask"
+retention_days = 30
+
+[maintenance]
+timezone = "America/Toronto"
+update_window = "ask"
+owner = "ask"

@@ -1,0 +1,88 @@
+# Organization-owned Apple-platform workstation example.
+schema_version = 3
+profile = "work"
+state = "draft"
+
+[deployment]
+namespace = "ac"
+context = "work"
+ownership = "organization"
+
+[machine]
+hostname = "ac-mac-001"
+display_name = "Orchard"
+uuid = "33333333-3333-4333-8333-333333333333"
+asset_tag = "ask"
+platform = "macos"
+os_family = "macos"
+hardware_profile = "mac-mini-or-studio"
+role = "agent-workstation"
+
+[accounts]
+macos_provisioning = "managed" # Use local only under an explicitly approved local-account policy.
+agent = "agent-01"
+humans = ["alice", "bob"]
+admins = ["admin-01", "admin-02"]
+admin_assignments = { "admin-01" = "alice", "admin-02" = "bob" }
+services = []
+operators = ["alice", "bob"]
+viewers = []
+ssh_users = ["alice", "bob", "admin-01", "admin-02"]
+
+[remote]
+tailscale_tailnet = "ask"
+tailscale_tags = ["tag:ac-workstation"]
+nomachine_port = 4000
+kvm = "deferred"
+preferred_kvm = "glinet-comet-x-gl-rm4pe"
+fallback_kvm = "glinet-comet-poe-gl-rm1pe"
+desktop_lock_mode = "ask"
+
+[tooling]
+brew_formulae = []
+brew_casks = []
+install_agents = true
+gws = "ask"
+secrets_provider = "ask"
+antidote_ref = "ask"
+
+[source_control]
+gitlab_host = "gitlab.com"
+gitlab_identity = "service-account"
+gitlab_principal = "ac-agent-dev"
+github_host = "github.com"
+github_identity = "app"
+github_principal = "ac-agent-dev"
+
+[collaboration]
+atlassian_site = "ask"
+atlassian_identity = "ask"
+atlassian_principal = "ask" # Prefer acagentdev when enabled; Atlassian allows 6-30 alphanumeric characters.
+atlassian_mcp_auth = "ask"
+
+[model_auth]
+codex = "api-workload"
+claude = "api-workload"
+grok = "api-workload"
+
+[security]
+disk_encryption_required = true
+secure_boot_required = true
+remote_scope = "tailscale-only"
+endpoint_management = "ask"
+
+[resources]
+policy = "measured-balanced"
+# reserve_fixed_gib = 8 # Optional. The Linux default fixed RAM reserve is 8 GiB desktop or 2 GiB headless, plus 2% of RAM; any other number is an override.
+# reserve_cores = 2 # Optional reserved CPU core override (Linux default: clamp(ceil(cores * 0.05), 2, 4)).
+# cpu_weight = 50 # Optional CPUWeight override for agent.slice, the parent of agent-work.slice (Linux default: 50; app.slice and session.slice keep 100).
+os_cpu_reserve_threads = 2
+
+[backup]
+target = "ask"
+retention_days = 30
+
+[maintenance]
+timezone = "America/Toronto"
+update_window = "ask"
+owner = "ask"

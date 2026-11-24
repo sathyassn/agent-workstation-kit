@@ -453,6 +453,7 @@ func ValidatePresets(cat Catalog, data []byte) []error {
 type GeneratedFiles struct {
 	ContractEnums []byte
 	CatalogTable  []byte
+	SchemaTypes   []byte
 	DocsTable     string
 }
 
@@ -495,7 +496,25 @@ func loadAndGenerateRepo(repoRoot string) (GeneratedFiles, error) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return GeneratedFiles{}, fmt.Errorf("read %s: %w", presetsPath, err)
 	}
-	return Generate(cat)
+	out, err := Generate(cat)
+	if err != nil {
+		return GeneratedFiles{}, err
+	}
+	schemaPath := filepath.Join(repoRoot, "schema", "profile.toml")
+	schemaData, err := os.ReadFile(schemaPath) //nolint:gosec // path is caller-supplied repository root
+	if err != nil {
+		return GeneratedFiles{}, fmt.Errorf("read %s: %w", schemaPath, err)
+	}
+	ps, err := ParseProfileSchema(schemaData)
+	if err != nil {
+		return GeneratedFiles{}, err
+	}
+	schemaTypes, err := RenderSchemaTypes(ps)
+	if err != nil {
+		return GeneratedFiles{}, err
+	}
+	out.SchemaTypes = schemaTypes
+	return out, nil
 }
 
 type docUpdate struct {
@@ -534,9 +553,11 @@ type plannedWrite struct {
 }
 
 type stagedWrite struct {
-	label   string
-	target  string
-	tmpPath string
+	label      string
+	target     string
+	tmpPath    string
+	backupPath string
+	existed    bool
 }
 
 type fileOps struct {
@@ -553,10 +574,10 @@ func defaultFileOps() fileOps {
 	}
 }
 
-func writeTempFile(targetPath string, data []byte) (string, error) {
+func writeTempWithSuffix(targetPath, suffix string, data []byte) (string, error) {
 	dir := filepath.Dir(targetPath)
 	base := filepath.Base(targetPath)
-	tmp, err := os.CreateTemp(dir, "."+base+".tmp-*")
+	tmp, err := os.CreateTemp(dir, "."+base+suffix)
 	if err != nil {
 		return "", fmt.Errorf("create temp for %s: %w", targetPath, err)
 	}
@@ -588,17 +609,46 @@ func writeTempFile(targetPath string, data []byte) (string, error) {
 	return tmpPath, nil
 }
 
+func writeTempFile(targetPath string, data []byte) (string, error) {
+	return writeTempWithSuffix(targetPath, ".tmp-*", data)
+}
+
+func stageBackupFile(targetPath string) (string, bool, error) {
+	orig, err := os.ReadFile(targetPath) //nolint:gosec // generated output path inside repo root
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("read existing %s for backup: %w", targetPath, err)
+	}
+	bakPath, err := writeTempWithSuffix(targetPath, ".bak-*", orig)
+	if err != nil {
+		return "", false, fmt.Errorf("stage backup for %s: %w", targetPath, err)
+	}
+	return bakPath, true, nil
+}
+
 func commitWrites(writes []plannedWrite, ops fileOps) error {
 	staged := make([]stagedWrite, 0, len(writes))
-	cleanup := func(items []stagedWrite) {
+	cleanupTemps := func(items []stagedWrite) {
 		for _, item := range items {
-			_ = ops.remove(item.tmpPath)
+			if item.tmpPath != "" {
+				_ = ops.remove(item.tmpPath)
+			}
 		}
 	}
+	cleanupBackups := func(items []stagedWrite) {
+		for _, item := range items {
+			if item.backupPath != "" {
+				_ = ops.remove(item.backupPath)
+			}
+		}
+	}
+
 	for _, w := range writes {
 		tmpPath, err := ops.writeTemp(w.path, w.data)
 		if err != nil {
-			cleanup(staged)
+			cleanupTemps(staged)
 			return fmt.Errorf("write %s: %w", w.label, err)
 		}
 		staged = append(staged, stagedWrite{
@@ -607,12 +657,42 @@ func commitWrites(writes []plannedWrite, ops fileOps) error {
 			tmpPath: tmpPath,
 		})
 	}
+
+	for i := range staged {
+		bakPath, existed, err := stageBackupFile(staged[i].target)
+		if err != nil {
+			cleanupTemps(staged)
+			cleanupBackups(staged[:i])
+			return fmt.Errorf("backup %s: %w", staged[i].label, err)
+		}
+		staged[i].backupPath = bakPath
+		staged[i].existed = existed
+	}
+
 	for i, s := range staged {
 		if err := ops.rename(s.tmpPath, s.target); err != nil {
-			cleanup(staged[i:])
-			return fmt.Errorf("rename %s: %w", s.label, err)
+			cleanupTemps(staged[i:])
+			var rollbackErrs []error
+			for j := i - 1; j >= 0; j-- {
+				if staged[j].existed {
+					if rbErr := ops.rename(staged[j].backupPath, staged[j].target); rbErr != nil {
+						rollbackErrs = append(rollbackErrs, fmt.Errorf("rollback %s failed (original preserved at %s): %w", staged[j].label, staged[j].backupPath, rbErr))
+					} else {
+						staged[j].backupPath = ""
+					}
+				} else if rmErr := ops.remove(staged[j].target); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
+					rollbackErrs = append(rollbackErrs, fmt.Errorf("rollback remove %s: %w", staged[j].label, rmErr))
+				}
+			}
+			// Only remove backups of targets that were never overwritten.
+			// Backups for failed rollbacks stay intact on disk so original
+			// files are never lost.
+			cleanupBackups(staged[i:])
+			return errors.Join(append([]error{fmt.Errorf("rename %s: %w", s.label, err)}, rollbackErrs...)...)
 		}
 	}
+
+	cleanupBackups(staged)
 	return nil
 }
 
@@ -643,6 +723,9 @@ func writeRepoWithOps(repoRoot string, ops fileOps) error {
 	if err := TypeCheckSources(out.ContractEnums, out.CatalogTable, extraContract, extraCatalog); err != nil {
 		return err
 	}
+	if err := TypeCheckSchemaSource(out.SchemaTypes); err != nil {
+		return err
+	}
 
 	docUpdates, err := planDocUpdates(repoRoot, out.DocsTable)
 	if err != nil {
@@ -651,10 +734,12 @@ func writeRepoWithOps(repoRoot string, ops fileOps) error {
 
 	enumsPath := filepath.Join(contractDir, "enums_gen.go")
 	catalogPath := filepath.Join(catalogDir, "catalog_gen.go")
-	writes := make([]plannedWrite, 0, 2+len(docUpdates))
+	schemaTypesPath := filepath.Join(repoRoot, "internal", "schema", "types_gen.go")
+	writes := make([]plannedWrite, 0, 3+len(docUpdates))
 	writes = append(writes,
 		plannedWrite{label: "internal/contract/enums_gen.go", path: enumsPath, data: out.ContractEnums},
 		plannedWrite{label: "internal/units/catalog/catalog_gen.go", path: catalogPath, data: out.CatalogTable},
+		plannedWrite{label: "internal/schema/types_gen.go", path: schemaTypesPath, data: out.SchemaTypes},
 	)
 	for _, upd := range docUpdates {
 		if !upd.stale {
@@ -693,6 +778,7 @@ func CheckRepo(repoRoot string) error {
 
 	checkFile("internal/contract/enums_gen.go", out.ContractEnums)
 	checkFile("internal/units/catalog/catalog_gen.go", out.CatalogTable)
+	checkFile("internal/schema/types_gen.go", out.SchemaTypes)
 
 	docUpdates, err := planDocUpdates(repoRoot, out.DocsTable)
 	if err != nil {

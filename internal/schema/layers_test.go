@@ -1,0 +1,513 @@
+package schema_test
+
+import (
+	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+
+	"golang.org/x/sys/unix"
+
+	"github.com/sathyassn/agent-workstation-kit/internal/schema"
+)
+
+func TestLayerPrecedenceAndProvenance(t *testing.T) {
+	t.Parallel()
+
+	fleetData := map[string]any{
+		"backup": map[string]any{
+			"retention_days": int64(45),
+			"target":         "fleet-backup",
+		},
+		"remote": map[string]any{
+			"nomachine_port": int64(4001),
+		},
+	}
+	machineData := map[string]any{
+		"backup": map[string]any{
+			"retention_days": int64(60),
+		},
+		"remote": map[string]any{
+			"nomachine_port": int64(4002),
+		},
+	}
+	userData := map[string]any{
+		"backup": map[string]any{
+			"retention_days": int64(90),
+		},
+	}
+	envMap := map[string]string{
+		schema.EnvVarForKey(schema.KeyBackupRetentionDays): "120",
+		schema.EnvVarForKey(schema.KeyRemoteKVM):           "installed",
+	}
+	flags := []schema.FlagOverride{
+		{Key: schema.KeyBackupRetentionDays.String(), RawValue: "180"},
+	}
+
+	resolved, err := schema.Resolve(schema.ResolveOptions{
+		Fleet:   &schema.LayerSource{Path: "/fleet/values.toml", Data: fleetData},
+		Machine: &schema.LayerSource{Path: "/fleet/machines/acme-ws-001.toml", Data: machineData},
+		User:    &schema.LayerSource{Path: "/user/config.toml", Data: userData},
+		Getenv:  func(k string) string { return envMap[k] },
+		Flags:   flags,
+	})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	checks := []struct {
+		key        schema.Key
+		wantVal    any
+		wantLayer  schema.Layer
+		wantHistN  int
+		wantOverrd bool
+	}{
+		// Kit default only.
+		{key: schema.KeyMaintenanceTimezone, wantVal: "America/Toronto", wantLayer: schema.LayerKitDefault, wantHistN: 1, wantOverrd: false},
+		// Fleet wins over kit default.
+		{key: schema.KeyBackupTarget, wantVal: "fleet-backup", wantLayer: schema.LayerFleet, wantHistN: 2, wantOverrd: true},
+		// Machine wins over fleet and kit default.
+		{key: schema.KeyRemoteNomachinePort, wantVal: int64(4002), wantLayer: schema.LayerMachine, wantHistN: 3, wantOverrd: true},
+		// Env wins over kit default.
+		{key: schema.KeyRemoteKVM, wantVal: "installed", wantLayer: schema.LayerEnv, wantHistN: 2, wantOverrd: true},
+		// Flag wins over all five lower layers.
+		{key: schema.KeyBackupRetentionDays, wantVal: int64(180), wantLayer: schema.LayerFlag, wantHistN: 6, wantOverrd: true},
+	}
+
+	for _, tc := range checks {
+		rv, ok := resolved.Get(tc.key)
+		if !ok {
+			t.Fatalf("Get(%s) missing", tc.key)
+		}
+		if rv.Value != tc.wantVal {
+			t.Errorf("%s value = %v (%T), want %v (%T)", tc.key, rv.Value, rv.Value, tc.wantVal, tc.wantVal)
+		}
+		if rv.Layer != tc.wantLayer {
+			t.Errorf("%s layer = %s, want %s", tc.key, rv.Layer, tc.wantLayer)
+		}
+		if rv.IsOverride != tc.wantOverrd {
+			t.Errorf("%s IsOverride = %t, want %t", tc.key, rv.IsOverride, tc.wantOverrd)
+		}
+		if len(rv.History) != tc.wantHistN {
+			t.Errorf("%s history len = %d, want %d (%+v)", tc.key, len(rv.History), tc.wantHistN, rv.History)
+		}
+	}
+
+	// Verify Explain returns effective value, winning layer, shadowed history and metadata.
+	exp, err := resolved.Explain(schema.KeyBackupRetentionDays)
+	if err != nil {
+		t.Fatalf("Explain(backup.retention_days): %v", err)
+	}
+	if !exp.Configurable || !exp.HasValue || exp.Value != int64(180) || exp.Layer != schema.LayerFlag {
+		t.Fatalf("unexpected Explain result: %+v", exp)
+	}
+	if len(exp.Layers) != 6 {
+		t.Fatalf("Explain layers = %d, want 6", len(exp.Layers))
+	}
+	wantOrder := schema.AllConfigurableLayers()
+	for i, wantLayer := range wantOrder {
+		if exp.Layers[i].Layer != wantLayer {
+			t.Errorf("history[%d] layer = %s, want %s", i, exp.Layers[i].Layer, wantLayer)
+		}
+	}
+
+	// Safety floor explain reports non-configurable rule.
+	sfExp, err := resolved.Explain(schema.KeySafetyBackups)
+	if err != nil {
+		t.Fatalf("Explain(safety.backups): %v", err)
+	}
+	if sfExp.Configurable || sfExp.Layer != schema.LayerSafetyFloor || sfExp.Rule != schema.RuleSafetyFloorBackups {
+		t.Fatalf("unexpected safety-floor Explain: %+v", sfExp)
+	}
+}
+
+// TestSafetyFloorCannotBeSetThroughAnyLayer covers AC-3: every safety-floor
+// rule is refused across every one of the 6 layers (kit-default, fleet,
+// machine, user, env, flag) with *schema.SafetyFloorError naming the exact rule.
+func TestSafetyFloorCannotBeSetThroughAnyLayer(t *testing.T) {
+	t.Parallel()
+
+	type badCase struct {
+		key      string
+		val      any
+		rawVal   string
+		wantRule schema.SafetyRule
+	}
+
+	badCases := []badCase{
+		// Non-configurable safety.* keys are refused even when set to "true".
+		{key: schema.KeySafetyBackups.String(), val: false, rawVal: "false", wantRule: schema.RuleSafetyFloorBackups},
+		{key: schema.KeySafetyBackups.String(), val: true, rawVal: "true", wantRule: schema.RuleSafetyFloorBackups},
+		{key: schema.KeySafetyUndo.String(), val: false, rawVal: "false", wantRule: schema.RuleSafetyFloorUndo},
+		{key: schema.KeySafetyDeadManTimer.String(), val: false, rawVal: "false", wantRule: schema.RuleSafetyFloorDeadManTimer},
+		{key: schema.KeySafetySecretHandling.String(), val: "off", rawVal: "off", wantRule: schema.RuleSafetyFloorSecretHandling},
+		{key: schema.KeySafetyRootApprovalPhrase.String(), val: false, rawVal: "false", wantRule: schema.RuleSafetyFloorRootApproval},
+		{key: schema.KeySafetyStagedRootBinary.String(), val: false, rawVal: "false", wantRule: schema.RuleSafetyFloorStagedRoot},
+		// Profile security invariants cannot be weakened in any layer.
+		{key: schema.KeySecurityDiskEncryptionRequired.String(), val: false, rawVal: "false", wantRule: schema.RuleSafetyFloorDiskEncryption},
+		{key: schema.KeySecuritySecureBootRequired.String(), val: false, rawVal: "false", wantRule: schema.RuleSafetyFloorSecureBoot},
+		{key: schema.KeySecurityRemoteScope.String(), val: "public", rawVal: "public", wantRule: schema.RuleSafetyFloorRemoteScope},
+		{key: schema.KeyToolingInstallAgents.String(), val: false, rawVal: "false", wantRule: schema.RuleSafetyFloorRequiredAgents},
+	}
+
+	makeNested := func(dotted string, val any) map[string]any {
+		sec, name, _ := strings.Cut(dotted, ".")
+		return map[string]any{sec: map[string]any{name: val}}
+	}
+
+	for _, bc := range badCases {
+		for _, layer := range schema.AllConfigurableLayers() {
+			t.Run(string(layer)+"/"+bc.key+"="+bc.rawVal, func(t *testing.T) {
+				t.Parallel()
+
+				var opts schema.ResolveOptions
+				switch layer {
+				case schema.LayerKitDefault:
+					opts.KitOverrides = makeNested(bc.key, bc.val)
+				case schema.LayerFleet:
+					opts.Fleet = &schema.LayerSource{Path: "fleet.toml", Data: makeNested(bc.key, bc.val)}
+				case schema.LayerMachine:
+					opts.Machine = &schema.LayerSource{Path: "machine.toml", Data: makeNested(bc.key, bc.val)}
+				case schema.LayerUser:
+					opts.User = &schema.LayerSource{Path: "user.toml", Data: makeNested(bc.key, bc.val)}
+				case schema.LayerEnv:
+					envName := schema.EnvVarForKey(schema.Key(bc.key))
+					opts.Getenv = func(k string) string {
+						if k == envName {
+							return bc.rawVal
+						}
+						return ""
+					}
+				case schema.LayerFlag:
+					opts.Flags = []schema.FlagOverride{{Key: bc.key, RawValue: bc.rawVal}}
+				}
+
+				_, err := schema.Resolve(opts)
+				if err == nil {
+					t.Fatalf("Resolve(%s, %s=%s) unexpectedly succeeded", layer, bc.key, bc.rawVal)
+				}
+				if !errors.Is(err, schema.ErrSafetyFloor) {
+					t.Fatalf("Resolve error = %v, want ErrSafetyFloor", err)
+				}
+				var sfErr *schema.SafetyFloorError
+				if !errors.As(err, &sfErr) {
+					t.Fatalf("Resolve error type = %T, want *SafetyFloorError", err)
+				}
+				if sfErr.Rule != bc.wantRule {
+					t.Errorf("SafetyFloorError.Rule = %q, want %q", sfErr.Rule, bc.wantRule)
+				}
+				if sfErr.Layer != layer {
+					t.Errorf("SafetyFloorError.Layer = %q, want %q", sfErr.Layer, layer)
+				}
+				if !strings.Contains(sfErr.Error(), string(bc.wantRule)) {
+					t.Errorf("SafetyFloorError.Error() = %q, must name rule %q", sfErr.Error(), bc.wantRule)
+				}
+			})
+		}
+	}
+
+	// Undeclared safety.* key is also refused.
+	_, err := schema.Resolve(schema.ResolveOptions{
+		Flags: []schema.FlagOverride{{Key: "safety.custom_bypass", RawValue: "true"}},
+	})
+	var sfErr *schema.SafetyFloorError
+	if !errors.As(err, &sfErr) || sfErr.Rule != schema.RuleSafetyFloorUnknown {
+		t.Fatalf("unknown safety.* key error = %v, want RuleSafetyFloorUnknown", err)
+	}
+}
+
+func TestDecodeProfileAndAtomicWrite(t *testing.T) {
+	t.Parallel()
+
+	repoRoot := repoRootDir(t)
+	data, err := os.ReadFile(filepath.Join(repoRoot, "testdata", "profiles", "valid", "ready", "work-linux-ready.toml")) //nolint:gosec // repo fixture
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	p, err := schema.DecodeProfile(data, true)
+	if err != nil {
+		t.Fatalf("DecodeProfile: %v", err)
+	}
+	if p.SchemaVersion != schema.SchemaVersion || p.Machine.Hostname != "acme-ws-001" || p.Machine.Platform != schema.PlatformLinux {
+		t.Fatalf("unexpected decoded profile: %+v", p)
+	}
+
+	// Invalid profile fails closed with ValidationError.
+	badData, err := os.ReadFile(filepath.Join(repoRoot, "testdata", "profiles", "invalid", "wrong-schema-version.toml")) //nolint:gosec // repo fixture
+	if err != nil {
+		t.Fatalf("read invalid fixture: %v", err)
+	}
+	_, err = schema.DecodeProfile(badData, false)
+	if !errors.Is(err, schema.ErrValidation) {
+		t.Fatalf("DecodeProfile(invalid) = %v, want ErrValidation", err)
+	}
+
+	// AtomicWriteFile writes cleanly and leaves no temp files.
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "profile.toml")
+	if err := schema.AtomicWriteFile(dst, data, 0o600); err != nil {
+		t.Fatalf("AtomicWriteFile: %v", err)
+	}
+	written, err := os.ReadFile(dst) //nolint:gosec // temp file
+	if err != nil || string(written) != string(data) {
+		t.Fatalf("AtomicWriteFile content mismatch: err=%v", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("unexpected temp files in %s: %v", dir, entries)
+	}
+}
+
+// TestResolveTypeChecksEveryLayerEvenWhenOverridden covers P2: invalid types
+// or enum values in any layer (fleet, machine, user) are refused at that layer
+// even when a higher layer overrides the same key with a valid value.
+func TestResolveTypeChecksEveryLayerEvenWhenOverridden(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		opts      schema.ResolveOptions
+		wantLayer schema.Layer
+	}{
+		{
+			name: "fleet string port overridden by machine and flag",
+			opts: schema.ResolveOptions{
+				Fleet:   &schema.LayerSource{Path: "fleet.toml", Data: map[string]any{"remote": map[string]any{"nomachine_port": "4000"}}},
+				Machine: &schema.LayerSource{Path: "machine.toml", Data: map[string]any{"remote": map[string]any{"nomachine_port": int64(4001)}}},
+				Flags:   []schema.FlagOverride{{Key: "remote.nomachine_port", RawValue: "4002"}},
+			},
+			wantLayer: schema.LayerFleet,
+		},
+		{
+			name: "machine bogus kvm enum overridden by user",
+			opts: schema.ResolveOptions{
+				Machine: &schema.LayerSource{Path: "machine.toml", Data: map[string]any{"remote": map[string]any{"kvm": "bogus"}}},
+				User:    &schema.LayerSource{Path: "user.toml", Data: map[string]any{"remote": map[string]any{"kvm": "installed"}}},
+			},
+			wantLayer: schema.LayerMachine,
+		},
+		{
+			name: "user wrong type bool overridden by flag",
+			opts: schema.ResolveOptions{
+				User:  &schema.LayerSource{Path: "user.toml", Data: map[string]any{"backup": map[string]any{"retention_days": "thirty"}}},
+				Flags: []schema.FlagOverride{{Key: "backup.retention_days", RawValue: "30"}},
+			},
+			wantLayer: schema.LayerUser,
+		},
+		{
+			name: "fleet wrong string list element type",
+			opts: schema.ResolveOptions{
+				Fleet: &schema.LayerSource{Path: "fleet.toml", Data: map[string]any{"accounts": map[string]any{"humans": []any{"alice", int64(42)}}}},
+			},
+			wantLayer: schema.LayerFleet,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := schema.Resolve(tc.opts)
+			if err == nil {
+				t.Fatalf("Resolve(%s) unexpectedly succeeded", tc.name)
+			}
+			if !errors.Is(err, schema.ErrInvalidValue) {
+				t.Fatalf("Resolve(%s) error = %v, want ErrInvalidValue", tc.name, err)
+			}
+			if !strings.Contains(err.Error(), tc.wantLayer.String()) {
+				t.Errorf("Resolve(%s) error = %q, want layer %q named", tc.name, err.Error(), tc.wantLayer)
+			}
+		})
+	}
+}
+
+// TestResolveRefusesDuplicateQuotedDottedAndNestedKeys covers P4: a file
+// defining the same key in both quoted dotted form and nested table form is
+// refused deterministically rather than resolved by map iteration order.
+func TestResolveRefusesDuplicateQuotedDottedAndNestedKeys(t *testing.T) {
+	t.Parallel()
+
+	raw, err := schema.LoadRawTOML([]byte("\"backup.retention_days\" = 10\n\n[backup]\nretention_days = 20\n"))
+	if err != nil {
+		t.Fatalf("LoadRawTOML: %v", err)
+	}
+	for i := range 10 {
+		_, err := schema.Resolve(schema.ResolveOptions{
+			User: &schema.LayerSource{Path: "user.toml", Data: raw},
+		})
+		if err == nil {
+			t.Fatalf("iteration %d: Resolve accepted duplicate quoted/nested backup.retention_days", i)
+		}
+		if !errors.Is(err, schema.ErrInvalidValue) {
+			t.Fatalf("iteration %d: Resolve error = %v, want ErrInvalidValue", i, err)
+		}
+		if !strings.Contains(err.Error(), "backup.retention_days") {
+			t.Errorf("iteration %d: error = %q, want key backup.retention_days named", i, err.Error())
+		}
+	}
+}
+
+// TestAtomicWriteFilePreservesMetadataAndRefusesSymlink covers P7: replacing an
+// existing config file preserves mode, extended attributes and ACLs, and
+// refuses symlink targets.
+func TestAtomicWriteFilePreservesMetadataAndRefusesSymlink(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(dst, []byte("[backup]\nretention_days = 30\n"), 0o640); err != nil { //nolint:gosec // testing 0640 mode preservation
+		t.Fatalf("write initial file: %v", err)
+	}
+	if err := os.Chmod(dst, 0o640); err != nil { //nolint:gosec // testing 0640 mode preservation
+		t.Fatalf("chmod initial file: %v", err)
+	}
+
+	var beforeSys unix.Stat_t
+	if err := unix.Stat(dst, &beforeSys); err != nil {
+		t.Fatalf("stat initial file: %v", err)
+	}
+	wantUID, wantGID := beforeSys.Uid, beforeSys.Gid
+	if groups, gErr := os.Getgroups(); gErr == nil {
+		for _, g := range groups {
+			if g >= 0 && uint32(g) != wantGID { //nolint:gosec // checked non-negative GID
+				if chErr := os.Chown(dst, -1, g); chErr == nil {
+					wantGID = uint32(g) //nolint:gosec // checked non-negative GID
+					break
+				}
+			}
+		}
+	}
+
+	const xattrName = "user.wskit_p7_test"
+	wantXattr := []byte("preserve-me")
+	xattrErr := unix.Setxattr(dst, xattrName, wantXattr, 0)
+	xattrSupported := xattrErr == nil
+	if xattrErr != nil && !errors.Is(xattrErr, unix.ENOTSUP) && !errors.Is(xattrErr, unix.EOPNOTSUPP) && !errors.Is(xattrErr, unix.ENOSYS) {
+		t.Fatalf("setxattr: %v", xattrErr)
+	}
+
+	aclSet := false
+	if runtime.GOOS == "darwin" {
+		if out, err := exec.Command("/bin/chmod", "+a", "everyone allow read", dst).CombinedOutput(); err == nil { //nolint:gosec // fixed /bin/chmod on test temp file
+			aclSet = true
+			t.Cleanup(func() { _ = exec.Command("/bin/chmod", "-N", dst).Run() }) //nolint:gosec // fixed /bin/chmod cleanup
+		} else {
+			t.Logf("skipping darwin ACL subcheck (chmod +a failed: %v: %s)", err, string(out))
+		}
+	}
+
+	if err := schema.AtomicWriteFile(dst, []byte("[backup]\nretention_days = 60\n"), 0o600); err != nil {
+		t.Fatalf("AtomicWriteFile replace: %v", err)
+	}
+
+	info, err := os.Stat(dst)
+	if err != nil {
+		t.Fatalf("stat replaced file: %v", err)
+	}
+	if info.Mode().Perm() != 0o640 {
+		t.Errorf("mode after replace = %04o, want 0640", info.Mode().Perm())
+	}
+	var afterSys unix.Stat_t
+	if err := unix.Stat(dst, &afterSys); err != nil {
+		t.Fatalf("unix.Stat replaced file: %v", err)
+	}
+	if afterSys.Uid != wantUID || afterSys.Gid != wantGID {
+		t.Errorf("owner after replace = %d:%d, want %d:%d", afterSys.Uid, afterSys.Gid, wantUID, wantGID)
+	}
+
+	if xattrSupported {
+		buf := make([]byte, 64)
+		n, err := unix.Getxattr(dst, xattrName, buf)
+		if err != nil {
+			t.Errorf("xattr %s lost after AtomicWriteFile: %v", xattrName, err)
+		} else if string(buf[:n]) != string(wantXattr) {
+			t.Errorf("xattr %s = %q, want %q", xattrName, string(buf[:n]), string(wantXattr))
+		}
+	}
+
+	if aclSet {
+		out, err := exec.Command("/bin/ls", "-le", dst).CombinedOutput() //nolint:gosec // fixed /bin/ls on test temp file
+		if err != nil {
+			t.Fatalf("ls -le: %v: %s", err, string(out))
+		}
+		if !strings.Contains(string(out), "everyone allow read") {
+			t.Errorf("ACL lost after AtomicWriteFile; ls -le output:\n%s", string(out))
+		}
+	}
+
+	// Replacing a symlink target must be refused.
+	target := filepath.Join(dir, "real.toml")
+	link := filepath.Join(dir, "link.toml")
+	if err := os.WriteFile(target, []byte("original = true\n"), 0o600); err != nil {
+		t.Fatalf("write symlink target: %v", err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	if err := schema.AtomicWriteFile(link, []byte("overwritten = true\n"), 0o600); err == nil {
+		t.Fatal("AtomicWriteFile unexpectedly replaced a symlink target")
+	}
+	gotTarget, err := os.ReadFile(target) //nolint:gosec // temp file
+	if err != nil || string(gotTarget) != "original = true\n" {
+		t.Fatalf("symlink target modified: err=%v content=%q", err, string(gotTarget))
+	}
+}
+
+// TestLooksLikeSecretShapes covers R2: real-shaped credentials are flagged
+// while benign Asia/* timezones and Asia-Office labels are accepted and not
+// redacted.
+func TestLooksLikeSecretShapes(t *testing.T) {
+	t.Parallel()
+
+	benign := []string{
+		"Asia/Tokyo",
+		"Asia/Kolkata",
+		"Asia-Office",
+		"akia-team",
+		"aiza-label",
+		"acme-agent-dev",
+		"xoxb-dev",
+		"npm_cli",
+		"tskey-docs",
+	}
+	for _, val := range benign {
+		if schema.LooksLikeSecret(val) {
+			t.Errorf("LooksLikeSecret(%q) = true, want false", val)
+		}
+		if got := schema.RedactValue(schema.KeyMaintenanceTimezone, val); got != val {
+			t.Errorf("RedactValue(%q) = %v, want unredacted", val, got)
+		}
+	}
+
+	secrets := []struct {
+		name string
+		val  string
+	}{
+		{name: "aws AKIA", val: "AKIA" + strings.Repeat("A", 16)},
+		{name: "aws ASIA", val: "ASIA" + strings.Repeat("B", 16)},
+		{name: "google AIza", val: "AIza" + strings.Repeat("C", 35)},
+		{name: "github ghp", val: "ghp_" + "example"},
+		{name: "github pat", val: "github_pat_" + "example"},
+		{name: "slack xoxb", val: "xoxb-" + strings.Repeat("0", 12)},
+		{name: "slack xoxp", val: "xoxp-" + strings.Repeat("0", 12)},
+		{name: "slack xoxa", val: "xoxa-" + strings.Repeat("0", 12)},
+		{name: "slack xoxr", val: "xoxr-" + strings.Repeat("0", 12)},
+		{name: "slack xoxs", val: "xoxs-" + strings.Repeat("0", 12)},
+		{name: "npm token", val: "npm_" + strings.Repeat("a", 36)},
+		{name: "tailscale auth", val: "tskey-auth-" + strings.Repeat("a", 12)},
+		{name: "tailscale api", val: "tskey-api-" + strings.Repeat("a", 12)},
+		{name: "tailscale client", val: "tskey-client-" + strings.Repeat("a", 12)},
+		{name: "openai sk", val: "sk-" + "example"},
+		{name: "pem private key", val: "-----BEGIN " + "RSA PRIVATE KEY-----"},
+	}
+	for _, tc := range secrets {
+		if !schema.LooksLikeSecret(tc.val) {
+			t.Errorf("LooksLikeSecret(%s) = false, want true", tc.name)
+		}
+		if got := schema.RedactValue(schema.KeyBackupTarget, tc.val); got != schema.RedactText {
+			t.Errorf("RedactValue(%s) = %v, want %q", tc.name, got, schema.RedactText)
+		}
+	}
+}
