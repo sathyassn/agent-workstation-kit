@@ -2,22 +2,24 @@
 package main
 
 import (
-	"fmt"
+	"context"
 	"io"
 	"os"
 
-	"github.com/sathyassn/agent-workstation-kit/internal/version"
+	"github.com/sathyassn/agent-workstation-kit/internal/cli"
+	"github.com/sathyassn/agent-workstation-kit/internal/contract"
 )
 
 func main() {
-	if err := run(os.Stdout); err != nil {
-		os.Exit(1)
-	}
+	code := run(context.Background(), os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
+	os.Exit(int(code))
 }
 
-func run(w io.Writer) error {
-	if _, err := fmt.Fprintln(w, version.String()); err != nil {
-		return fmt.Errorf("print version: %w", err)
-	}
-	return nil
+func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) contract.ExitCode {
+	err := cli.Execute(ctx, args, cli.Options{
+		Stdin:  stdin,
+		Stdout: stdout,
+		Stderr: stderr,
+	})
+	return cli.ExitCodeFor(err)
 }
