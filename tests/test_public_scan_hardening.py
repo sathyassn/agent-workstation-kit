@@ -1216,6 +1216,46 @@ class Round2ReviewRegressionTests(unittest.TestCase):
                 elif after:
                     jobs[current_job].append(after)
 
+        # Structurally parse Makefile targets, prerequisites, and recipes, and
+        # traverse transitively from every `make <target>` invoked by required jobs.
+        makefile_lines = (ROOT / "Makefile").read_text(encoding="utf-8").splitlines()
+        target_deps: dict[str, list[str]] = {}
+        target_recipes: dict[str, list[str]] = {}
+        cur_target: str | None = None
+        for line in makefile_lines:
+            if not line.strip() or line.lstrip().startswith("#"):
+                continue
+            if line.startswith("\t"):
+                if cur_target is not None:
+                    target_recipes.setdefault(cur_target, []).append(line.strip())
+                continue
+            if ":" in line and not line.startswith("."):
+                lhs, rhs = line.split(":", 1)
+                lhs = lhs.strip()
+                if " " in lhs or "=" in lhs:
+                    cur_target = None
+                    continue
+                cur_target = lhs
+                rhs_clean = rhs.strip()
+                if "=" in rhs_clean:
+                    continue
+                target_deps.setdefault(cur_target, []).extend(rhs_clean.split())
+
+        def transitive_recipes(root_target: str) -> tuple[set[str], str]:
+            visited: set[str] = set()
+            stack = [root_target]
+            recipes: list[str] = []
+            while stack:
+                tgt = stack.pop()
+                if tgt in visited:
+                    continue
+                visited.add(tgt)
+                recipes.extend(target_recipes.get(tgt, []))
+                for dep in target_deps.get(tgt, []):
+                    if dep not in visited:
+                        stack.append(dep)
+            return visited, "\n".join(recipes)
+
         for required_job in ("repository-validation", "secret-scan", "macos-host-lock"):
             self.assertIn(required_job, jobs, f"missing expected job {required_job}")
             job_runs = "\n".join(jobs[required_job])
@@ -1224,20 +1264,40 @@ class Round2ReviewRegressionTests(unittest.TestCase):
                 "make public-check",
                 "make public-draft-check",
                 "make ci-check",
+                "make check",
             ):
                 self.assertNotIn(
                     forbidden,
                     job_runs,
                     f"required job {required_job!r} must not invoke head-controlled {forbidden!r}",
                 )
-
-        # Also verify Makefile's repo-ci-check target excludes public-draft-check / public-check.
-        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
-        repo_ci_lines = [line for line in makefile.splitlines() if line.startswith("repo-ci-check:")]
-        self.assertTrue(repo_ci_lines, "Makefile must define repo-ci-check for non-privacy CI")
-        for line in repo_ci_lines:
-            self.assertNotIn("public-draft-check", line)
-            self.assertNotIn("public-check", line)
+            for run_line in jobs[required_job]:
+                parts = run_line.split()
+                if len(parts) >= 2 and parts[0] == "make":
+                    target_name = parts[-1]
+                    reached, all_recipes = transitive_recipes(target_name)
+                    for forbidden_target in ("public-check", "public-draft-check", "unit-public-scan-check", "repo-check", "check", "ci-check"):
+                        self.assertNotIn(
+                            forbidden_target,
+                            reached,
+                            f"required job {required_job!r} transitively reaches {forbidden_target!r} via make {target_name}",
+                        )
+                    self.assertNotIn("check_public_release.py", all_recipes)
+                    self.assertNotIn("test_public_release", all_recipes)
+                    self.assertNotIn("test_public_scan", all_recipes)
+                    for recipe in all_recipes.splitlines():
+                        if "check_repository.py" in recipe:
+                            self.assertIn(
+                                "--skip-privacy-checks",
+                                recipe,
+                                f"required job {required_job!r} runs check_repository.py privacy checks",
+                            )
+                        if "unittest discover" in recipe:
+                            self.assertNotIn(
+                                "'test_*.py'",
+                                recipe,
+                                f"required job {required_job!r} runs test_public_*.py via wildcard unittest",
+                            )
 
     def test_r5_phone_keys_with_prefix_or_suffix_and_e164(self) -> None:
         digits = join("415", "867", "5309")
@@ -1310,6 +1370,7 @@ class Round2ReviewRegressionTests(unittest.TestCase):
             ("missing_linux_marker_fails", {"LINUX_RESULT": "success", "LINUX_VERIFIED": "", "MACOS_RESULT": "success", "MACOS_VERIFIED": "true"}, 1),
             ("missing_macos_marker_fails", {"LINUX_RESULT": "success", "LINUX_VERIFIED": "true", "MACOS_RESULT": "success", "MACOS_VERIFIED": ""}, 1),
             ("linux_failed_fails", {"LINUX_RESULT": "failure", "LINUX_VERIFIED": "true", "MACOS_RESULT": "success", "MACOS_VERIFIED": "true"}, 1),
+            ("macos_failed_with_marker_fails", {"LINUX_RESULT": "success", "LINUX_VERIFIED": "true", "MACOS_RESULT": "failure", "MACOS_VERIFIED": "true"}, 1),
             ("macos_skipped_fails", {"LINUX_RESULT": "success", "LINUX_VERIFIED": "true", "MACOS_RESULT": "skipped", "MACOS_VERIFIED": ""}, 1),
         )
         for name, env_vars, expected_rc in cases:
@@ -1345,6 +1406,124 @@ class Round2ReviewRegressionTests(unittest.TestCase):
             rc_bad, out_bad, _ = run_main(["--root", str(root), "--tree", bad_sha])
             self.assertEqual(1, rc_bad)
             self.assertNotIn("PUBLIC_SCAN_VERIFIED=1", out_bad)
+
+
+class Round3ReviewRegressionTests(unittest.TestCase):
+    """Regression tests for PR #42 round 3 review findings (S1-S5)."""
+
+    def _make_pre_push_repo(self, base: Path) -> tuple[Path, Path]:
+        return Round2ReviewRegressionTests()._make_pre_push_repo(base)
+
+    def test_s1_pushurl_differing_from_fetch_url_scans_full_history(self) -> None:
+        leak_email = join("jdoe", "@", "acme-corp", ".com")
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            repo, fetch_remote = self._make_pre_push_repo(base)
+            push_remote = base / "public-push.git"
+            subprocess.run(["git", "init", "--bare", "-q", str(push_remote)], check=True)
+            # Push main to push_remote too so only the feature branch is new there.
+            git(repo, "push", "-q", str(push_remote), "main")
+
+            # Commit a leak, fix the tip, and push to the fetch remote (without hooks)
+            # so refs/remotes/origin/feat/split-url already knows about the leak.
+            git(repo, "checkout", "-q", "-b", "feat/split-url")
+            (repo / "notes.txt").write_text(leak_email + "\n", encoding="utf-8")
+            git(repo, "add", "notes.txt")
+            git(repo, "commit", "-q", "-m", "docs: leak on fetch remote")
+            (repo / "notes.txt").write_text("alice@example.com\n", encoding="utf-8")
+            git(repo, "add", "notes.txt")
+            git(repo, "commit", "-q", "-m", "docs: clean tip")
+            git(repo, "push", "-q", "origin", "feat/split-url")
+
+            # Now set remote.origin.pushurl to a DIFFERENT repository (push_remote)
+            # and enable hooks; pushing to origin must NOT trust origin's fetch refs!
+            git(repo, "remote", "set-url", "--push", "origin", str(push_remote))
+            git(repo, "config", "core.hooksPath", ".codeflow/git-hooks")
+            res = git(repo, "push", "origin", "feat/split-url", check=False)
+            combined = res.stdout + res.stderr
+            self.assertNotEqual(0, res.returncode, combined)
+            self.assertIn("notes.txt:1: matched rule 'email'", combined)
+            self.assertNotIn(leak_email, combined)
+            pushed_refs = git(push_remote, "for-each-ref", "refs/heads/feat/split-url").stdout.strip()
+            self.assertEqual("", pushed_refs)
+
+    def test_s3_phone_labels_syntax_redos_and_non_hits(self) -> None:
+        digits = join("415", "867", "5309")
+        for hit_line in (
+            f"phone number: {digits}",
+            f"contact number: {digits}",
+            f"phone.number = {digits}",
+            f'phones: ["5555550100", "{digits}"]',
+            f'phone => "{digits}"',
+            f"phone\t{digits}",
+            join("1", "-", "415", "-", "867", "-", "5309"),
+            join("(", "415", ") ", "867", "-", "5309"),
+            join("415", "\t", "867", "\t", "5309"),
+            f"home_phone = {digits}",
+            f'{{"contactPhone": "{digits}"}}',
+        ):
+            with self.subTest(hit=hit_line[:22]):
+                self.assertEqual(["docs/sample.txt:1: matched rule 'phone'"], scan_line(hit_line).failures)
+
+        for clean_line in (
+            f"hotel_id = {digits}",
+            f"intel_serial = {digits}",
+            f"cancellation_id = {digits}",
+            "phone number: 5555550100",
+            "timestamp = 1700000000",
+        ):
+            with self.subTest(clean=clean_line[:22]):
+                self.assertEqual([], scan_line(clean_line).failures)
+
+        # ReDoS guard: 50,000-character identifier with no phone number finishes well under 50ms.
+        long_ident = ("hotel_x" * 7200) + "_1234567890"
+        t0 = time.perf_counter()
+        self.assertEqual([], scan.detect_phone(long_ident))
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        self.assertLess(elapsed_ms, 50.0, f"detect_phone took {elapsed_ms:.1f}ms on long identifier")
+
+    def test_s5_commit_messages_and_annotated_tag_messages_are_scanned_and_redacted(self) -> None:
+        leak_email = join("jdoe", "@", "acme-corp", ".com")
+        leak_ip = ip("10", "44", "55", "66")
+
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            repo, public_remote = self._make_pre_push_repo(base)
+            base_sha = git(repo, "rev-parse", "HEAD").stdout.strip()
+
+            # (a) Commit with clean files but leaking commit message -> refused in --range and pre-push.
+            git(repo, "checkout", "-q", "-b", "feat/msg-leak")
+            (repo / "clean.txt").write_text("alice@example.com\n", encoding="utf-8")
+            git(repo, "add", "clean.txt")
+            git(repo, "commit", "-q", "-m", "docs: add note", "-m", f"- contact {leak_email} at {leak_ip}")
+            head_sha = git(repo, "rev-parse", "HEAD").stdout.strip()
+
+            code, out, err = run_main(["--root", str(repo), "--range", base_sha, head_sha])
+            combined_cli = out + err
+            self.assertEqual(1, code, combined_cli)
+            self.assertIn("matched rule 'email'", combined_cli)
+            self.assertIn("matched rule 'ipv4'", combined_cli)
+            self.assertNotIn(leak_email, combined_cli)
+            self.assertNotIn(leak_ip, combined_cli)
+
+            git(repo, "config", "core.hooksPath", ".codeflow/git-hooks")
+            push_msg = git(repo, "push", "origin", "feat/msg-leak", check=False)
+            combined_push = push_msg.stdout + push_msg.stderr
+            self.assertNotEqual(0, push_msg.returncode, combined_push)
+            self.assertIn("matched rule 'email'", combined_push)
+            self.assertNotIn(leak_email, combined_push)
+            self.assertNotIn(leak_ip, combined_push)
+            self.assertEqual("", git(public_remote, "for-each-ref", "refs/heads/feat/msg-leak").stdout.strip())
+
+            # (b) Annotated tag pointing to clean main commit, but tag message leaks -> refused in pre-push.
+            git(repo, "checkout", "-q", "main")
+            git(repo, "tag", "-a", "v0.0.2-tagmsg", "-m", f"Release notes for {leak_email}")
+            push_tag = git(repo, "push", "origin", "v0.0.2-tagmsg", check=False)
+            combined_tag = push_tag.stdout + push_tag.stderr
+            self.assertNotEqual(0, push_tag.returncode, combined_tag)
+            self.assertIn("matched rule 'email'", combined_tag)
+            self.assertNotIn(leak_email, combined_tag)
+            self.assertEqual("", git(public_remote, "for-each-ref", "refs/tags/v0.0.2-tagmsg").stdout.strip())
 
 
 if __name__ == "__main__":

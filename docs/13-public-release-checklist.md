@@ -93,7 +93,7 @@ Every detector defaults to `block` mode in `tests/public_scan_modes.json`:
 | Rule | Detects | Exact allow list (matched only after folding) |
 |---|---|---|
 | `email` | Email addresses | Exact domains `example.com`, `example.org`, `example.net`, `example.invalid` |
-| `phone` | International E.164, formatted phone numbers, and digits-only phone values under any key containing `phone`, `mobile`, `tel`, or `cell` | Documented placeholder numbers (`+1-555-555-0100`, `+1-555-555-0101`, `+1-555-555-0199`, `+44 20 7946 0000`) |
+| `phone` | International E.164, formatted phone numbers, and digits-only phone values under phone/mobile/tel/cell or `contact number` keys | Documented placeholder numbers (`+1-555-555-0100`, `+1-555-555-0101`, `+1-555-555-0199`, `+44 20 7946 0000`) |
 | `ipv4` | Private and public IPv4 addresses, plus partial private prefixes (RFC 1918, RFC 6598 CGNAT, RFC 3927 link-local) | Documentation ranges `192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`; loopback `127.0.0.1`, `127.0.1.1`; `0.0.0.0`, `255.255.255.255` |
 | `ipv6` | Private and public IPv6 addresses | Documentation range `2001:db8::/32`; loopback `::1`; unspecified `::` |
 | `mac-address` | Colon, hyphen, and dot-quad MAC addresses | RFC 7042 documentation range `00:00:5e:00:53:00` through `00:00:5e:00:53:ff`; null and broadcast |
@@ -196,10 +196,13 @@ Hash-bound binary exceptions live in `tests/public_scan_binary_exceptions.json`:
 - Required jobs in `.github/workflows/ci.yml` (`repository-validation`,
   `secret-scan`, `macos-host-lock`) run no head-controlled privacy or
   public-release scan steps (`repository-validation` runs `make repo-ci-check`,
-  which omits `public-draft-check`). The separate `linux-public-scan` and
-  `macos-public-scan` jobs in `.github/workflows/ci.yml` execute pull-request
-  head code and are non-authoritative self-tests only: no required privacy or
-  identity verdict comes from `.github/workflows/ci.yml`.
+  which runs only non-privacy unit tests via `unit-non-privacy-check` and
+  `check_repository.py --skip-privacy-checks`, omitting `public-draft-check` and
+  `test_public_*.py`). The separate `linux-public-scan` and `macos-public-scan`
+  jobs in `.github/workflows/ci.yml` execute pull-request head code
+  (`make public-check` and `test_public_*.py`) and are non-authoritative
+  self-tests only: no required privacy or identity verdict comes from
+  `.github/workflows/ci.yml`.
 - Require `public-scan / result` on `main`, next to the existing required
   checks. Repository protection setup must fail closed if `public-scan / result`
   is absent rather than silently skipping it. Enforcement of code-owner review
@@ -207,10 +210,12 @@ Hash-bound binary exceptions live in `tests/public_scan_binary_exceptions.json`:
   binary exceptions, scan workflows, and `.github/CODEOWNERS` itself) depends on
   the repository protection setup in `TSK-040`.
 - Locally, the `pre-push` hook runs `make ci-check` (worktree check) and scans
-  every new commit pushed to the destination remote across all pushed refs
-  (branches and tags alike, excluding only commits already on the destination
-  remote via `--remotes=<remote>`) through `tests/check_public_release.py --commits`,
-  so leaks known only to another remote or reachable only from a tag are blocked.
+  every new commit (tree and commit message) and annotated tag message pushed to
+  the destination remote across all pushed refs (branches and tags alike,
+  excluding commits via `--remotes=<remote>` only when the destination push URL
+  matches `remote.<name>.url`) through `tests/check_public_release.py --commits`
+  and `--tag-objects`. In CI, `--range` scans both the trees and commit messages
+  of every commit in `base..head`.
 
 ## Private fleet repositories
 

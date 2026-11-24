@@ -312,19 +312,30 @@ PHONE_INTL_PAREN_RE = re.compile(
     r"(?<![A-Za-z0-9+])(\+[1-9]\d{0,2}[ \t.-]?\(\d{2,4}\)[ \t.-]?\d{3,4}[ \t.-]\d{3,4})(?![A-Za-z0-9])"
 )
 PHONE_PAREN_RE = re.compile(
-    r"(?<![A-Za-z0-9])(\(\d{3}\)[ \t.-]?\d{3}[ \t.-]\d{4})(?![A-Za-z0-9])"
+    r"(?<![A-Za-z0-9])((?:1[ \t.-]?)?\(\d{3}\)[ \t.-]?\d{3}[ \t.-]\d{4})(?![A-Za-z0-9])"
 )
 PHONE_SEP_RE = re.compile(
-    r"(?<![A-Za-z0-9.-])(\d{3}([-. ])\d{3}\2\d{4})(?![A-Za-z0-9.-])"
+    r"(?<![A-Za-z0-9.-])((?:1[-. \t])?\d{3}([-. \t])\d{3}\2\d{4})(?![A-Za-z0-9.-])"
 )
-PHONE_CONTEXT_DIGITS_RE = re.compile(
-    r"(?:[A-Za-z0-9_-]*(?:phone|mobile|tel|cell|fax|sms|whatsapp)[A-Za-z0-9_-]*|\b(?:call|contact)\b)"
-    r"(?:[\"']?[ \t]*[:=][ \t]*[\"']?|[ \t]+[\"']?)"
-    r"(\+?1?\d{10}|\+[1-9]\d{7,14})(?!\d)",
-    re.IGNORECASE,
+# Linear-time, token-boundary-anchored phone key matcher (no unanchored leading
+# wildcard, avoiding ReDoS and avoiding false positives like hotel_id/intel_serial).
+PHONE_KEY_RE = re.compile(
+    r"(?:"
+    r"(?<![A-Za-z])(?:[cC][eE][lL][lL][pP][hH][oO][nN][eE]|[sS][mM][aA][rR][tT][pP][hH][oO][nN][eE]|[tT][eE][lL][eE][pP][hH][oO][nN][eE]|[pP][hH][oO][nN][eE]|[mM][oO][bB][iI][lL][eE]|[tT][eE][lL]|[cC][eE][lL][lL]|[fF][aA][xX]|[sS][mM][sS]|[wW][hH][aA][tT][sS][aA][pP][pP])[sS]?(?![a-z])"
+    r"|(?<=[a-z])(?:Phone|Mobile|Tel|Cell|Fax|Sms|Whatsapp)[sS]?(?![a-z])"
+    r"|(?<![A-Za-z0-9_])(?:[cC][oO][nN][tT][aA][cC][tT]|[cC][aA][lL][lL])[sS]?(?![A-Za-z0-9_])"
+    r")"
+    r"(?:[ \t._-]{1,2}[A-Za-z0-9]{1,20}){0,2}"
+    r"[\"']?[ \t]*(?:=>|[:=]|[ \t]+)[ \t]*"
+)
+PHONE_VALUE_AT_RE = re.compile(
+    r"[\"']?(\+?1?\d{10}|\+[1-9]\d{7,14}|(?:1[ \t.-]?)?\(?\d{3}\)?[ \t.-]?\d{3}[ \t.-]\d{4})(?![A-Za-z0-9])"
+)
+PHONE_LIST_ITEM_RE = re.compile(
+    r"(?<![A-Za-z0-9+])(\+?1?\d{10}|\+[1-9]\d{7,14}|(?:1[ \t.-]?)?\(?\d{3}\)?[ \t.-]?\d{3}[ \t.-]\d{4})(?![A-Za-z0-9])"
 )
 PHONE_TEL_URI_RE = re.compile(
-    r"\btel:(\+?1?\d{10}|\+[1-9]\d{7,14})(?!\d)",
+    r"(?<![A-Za-z0-9])tel:(\+?1?\d{10}|\+[1-9]\d{7,14})(?![A-Za-z0-9])",
     re.IGNORECASE,
 )
 PHONE_CONTEXT_KEYWORDS = (
@@ -714,15 +725,37 @@ def detect_email(text: str) -> list[str]:
     return hits
 
 
+def _normalize_phone_candidate(raw: str) -> str | None:
+    digits = "".join(ch for ch in raw if ch.isdigit())
+    if raw.startswith("+"):
+        if not (8 <= len(digits) <= 15):
+            return None
+        folded = "+" + digits
+    else:
+        if len(digits) not in (10, 11):
+            return None
+        if len(digits) == 11 and not digits.startswith("1"):
+            return None
+        if digits == "0" * len(digits):
+            return None
+        folded = digits
+    if folded in ALLOWED_PHONES:
+        return None
+    return folded
+
+
 def detect_phone(text: str) -> list[str]:
     has_plus = "+" in text
     has_paren = "(" in text
-    has_sep = "-" in text or "." in text or " " in text
+    has_sep = "-" in text or "." in text or " " in text or "\t" in text
     lower = text.casefold()
-    has_ctx = ":" in text or "=" in text or " " in text
+    has_ctx = ":" in text or "=" in text or " " in text or "\t" in text
     has_phone_kw = has_ctx and any(kw in lower for kw in PHONE_CONTEXT_KEYWORDS)
     if not (has_plus or has_paren or has_sep or has_phone_kw):
         return []
+    if DIGIT_RE.search(text) is None:
+        return []
+
     patterns: list[re.Pattern[str]] = []
     if has_plus and PHONE_E164_HINT_RE.search(text) is not None:
         if has_paren:
@@ -730,37 +763,39 @@ def detect_phone(text: str) -> list[str]:
         patterns.append(PHONE_E164_RE)
     if has_paren and PHONE_PAREN_HINT_RE.search(text) is not None:
         patterns.append(PHONE_PAREN_RE)
-    if has_sep and DIGIT_RE.search(text) is not None:
+    if has_sep:
         patterns.append(PHONE_SEP_RE)
-    if has_phone_kw and DIGIT_RE.search(text) is not None:
-        if "tel:" in lower:
-            patterns.append(PHONE_TEL_URI_RE)
-        patterns.append(PHONE_CONTEXT_DIGITS_RE)
-    if not patterns:
-        return []
+    if has_phone_kw and "tel:" in lower:
+        patterns.append(PHONE_TEL_URI_RE)
+
     seen: set[str] = set()
     hits: list[str] = []
+
+    def record(raw: str) -> None:
+        folded = _normalize_phone_candidate(raw)
+        if folded is not None and folded not in seen:
+            seen.add(folded)
+            hits.append(folded)
+
     for pattern in patterns:
         for match in pattern.finditer(text):
-            raw = match.group(1)
-            digits = "".join(ch for ch in raw if ch.isdigit())
-            if raw.startswith("+"):
-                if not (8 <= len(digits) <= 15):
-                    continue
-                folded = "+" + digits
-            else:
-                if len(digits) not in (10, 11):
-                    continue
-                if len(digits) == 11 and not digits.startswith("1"):
-                    continue
-                if digits == "0" * len(digits):
-                    continue
-                folded = digits
-            if folded in ALLOWED_PHONES:
+            record(match.group(1))
+
+    if has_phone_kw:
+        for key_match in PHONE_KEY_RE.finditer(text):
+            pos = key_match.end()
+            if pos >= len(text):
                 continue
-            if folded not in seen:
-                seen.add(folded)
-                hits.append(folded)
+            if text[pos] == "[":
+                end_bracket = text.find("]", pos, pos + 256)
+                end_nl = text.find("\n", pos, pos + 256)
+                stop = end_bracket if end_bracket != -1 else (end_nl if end_nl != -1 else pos + 256)
+                for item in PHONE_LIST_ITEM_RE.finditer(text, pos + 1, stop):
+                    record(item.group(1))
+            else:
+                val_match = PHONE_VALUE_AT_RE.match(text, pos)
+                if val_match is not None:
+                    record(val_match.group(1))
     return hits
 
 
@@ -2186,6 +2221,20 @@ def _run_exemption_digest(rule_id: str) -> int:
     return 0
 
 
+def _commit_message_bytes(root: Path, commit: str) -> bytes:
+    """Return the raw commit message (%B) for a commit SHA."""
+    return _git(root, ["show", "-s", "--format=%B", commit])
+
+
+def _tag_message_bytes(root: Path, tag_oid: str) -> bytes:
+    """Return the message body of an annotated tag object (excluding tagger header)."""
+    if not COMMIT_RE.fullmatch(tag_oid):
+        raise ScanConfigError("--tag-objects needs full lowercase object SHAs")
+    raw = _git(root, ["cat-file", "tag", tag_oid])
+    _header, sep, body = raw.partition(b"\n\n")
+    return body if sep else b""
+
+
 def _scan_commit_trees(
     root: Path,
     commits: Sequence[str],
@@ -2193,11 +2242,13 @@ def _scan_commit_trees(
     modes: Mapping[str, str] | None,
     exemptions: Sequence[ExemptionRecord],
     binary_exceptions: Mapping[str, BinaryException],
+    scan_commit_messages: bool = False,
+    tag_objects: Sequence[str] = (),
 ) -> tuple[list[str], list[str], frozenset[tuple[str, str, str]]]:
-    """Scan one or more commits as git objects, reusing blob scan cache across commits."""
+    """Scan commits (trees and optionally commit messages) plus annotated tag messages."""
     failures: list[str] = []
     warnings: list[str] = []
-    if not commits:
+    if not commits and not tag_objects:
         return ["commit list is empty"], warnings, frozenset()
     if len(commits) > MAX_RANGE_COMMITS:
         return [f"commit list has more than {MAX_RANGE_COMMITS} commits; refusing to scan"], warnings, frozenset()
@@ -2209,6 +2260,17 @@ def _scan_commit_trees(
     )
     multi = len(commits) > 1
     for commit in commits:
+        if scan_commit_messages and scanner is not None:
+            try:
+                msg_bytes = _commit_message_bytes(root, commit)
+            except ScanConfigError as exc:
+                failures.append(f"commit message read failed: {exc}")
+            else:
+                msg_failures, msg_warnings = scanner.scan_source(
+                    SourceFile(f"commit:{commit[:12]}:message", msg_bytes)
+                )
+                failures.extend(msg_failures)
+                warnings.extend(msg_warnings)
         try:
             tree_paths, sources = tree_sources(root, commit)
         except ScanConfigError as exc:
@@ -2245,6 +2307,20 @@ def _scan_commit_trees(
             continue
         if count == 0:
             failures.append("tracked file listing is missing or empty")
+
+    if scanner is not None:
+        for tag_oid in tag_objects:
+            try:
+                tag_bytes = _tag_message_bytes(root, tag_oid)
+            except ScanConfigError as exc:
+                failures.append(f"tag message read failed: {exc}")
+                continue
+            tag_failures, tag_warnings = scanner.scan_source(
+                SourceFile(f"tag:{tag_oid[:12]}:message", tag_bytes)
+            )
+            failures.extend(tag_failures)
+            warnings.extend(tag_warnings)
+
     applied = frozenset(scanner.applied_exemptions) if scanner is not None else frozenset()
     return failures, warnings, applied
 
@@ -2297,8 +2373,10 @@ def _run(args: argparse.Namespace) -> int:
     except ScanConfigError as exc:
         failures.append(str(exc))
 
-    if args.tree is not None or args.range is not None or args.commits is not None:
+    if args.tree is not None or args.range is not None or args.commits is not None or args.tag_objects is not None:
         commits_to_scan: list[str] = []
+        tag_objects_to_scan: list[str] = list(args.tag_objects or ())
+        scan_messages = args.range is not None or args.commits is not None
         if args.tree is not None:
             commits_to_scan = [args.tree]
         elif args.range is not None:
@@ -2308,19 +2386,21 @@ def _run(args: argparse.Namespace) -> int:
                 failures.append(f"commit range failed: {exc}")
         elif args.commits is not None:
             commits_to_scan = list(args.commits)
-        if commits_to_scan:
+        if commits_to_scan or tag_objects_to_scan:
             tree_failures, tree_warnings, applied_exemptions = _scan_commit_trees(
                 root,
                 commits_to_scan,
                 modes=modes,
                 exemptions=exemptions,
                 binary_exceptions=binary_exceptions,
+                scan_commit_messages=scan_messages,
+                tag_objects=tag_objects_to_scan,
             )
             failures.extend(tree_failures)
             warnings.extend(tree_warnings)
         label = (
             f"Deterministic public-safety scan of {len(commits_to_scan)} commit(s) passed."
-            if (args.range is not None or args.commits is not None)
+            if (args.range is not None or args.commits is not None or args.tag_objects is not None)
             else "Deterministic public-safety scan of the tree passed."
         )
         return _report(
@@ -2408,7 +2488,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         nargs="+",
         default=None,
         metavar="COMMIT_SHA",
-        help="scan each named commit SHA as git objects",
+        help="scan each named commit SHA (tree and commit message) as git objects",
+    )
+    parser.add_argument(
+        "--tag-objects",
+        nargs="+",
+        default=None,
+        metavar="TAG_OID",
+        help="scan each named annotated tag object's message",
     )
     parser.add_argument(
         "--modes-file",

@@ -118,6 +118,9 @@ jobs:
       - name: Run deterministic public-release scan on Linux (non-authoritative)
         run: make public-check
 
+      - name: Run public-scan unit and hardening tests on Linux (non-authoritative)
+        run: make unit-public-scan-check
+
   macos-public-scan:
     # Non-authoritative head-code self-test on macOS; authoritative privacy
     # verdict is `public-scan / result` in `.github/workflows/public-scan.yml`.

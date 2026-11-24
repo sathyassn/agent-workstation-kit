@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import fnmatch
 import json
 import os
@@ -528,7 +529,7 @@ def workflow_action_pin_issues(root: Path) -> list[str]:
     return issues
 
 
-def scan_repository_files(root: Path) -> list[str]:
+def scan_repository_files(root: Path, *, include_privacy: bool = True) -> list[str]:
     """Scan Git-listed repository files for forbidden files, secrets, paths, links and markers."""
     files, list_errors = repo_files(root)
     failures: list[str] = list(list_errors)
@@ -546,10 +547,11 @@ def scan_repository_files(root: Path) -> list[str]:
             failures.append(f"cannot read repository file {path.relative_to(root)}: {exc.strerror or exc}")
             continue
         relative = path.relative_to(root).as_posix()
-        if unexpected_matches(SECRET_LIKE, content, relative):
-            failures.append(f"secret-like value in {path.relative_to(root)}")
-        if unexpected_matches(PERSONAL_PATH, content, relative):
-            failures.append(f"personal absolute path in {path.relative_to(root)}")
+        if include_privacy:
+            if unexpected_matches(SECRET_LIKE, content, relative):
+                failures.append(f"secret-like value in {path.relative_to(root)}")
+            if unexpected_matches(PERSONAL_PATH, content, relative):
+                failures.append(f"personal absolute path in {path.relative_to(root)}")
         non_neutral = non_neutral_hostname_examples(content)
         if non_neutral:
             failures.append(
@@ -644,8 +646,15 @@ def codeowners_issues(root: Path) -> list[str]:
     return issues
 
 
-def main() -> int:
-    failures: list[str] = scan_repository_files(ROOT)
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--skip-privacy-checks",
+        action="store_true",
+        help="omit head-run secret/home-path scans (enforced by trusted-base public-scan.yml and secret-scan)",
+    )
+    args = parser.parse_args(argv)
+    failures: list[str] = scan_repository_files(ROOT, include_privacy=not args.skip_privacy_checks)
 
     required_executables = [
         *ROOT.glob("scripts/*.sh"),

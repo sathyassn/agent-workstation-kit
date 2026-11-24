@@ -440,9 +440,29 @@ def _peel_commit(oid: str, ref_label: str) -> str:
     )
 
 
-def _destination_has_tracking_refs(remote_name: str | None) -> bool:
-    """Return True if local refs/remotes/<remote_name>/ exists for the destination remote."""
+def _destination_has_tracking_refs(
+    remote_name: str | None,
+    remote_location: str | None = None,
+) -> bool:
+    """Return True only when local refs/remotes/<remote_name>/ represents the push target.
+
+    If remote.<name>.pushurl or the destination URL passed to pre-push differs
+    from remote.<name>.url (or the fetch URL is unknown), local remote-tracking
+    refs describe the fetch repo, not the push target, so we must NOT exclude them.
+    """
     if not remote_name or "/" in remote_name or ":" in remote_name or "\\" in remote_name:
+        return False
+    fetch_url = git("config", "--get", f"remote.{remote_name}.url", check=False).strip()
+    if not fetch_url:
+        return False
+    push_urls = [
+        line.strip()
+        for line in git("config", "--get-all", f"remote.{remote_name}.pushurl", check=False).splitlines()
+        if line.strip()
+    ]
+    if push_urls and any(url != fetch_url for url in push_urls):
+        return False
+    if remote_location and remote_location.strip() != fetch_url:
         return False
     refs = git("for-each-ref", "--format=%(refname)", f"refs/remotes/{remote_name}/", check=False)
     return bool(refs.strip())
@@ -453,6 +473,7 @@ def _pushed_commits(
     remote_oid: str,
     *,
     remote_name: str | None = None,
+    remote_location: str | None = None,
     ref_label: str = "ref",
 ) -> list[str]:
     """Return every new commit being pushed to the destination remote."""
@@ -460,7 +481,7 @@ def _pushed_commits(
     if not _is_zero_oid(remote_oid):
         remote_commit = _peel_commit(remote_oid, ref_label)
         raw = git("rev-list", "--reverse", f"{remote_commit}..{commit_oid}")
-    elif _destination_has_tracking_refs(remote_name):
+    elif _destination_has_tracking_refs(remote_name, remote_location):
         raw = git("rev-list", "--reverse", commit_oid, "--not", f"--remotes={remote_name}")
     else:
         raw = git("rev-list", "--reverse", commit_oid)
@@ -472,6 +493,7 @@ def run_pre_push(
     policy: Policy,
     *,
     remote_name: str | None = None,
+    remote_location: str | None = None,
 ) -> None:
     """Validate ref updates from Git's pre-push protocol, then run the full gate."""
     updates = [line.split() for line in stdin if line.strip()]
@@ -516,21 +538,33 @@ def run_pre_push(
         scanner = ROOT / "tests/check_public_release.py"
         if non_delete_updates and scanner.is_file():
             commits: list[str] = []
-            seen: set[str] = set()
+            seen_commits: set[str] = set()
+            tag_objects: list[str] = []
+            seen_tags: set[str] = set()
             for local_oid, remote_oid, remote_ref in non_delete_updates:
+                obj_type = git("cat-file", "-t", local_oid, check=False).strip()
+                if obj_type == "tag" and local_oid not in seen_tags:
+                    seen_tags.add(local_oid)
+                    tag_objects.append(local_oid)
                 for sha in _pushed_commits(
                     local_oid,
                     remote_oid,
                     remote_name=remote_name,
+                    remote_location=remote_location,
                     ref_label=remote_ref,
                 ):
-                    if sha not in seen:
-                        seen.add(sha)
+                    if sha not in seen_commits:
+                        seen_commits.add(sha)
                         commits.append(sha)
-            if commits:
+            if commits or tag_objects:
+                cmd = [sys.executable, "-I", "-B", str(scanner)]
+                if commits:
+                    cmd.extend(["--commits", *commits])
+                if tag_objects:
+                    cmd.extend(["--tag-objects", *tag_objects])
                 try:
                     scan_result = subprocess.run(
-                        [sys.executable, "-I", "-B", str(scanner), "--commits", *commits],
+                        cmd,
                         cwd=ROOT,
                         check=False,
                         timeout=600,
@@ -598,7 +632,12 @@ def command_pre_merge(_args: argparse.Namespace, policy: Policy) -> None:
 
 
 def command_pre_push(args: argparse.Namespace, policy: Policy) -> None:
-    run_pre_push(sys.stdin, policy, remote_name=getattr(args, "remote_name", None))
+    run_pre_push(
+        sys.stdin,
+        policy,
+        remote_name=getattr(args, "remote_name", None),
+        remote_location=getattr(args, "remote_location", None),
+    )
 
 
 def command_reference(args: argparse.Namespace, policy: Policy) -> None:
