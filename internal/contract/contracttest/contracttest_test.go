@@ -1067,3 +1067,101 @@ func TestSerializedCheckRejectsPerCallLock(t *testing.T) {
 		}
 	})
 }
+
+// delayedEntryTx delays the second SetState call before it enters SetState
+// (measured at ctx.Err), so tests can verify that checkSetStateSerialized
+// waits for the second call to enter SetState before starting its probe wait.
+type delayedEntryTx struct {
+	*FakeTx
+	entryDelay time.Duration
+	snapDelay  time.Duration
+	unserial   bool
+
+	callsMu    sync.Mutex
+	calls      int
+	enteredAt  time.Time
+	releasedAt time.Time
+}
+
+func (d *delayedEntryTx) SetState(ctx context.Context, p contract.StateProvider, key contract.StateKey, want contract.State) error {
+	d.callsMu.Lock()
+	d.calls++
+	n := d.calls
+	d.callsMu.Unlock()
+
+	if n == 2 {
+		time.Sleep(d.entryDelay)
+		_ = ctx.Err()
+		d.callsMu.Lock()
+		d.enteredAt = time.Now()
+		d.callsMu.Unlock()
+		if d.unserial {
+			time.Sleep(d.snapDelay)
+			snap, err := p.Snapshot(ctx)
+			if err != nil {
+				return err
+			}
+			if err := p.Write(ctx, key, want); err != nil {
+				return err
+			}
+			d.mu.Lock()
+			backup := d.recordBackupLocked(snap.Data)
+			d.changes = append(d.changes, contract.AppliedChange{
+				Change: contract.Change{
+					Target: string(p.Name()) + ":" + string(key),
+					Action: contract.ActionSet,
+					After:  digestBytes([]byte(want.Value)),
+					Risk:   contract.RiskMedium,
+				},
+				Backup: backup,
+			})
+			d.mu.Unlock()
+			return nil
+		}
+	}
+	err := d.FakeTx.SetState(ctx, p, key, want)
+	if n == 1 {
+		d.callsMu.Lock()
+		d.releasedAt = time.Now()
+		d.callsMu.Unlock()
+	}
+	return err
+}
+
+func TestSerializedCheckWaitsForSecondCallEntry(t *testing.T) {
+	t.Parallel()
+
+	t.Run("full probe wait starts after second call enters SetState", func(t *testing.T) {
+		t.Parallel()
+		rep := &fakeReporter{}
+		tx := &delayedEntryTx{
+			FakeTx:     NewFakeTx(standardTestDescription(), nil),
+			entryDelay: 300 * time.Millisecond,
+		}
+		checkSetStateSerialized(context.Background(), rep, tx, tx)
+		if len(rep.errors) != 0 {
+			t.Fatalf("unexpected errors: %v", rep.errors)
+		}
+		tx.callsMu.Lock()
+		wait := tx.releasedAt.Sub(tx.enteredAt)
+		tx.callsMu.Unlock()
+		if wait < serialProbeWait-50*time.Millisecond {
+			t.Fatalf("probe wait after second call entered = %v, want at least %v", wait, serialProbeWait-50*time.Millisecond)
+		}
+	})
+
+	t.Run("unserialised call delayed before entry is still caught", func(t *testing.T) {
+		t.Parallel()
+		rep := &fakeReporter{}
+		tx := &delayedEntryTx{
+			FakeTx:     NewFakeTx(standardTestDescription(), nil),
+			entryDelay: 300 * time.Millisecond,
+			snapDelay:  800 * time.Millisecond,
+			unserial:   true,
+		}
+		checkSetStateSerialized(context.Background(), rep, tx, tx)
+		if !rep.hasErrorContaining("must hold one lock") {
+			t.Fatalf("unserialised call after delayed entry slipped past probe wait: %v", rep.errors)
+		}
+	})
+}

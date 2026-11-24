@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -329,7 +330,7 @@ func checkDeclarativeTx(r reporter, newTx func(contract.Description) contract.De
 		r.Errorf("refused undeclared mutations recorded %d changes, want 0", len(changes))
 	}
 
-	if err := tx.WriteFile(ctx, declaredPath, []byte("hello\n"), defaultFilePerm, contract.Owner{}); err != nil {
+	if err := tx.WriteFile(ctx, declaredPath, []byte("hello\n"), defaultFilePerm, contract.Owner{UID: os.Getuid(), GID: os.Getgid()}); err != nil {
 		r.Errorf("WriteFile on declared path failed: %v", err)
 	}
 	assertRecordedChange(r, "WriteFile", inspector.Changes(), declaredPath, false)
@@ -619,10 +620,31 @@ const (
 	serialProbeWait = time.Second
 )
 
+// probeContext wraps ctx and invokes onErr once when Err is called, allowing
+// checkSetStateSerialized to observe that the second goroutine has actually
+// entered SetState before its probe wait starts.
+type probeContext struct {
+	context.Context
+	once  sync.Once
+	onErr func()
+}
+
+func (c *probeContext) Err() error {
+	c.once.Do(c.onErr)
+	return c.Context.Err() //nolint:wrapcheck // context.Context.Err forwards the inner context state verbatim
+}
+
 // checkSetStateSerialized runs two SetState calls on one key with the first
 // paused between its Snapshot and its Write. The second must not reach its
 // Snapshot while the first is paused, and each receipt's backup must be the
 // value just before its own write.
+//
+// Why proving absence needs a time bound: a correctly serialised second call
+// blocks silently on the transaction mutex while the first is paused, emitting
+// no observable event to prove it will never call Snapshot. The check therefore
+// waits for the second goroutine to start and enter SetState (signalled via
+// ctx.Err) before starting a bounded probe wait (serialProbeWait); if the
+// second call reaches Snapshot during that window, serialisation is broken.
 //
 // Limit: the provider can pause only inside one of its own calls. A Tx that
 // wraps every provider call in one shared mutex holds that mutex during the
@@ -653,11 +675,44 @@ func checkSetStateSerialized(ctx context.Context, r reporter, tx contract.Tx, in
 		r.Errorf("SetState never reached StateProvider.Write")
 		return
 	}
-	go func() { errs <- tx.SetState(ctx, p, declaredState, contract.State{Value: "value-b"}) }()
+	started := make(chan struct{})
+	entered := make(chan struct{})
+	entryCtx := &probeContext{
+		Context: ctx,
+		onErr:   func() { close(entered) },
+	}
+	go func() {
+		close(started)
+		errs <- tx.SetState(entryCtx, p, declaredState, contract.State{Value: "value-b"})
+	}()
+	startTimer := time.NewTimer(serialGateTimeout)
+	defer startTimer.Stop()
+	select {
+	case <-started:
+	case <-startTimer.C:
+		r.Errorf("second SetState goroutine did not start")
+		return
+	}
+	// Wait for the second call to enter SetState (via ctx.Err) before running
+	// the full probe wait. A Tx that locks before inspecting ctx will not
+	// signal entered while blocked on the lock, in which case the initial
+	// probe window already bounds the wait after the goroutine has started.
+	probe := time.NewTimer(serialProbeWait)
+	defer probe.Stop()
 	select {
 	case <-p.second:
 		r.Errorf("a second SetState took its Snapshot while the first was paused between its Snapshot and its Write; SetState must hold one lock across snapshot, write and receipt")
-	case <-time.After(serialProbeWait):
+	case <-entered:
+		if !probe.Stop() {
+			<-probe.C
+		}
+		probe.Reset(serialProbeWait)
+		select {
+		case <-p.second:
+			r.Errorf("a second SetState took its Snapshot while the first was paused between its Snapshot and its Write; SetState must hold one lock across snapshot, write and receipt")
+		case <-probe.C:
+		}
+	case <-probe.C:
 	}
 	releaseOnce()
 	for range 2 {
@@ -718,9 +773,13 @@ func checkEmitOrder(r reporter, tx contract.DeclarativeTx, inspector TxInspector
 	}
 	tail := events[len(events)-emitOrderCount:]
 	for i := range emitOrderCount {
-		wantSeq := uint64(i + 1)
-		if tail[i].Seq != wantSeq {
-			r.Errorf("event[%d].Seq = %d, want %d (Emit must preserve order)", i, tail[i].Seq, wantSeq)
+		wantTime := base.Add(time.Duration(i+1) * time.Second)
+		if !tail[i].Time.Equal(wantTime) {
+			r.Errorf("event[%d].Time = %v, want %v (Emit must preserve order)", i, tail[i].Time, wantTime)
+			return
+		}
+		if tail[i].Seq == 0 || (i > 0 && tail[i].Seq <= tail[i-1].Seq) {
+			r.Errorf("event[%d].Seq = %d is not strictly increasing (Emit must preserve order)", i, tail[i].Seq)
 			return
 		}
 	}
