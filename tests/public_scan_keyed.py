@@ -45,7 +45,7 @@ COMPOUND_TOKEN_RE = re.compile(r"[^\W_][\w.-]*", re.UNICODE)
 WORD_RUN_RE = re.compile(r"[^\W_]+", re.UNICODE)
 CAMEL_RUN_RE = re.compile(r"[A-Z]+|[a-z]+|[0-9]+|[^\WA-Za-z0-9_]+", re.UNICODE)
 WHITESPACE_RE = re.compile(r"\s+")
-DELIM_SPLIT_RE = re.compile(r"[\s\[\]()<>\"'=&,;{}]+")
+DELIM_SPLIT_RE = re.compile(r"[\s\[\]()<>\"'=&,;{}?]+")
 PUNCTUATION_RE = re.compile(r"[^\w\s]|_", re.UNICODE)
 OUTER_WRAPPER_CHARS = "()[]{}<>\"'`,;:.!?*#~|\\"
 MAX_DOT_SLICE_LABELS = 6
@@ -392,7 +392,7 @@ def extract_candidates_from_normalized(text: str) -> set[str]:
                 _add_candidate(candidates, seg)
             lower_seg = seg.casefold()
             if lower_seg.startswith("mailto:"):
-                addr = seg[7:].strip(OUTER_WRAPPER_CHARS)
+                addr = seg[7:].split("?", 1)[0].strip(OUTER_WRAPPER_CHARS)
                 if addr:
                     _add_candidate(candidates, addr)
             elif "://" in seg:
@@ -429,7 +429,7 @@ def extract_candidates_from_normalized(text: str) -> set[str]:
                 if rhs_clean:
                     _add_candidate(candidates, rhs_clean)
                     if rhs_clean.casefold().startswith("mailto:"):
-                        addr = rhs_clean[7:].strip(OUTER_WRAPPER_CHARS)
+                        addr = rhs_clean[7:].split("?", 1)[0].strip(OUTER_WRAPPER_CHARS)
                         if addr:
                             _add_candidate(candidates, addr)
 

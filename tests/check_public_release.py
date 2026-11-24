@@ -533,6 +533,7 @@ class ExemptionInventoryEntry:
     expires: str
     status: str  # "valid" | "expired" | "invalid"
     record: ExemptionRecord | None = None
+    is_synthetic_path: bool = False
 
 
 @dataclass(frozen=True)
@@ -551,6 +552,7 @@ class SourceFile:
     symlink: bool = False
     problem: str | None = None
     object_id: str | None = None
+    is_synthetic_ref: bool = False
 
 
 @dataclass(frozen=True)
@@ -1297,6 +1299,7 @@ def load_exemptions_inventory(
                     digest_prefix="invalid",
                     expires="invalid",
                     status="invalid",
+                    is_synthetic_path=True,
                 )
             )
             continue
@@ -1305,7 +1308,9 @@ def load_exemptions_inventory(
         raw_rule = entry.get("rule")
         raw_digest = entry.get("digest")
         raw_expires = entry.get("expires")
-        safe_path = raw_path if _valid_relative_path(raw_path) else f"<record-{index + 1}>"
+        path_is_valid = _valid_relative_path(raw_path)
+        safe_path = raw_path if path_is_valid else f"<record-{index + 1}>"
+        safe_is_synthetic = not path_is_valid
         safe_rule = raw_rule if isinstance(raw_rule, str) and raw_rule in ALL_RULE_IDS else "unknown"
         safe_digest_prefix = (
             raw_digest[:12]
@@ -1321,7 +1326,14 @@ def load_exemptions_inventory(
         if set(entry.keys()) != required_keys:
             errors.append(f"exemption record #{index + 1} is incomplete or has unexpected fields")
             inventory.append(
-                ExemptionInventoryEntry(safe_path, safe_rule, safe_digest_prefix, safe_expires, "invalid")
+                ExemptionInventoryEntry(
+                    safe_path,
+                    safe_rule,
+                    safe_digest_prefix,
+                    safe_expires,
+                    "invalid",
+                    is_synthetic_path=safe_is_synthetic,
+                )
             )
             continue
 
@@ -1373,7 +1385,14 @@ def load_exemptions_inventory(
         if record_error is not None:
             errors.append(record_error)
             inventory.append(
-                ExemptionInventoryEntry(safe_path, safe_rule, safe_digest_prefix, safe_expires, "invalid")
+                ExemptionInventoryEntry(
+                    safe_path,
+                    safe_rule,
+                    safe_digest_prefix,
+                    safe_expires,
+                    "invalid",
+                    is_synthetic_path=safe_is_synthetic,
+                )
             )
             continue
 
@@ -1850,8 +1869,6 @@ def display_path(
 ) -> str:
     """Return a safe display path, redacting any path that matches any detector (or all paths when collection failed)."""
     if redact_all:
-        if path.startswith("<") and path.endswith(">"):
-            return escape_for_display(path)
         return redacted_path_id(path)
     try:
         variants = _line_variants(path)
@@ -2059,19 +2076,21 @@ class Scanner:
     ) -> tuple[str | None, list[tuple[int, str, str, bool]], bool]:
         """Collect raw (line_no, rule_id, folded_value, is_wrapped) hits for text.
 
-        Uses Git's LF-only line model (stripping trailing CR from CRLF while
-        keeping bare CR inside the same line so diff hunk coordinates stay
-        aligned). When `identity_scope` is active, unchanged lines are filtered
-        before counting identity hits against MAX_FINDINGS.
+        Uses Git's LF-only line model for 1-based line coordinates while
+        splitting bare CR internally into logical sub-lines mapped back to the
+        enclosing Git line number (so bare-CR YAML phone lists are caught
+        without shifting Git hunk line numbers). When `identity_scope` is
+        active, unchanged lines are filtered before MAX_FINDINGS counting and
+        wrapped pairs only match spans that cross into added content.
         """
         if not text:
             return None, [], False
-        lines = [line.replace("\r", " ") for line in _split_git_lines(text)]
-        unified = "\n".join(lines)
-        if not unified:
+        git_lines = _split_git_lines(text)
+        prescreen_text = "\n".join(git_lines).replace("\r", "\n")
+        if not prescreen_text:
             return None, [], False
         try:
-            file_variants = self._text_variants(unified)
+            file_variants = self._text_variants(prescreen_text)
         except ScanConfigError as exc:
             return f"decode failed ({exc}); failing closed", [], False
         scoped_identity = identity_scope is not None and not identity_scope.all_content
@@ -2105,73 +2124,118 @@ class Scanner:
         ]
         per_line_hits: dict[tuple[int, str], set[str]] = {}
         yaml_phone_indent: int | None = None
-        for number, line in enumerate(lines, start=1):
-            if not line:
+        for number, git_line in enumerate(git_lines, start=1):
+            if not git_line:
                 continue
-            try:
-                line_variants = _line_variants(line)
-            except ScanConfigError as exc:
-                return f"decode failed ({exc}); failing closed", [], False
-            for rule_id, detector_fn in triggered:
-                if (
-                    rule_id == IDENTITY_RULE_ID
-                    and scoped_identity
-                    and not identity_scope.includes_line(path, number)
-                ):
+            sub_lines = git_line.split("\r")
+            seen_for_git_line: dict[str, set[str]] = {}
+            for sub_line in sub_lines:
+                if not sub_line:
                     continue
-                det_hits, err = self._run_detector_checked(rule_id, detector_fn, line_variants, path=path)
-                if err is not None:
-                    return err, [], False
-                seen_values: set[str] = set()
-                for value in det_hits:
-                    if value not in seen_values:
-                        seen_values.add(value)
-                        raw_hits.append((number, rule_id, value, False))
-                        if len(raw_hits) > MAX_FINDINGS:
-                            return None, raw_hits[:MAX_FINDINGS], True
-                if wrap_triggered and rule_id in (IDENTITY_RULE_ID, KEYED_LIST_RULE_ID):
-                    per_line_hits[(number, rule_id)] = seen_values
-                if rule_id == "phone" and yaml_phone_indent is not None:
-                    stripped = line.lstrip(" \t")
-                    indent = len(line) - len(stripped)
-                    if stripped:
-                        item_pos = _yaml_list_item_start(line)
-                        if item_pos is not None and indent >= yaml_phone_indent:
-                            for lv in line_variants:
-                                lv_item_pos = _yaml_list_item_start(lv)
-                                if lv_item_pos is None:
-                                    continue
-                                vm = PHONE_VALUE_AT_RE.match(lv, lv_item_pos)
-                                if vm is None:
-                                    continue
-                                folded = _normalize_phone_candidate(vm.group(1))
-                                if folded is not None and folded not in seen_values:
-                                    seen_values.add(folded)
-                                    raw_hits.append((number, "phone", folded, False))
+                try:
+                    line_variants = _line_variants(sub_line)
+                except ScanConfigError as exc:
+                    return f"decode failed ({exc}); failing closed", [], False
+                for rule_id, detector_fn in triggered:
+                    if (
+                        rule_id == IDENTITY_RULE_ID
+                        and scoped_identity
+                        and not identity_scope.includes_line(path, number)
+                    ):
+                        continue
+                    det_hits, err = self._run_detector_checked(rule_id, detector_fn, line_variants, path=path)
+                    if err is not None:
+                        return err, [], False
+                    seen_values = seen_for_git_line.setdefault(rule_id, set())
+                    for value in det_hits:
+                        if value not in seen_values:
+                            seen_values.add(value)
+                            raw_hits.append((number, rule_id, value, False))
+                            if len(raw_hits) > MAX_FINDINGS:
+                                return None, raw_hits[:MAX_FINDINGS], True
+                    if rule_id == "phone" and yaml_phone_indent is not None:
+                        stripped = sub_line.lstrip(" \t")
+                        indent = len(sub_line) - len(stripped)
+                        if stripped:
+                            item_pos = _yaml_list_item_start(sub_line)
+                            if item_pos is not None and indent >= yaml_phone_indent:
+                                for lv in line_variants:
+                                    lv_item_pos = _yaml_list_item_start(lv)
+                                    if lv_item_pos is None:
+                                        continue
+                                    vm = PHONE_VALUE_AT_RE.match(lv, lv_item_pos)
+                                    if vm is None:
+                                        continue
+                                    folded = _normalize_phone_candidate(vm.group(1))
+                                    if folded is not None and folded not in seen_values:
+                                        seen_values.add(folded)
+                                        raw_hits.append((number, "phone", folded, False))
+                                        if len(raw_hits) > MAX_FINDINGS:
+                                            return None, raw_hits[:MAX_FINDINGS], True
+                            elif indent <= yaml_phone_indent:
+                                yaml_phone_indent = None
+                if phone_triggered and sub_line.rstrip(" \t").endswith(":"):
+                    for lv in line_variants:
+                        found_yaml_key = False
+                        for km in PHONE_KEY_RE.finditer(lv):
+                            if not _is_valid_phone_key_token(lv, km.start(), km.end()):
+                                continue
+                            walked = _walk_after_phone_key(lv, km.end())
+                            if walked is not None and walked == (len(lv), True):
+                                yaml_phone_indent = len(sub_line) - len(sub_line.lstrip(" \t"))
+                                found_yaml_key = True
+                                break
+                        if found_yaml_key:
+                            break
+            if wrap_triggered:
+                for rule_id, _fn in wrap_triggered:
+                    if rule_id in seen_for_git_line:
+                        per_line_hits[(number, rule_id)] = seen_for_git_line[rule_id]
+                # Also catch wrapped identity/keyed terms split across bare-CR sub-lines on the same Git line.
+                if len(sub_lines) > 1:
+                    for s_idx in range(len(sub_lines) - 1):
+                        cur_sub = sub_lines[s_idx]
+                        nxt_sub = sub_lines[s_idx + 1]
+                        if not cur_sub or not nxt_sub:
+                            continue
+                        sub_pair_rules = [
+                            (rule_id, fn)
+                            for rule_id, fn in wrap_triggered
+                            if not (
+                                rule_id == IDENTITY_RULE_ID
+                                and scoped_identity
+                                and not identity_scope.includes_line(path, number)
+                            )
+                        ]
+                        if not sub_pair_rules:
+                            continue
+                        sub_pair_text = cur_sub[-WRAP_WINDOW_CHARS:] + "\n" + nxt_sub[:WRAP_WINDOW_CHARS]
+                        try:
+                            sub_pair_variants = _line_variants(sub_pair_text)
+                        except ScanConfigError as exc:
+                            return f"decode failed ({exc}); failing closed", [], False
+                        for rule_id, detector_fn in sub_pair_rules:
+                            det_hits, err = self._run_detector_checked(
+                                rule_id, detector_fn, sub_pair_variants, path=path
+                            )
+                            if err is not None:
+                                return err, [], False
+                            seen_values = seen_for_git_line.setdefault(rule_id, set())
+                            for value in det_hits:
+                                if value not in seen_values:
+                                    seen_values.add(value)
+                                    raw_hits.append((number, rule_id, value, False))
                                     if len(raw_hits) > MAX_FINDINGS:
                                         return None, raw_hits[:MAX_FINDINGS], True
-                        elif indent <= yaml_phone_indent:
-                            yaml_phone_indent = None
-            if phone_triggered and line.rstrip(" \t").endswith(":"):
-                for lv in line_variants:
-                    found_yaml_key = False
-                    for km in PHONE_KEY_RE.finditer(lv):
-                        if not _is_valid_phone_key_token(lv, km.start(), km.end()):
-                            continue
-                        walked = _walk_after_phone_key(lv, km.end())
-                        if walked is not None and walked == (len(lv), True):
-                            yaml_phone_indent = len(line) - len(line.lstrip(" \t"))
-                            found_yaml_key = True
-                            break
-                    if found_yaml_key:
-                        break
+                            per_line_hits[(number, rule_id)] = seen_values
 
         # Linear-time wrapped cross-line pass for multi-word/hyphenated identities
-        # and keyed terms split across adjacent lines (bounded by WRAP_WINDOW_CHARS).
-        if wrap_triggered and len(lines) > 1:
-            for idx in range(len(lines) - 1):
-                cur_line = lines[idx]
-                nxt_line = lines[idx + 1]
+        # and keyed terms split across adjacent Git lines (bounded by WRAP_WINDOW_CHARS).
+        if wrap_triggered and len(git_lines) > 1:
+            unchanged_boundary_hits: dict[tuple[int, str, str], set[str]] = {}
+            for idx in range(len(git_lines) - 1):
+                cur_line = git_lines[idx]
+                nxt_line = git_lines[idx + 1]
                 if not cur_line or not nxt_line:
                     continue
                 number = idx + 1
@@ -2186,7 +2250,11 @@ class Scanner:
                 ]
                 if not pair_rules:
                     continue
-                pair_text = cur_line[-WRAP_WINDOW_CHARS:] + "\n" + nxt_line[:WRAP_WINDOW_CHARS]
+                cur_tail = cur_line.rsplit("\r", 1)[-1][-WRAP_WINDOW_CHARS:]
+                nxt_head = nxt_line.split("\r", 1)[0][:WRAP_WINDOW_CHARS]
+                if not cur_tail or not nxt_head:
+                    continue
+                pair_text = cur_tail + "\n" + nxt_head
                 try:
                     pair_variants = _line_variants(pair_text)
                 except ScanConfigError as exc:
@@ -2195,9 +2263,41 @@ class Scanner:
                     det_hits, err = self._run_detector_checked(rule_id, detector_fn, pair_variants, path=path)
                     if err is not None:
                         return err, [], False
-                    already = per_line_hits.get((number, rule_id), set()) | per_line_hits.get(
-                        (number + 1, rule_id), set()
-                    )
+                    if not det_hits:
+                        continue
+                    cur_hits = per_line_hits.get((number, rule_id))
+                    if cur_hits is None:
+                        bkey = (number, "tail", rule_id)
+                        cur_hits = unchanged_boundary_hits.get(bkey)
+                        if cur_hits is None:
+                            try:
+                                tail_variants = _line_variants(cur_tail)
+                            except ScanConfigError as exc:
+                                return f"decode failed ({exc}); failing closed", [], False
+                            t_hits, t_err = self._run_detector_checked(
+                                rule_id, detector_fn, tail_variants, path=path
+                            )
+                            if t_err is not None:
+                                return t_err, [], False
+                            cur_hits = set(t_hits)
+                            unchanged_boundary_hits[bkey] = cur_hits
+                    nxt_hits = per_line_hits.get((number + 1, rule_id))
+                    if nxt_hits is None:
+                        bkey = (number + 1, "head", rule_id)
+                        nxt_hits = unchanged_boundary_hits.get(bkey)
+                        if nxt_hits is None:
+                            try:
+                                head_variants = _line_variants(nxt_head)
+                            except ScanConfigError as exc:
+                                return f"decode failed ({exc}); failing closed", [], False
+                            h_hits, h_err = self._run_detector_checked(
+                                rule_id, detector_fn, head_variants, path=path
+                            )
+                            if h_err is not None:
+                                return h_err, [], False
+                            nxt_hits = set(h_hits)
+                            unchanged_boundary_hits[bkey] = nxt_hits
+                    already = cur_hits | nxt_hits
                     seen_pair: set[str] = set()
                     for value in det_hits:
                         if value not in already and value not in seen_pair:
@@ -2236,13 +2336,9 @@ class Scanner:
             for rule_id, _mode, fn in self.active_detectors
             if rule_id in (IDENTITY_RULE_ID, KEYED_LIST_RULE_ID)
         ]
-        is_synthetic_ref = (
-            (source.path.startswith("commit:") or source.path.startswith("tag:"))
-            and source.path.endswith(":message")
-        )
         shown = (
             redacted_path_id(source.path)
-            if (path_hits or path_errors or (self.redact_all_paths and not is_synthetic_ref))
+            if (path_hits or path_errors or (self.redact_all_paths and not source.is_synthetic_ref))
             else display_path(source.path, extra_detectors=extra_for_path)
         )
 
@@ -2577,7 +2673,10 @@ def _print_exemptions(
                 status = "applied" if item.record.key in applied else "unused"
             else:
                 status = item.status
-            shown = display_path(item.path, extra_detectors=extra_detectors, redact_all=redact_all)
+            if item.is_synthetic_path:
+                shown = escape_for_display(item.path)
+            else:
+                shown = display_path(item.path, extra_detectors=extra_detectors, redact_all=redact_all)
             print(
                 f"- [{status}] {shown} rule={item.rule} digest={item.digest_prefix} expires={item.expires}"
             )
@@ -2798,7 +2897,7 @@ def _scan_commit_trees(
                 failures.append(f"commit message read failed: {exc}")
             else:
                 msg_failures, msg_warnings = scanner.scan_source(
-                    SourceFile(f"commit:{commit[:12]}:message", msg_bytes)
+                    SourceFile(f"commit:{commit[:12]}:message", msg_bytes, is_synthetic_ref=True)
                 )
                 failures.extend(msg_failures)
                 warnings.extend(msg_warnings)
@@ -2863,7 +2962,7 @@ def _scan_commit_trees(
                 failures.append(f"tag message read failed: {exc}")
                 continue
             tag_failures, tag_warnings = scanner.scan_source(
-                SourceFile(f"tag:{tag_oid[:12]}:message", tag_bytes)
+                SourceFile(f"tag:{tag_oid[:12]}:message", tag_bytes, is_synthetic_ref=True)
             )
             failures.extend(tag_failures)
             warnings.extend(tag_warnings)

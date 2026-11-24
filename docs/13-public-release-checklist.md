@@ -301,13 +301,16 @@ Hash-bound binary exceptions live in `tests/public_scan_binary_exceptions.json`:
   base branch, the pull request that first introduces the identity check
   (`TSK-008`) runs against the pre-TSK-008 base workflow (which checks
   `PUBLIC_SCAN_VERIFIED=1` only). When that PR merges to `main`, the push run
-  checks out `github.event.before` (the pre-TSK-008 base scanner); the workflow
-  probes whether that checked-out base scanner supports `--identity-source` and
-  uses a one-time bootstrap fallback with a notice only when the trusted base
-  genuinely lacks `--identity-source`. On every subsequent pull request and
-  push, the trusted base supports `--identity-source` and both platform jobs
-  and `public-scan / result` strictly require both `PUBLIC_SCAN_VERIFIED=1` and
-  `PUBLIC_SCAN_IDENTITY_VERIFIED=1`. Live GitHub test pull requests verifying
+  checks out `github.event.before` (pinned to the final pre-TSK-008 commit
+  `85f4b9eccbf5fb4a62599beeb32a4cd4cd6961d4`); the workflow allows the one-time
+  bootstrap fallback ONLY on `push` to `refs/heads/main` with that exact
+  `before` SHA when a working `--help` probe confirms the trusted base lacks
+  `--identity-source`. Every other event (including any pull request into an
+  older branch, any different `before` SHA, or any failed probe) fails closed;
+  older branches must be rebased onto `main` first. On every subsequent pull
+  request and push, the trusted base supports `--identity-source` and both
+  platform jobs and `public-scan / result` strictly require both
+  `PUBLIC_SCAN_VERIFIED=1` and `PUBLIC_SCAN_IDENTITY_VERIFIED=1`. Live GitHub test pull requests verifying
   AC-3 (a PR that weakens the identity check and still fails) and AC-4 (a PR
   whose commit author name appears in a changed file and fails with only file,
   line, and rule) remain an open post-merge live-verification acceptance step

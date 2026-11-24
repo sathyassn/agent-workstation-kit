@@ -10,6 +10,13 @@
 #   (`github.event.before`) to supply the scanner, modes, exemptions, binary
 #   exceptions, and identity helpers, and scans `before..github.sha` as git data
 #   only (failing closed if `before` is zero on any non-root commit).
+# - One-time bootstrap rule: a trusted base scanner predating `--identity-source`
+#   is accepted ONLY on the single pinned push to `refs/heads/main` whose
+#   `github.event.before` is `85f4b9eccbf5fb4a62599beeb32a4cd4cd6961d4` (the
+#   final pre-TSK-008 commit on `main`). Every other event—including any
+#   `pull_request_target` into an older branch, any push with a different
+#   `before` SHA, or any failed `--help` probe—fails closed; older target
+#   branches must be rebased onto `main` first.
 #
 # No secret is required, so fork and same-repository pull requests run the exact
 # same blocking checks on both Linux and macOS.
@@ -110,14 +117,35 @@ jobs:
       - name: Run deterministic privacy and identity scan on every commit
         id: run_scan
         env:
+          EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF: ${{ github.ref }}
+          PUSH_BEFORE: ${{ github.event.before }}
           SCAN_MODE: ${{ steps.target.outputs.mode }}
           BASE_SHA: ${{ steps.target.outputs.base }}
           HEAD_SHA: ${{ steps.target.outputs.head }}
         run: |
           set -euo pipefail
+          BOOTSTRAP_BEFORE="85f4b9eccbf5fb4a62599beeb32a4cd4cd6961d4"
+          set +e
+          help_out=$(python3 -I -B tests/check_public_release.py --help 2>&1)
+          help_status=$?
+          set -e
+          if [ "$help_status" -ne 0 ]; then
+            echo "::error::trusted base scanner --help probe failed (exit $help_status); failing closed"
+            printf '%s\n' "$help_out"
+            exit 1
+          fi
           supports_identity=false
-          if python3 -I -B tests/check_public_release.py --help 2>&1 | grep -q -- '--identity-source'; then
+          if printf '%s\n' "$help_out" | grep -q -- '--identity-source'; then
             supports_identity=true
+          fi
+          is_one_time_bootstrap=false
+          if [ "$supports_identity" != "true" ] && [ "${EVENT_NAME:-}" = "push" ] && [ "${GITHUB_REF:-}" = "refs/heads/main" ] && [ "${PUSH_BEFORE:-}" = "$BOOTSTRAP_BEFORE" ]; then
+            is_one_time_bootstrap=true
+          fi
+          if [ "$supports_identity" != "true" ] && [ "$is_one_time_bootstrap" != "true" ]; then
+            echo "::error::trusted base scanner lacks --identity-source outside the pinned one-time main bootstrap ($BOOTSTRAP_BEFORE); rebase target branch onto main"
+            exit 1
           fi
           set +e
           if [ "$supports_identity" = "true" ]; then
@@ -132,7 +160,7 @@ jobs:
               exit 1
             fi
           else
-            echo "::notice::One-time bootstrap: trusted base scanner predates --identity-source; running base privacy scan without identity verification"
+            echo "::notice::One-time pinned bootstrap ($BOOTSTRAP_BEFORE): trusted base scanner predates --identity-source; running base privacy scan without identity verification"
             if [ "$SCAN_MODE" = "range" ]; then
               out=$(python3 -I -B tests/check_public_release.py --range "$BASE_SHA" "$HEAD_SHA" 2>&1)
               status=$?
@@ -230,14 +258,35 @@ jobs:
       - name: Run deterministic privacy and identity scan on every commit
         id: run_scan
         env:
+          EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF: ${{ github.ref }}
+          PUSH_BEFORE: ${{ github.event.before }}
           SCAN_MODE: ${{ steps.target.outputs.mode }}
           BASE_SHA: ${{ steps.target.outputs.base }}
           HEAD_SHA: ${{ steps.target.outputs.head }}
         run: |
           set -euo pipefail
+          BOOTSTRAP_BEFORE="85f4b9eccbf5fb4a62599beeb32a4cd4cd6961d4"
+          set +e
+          help_out=$(python3 -I -B tests/check_public_release.py --help 2>&1)
+          help_status=$?
+          set -e
+          if [ "$help_status" -ne 0 ]; then
+            echo "::error::trusted base scanner --help probe failed (exit $help_status); failing closed"
+            printf '%s\n' "$help_out"
+            exit 1
+          fi
           supports_identity=false
-          if python3 -I -B tests/check_public_release.py --help 2>&1 | grep -q -- '--identity-source'; then
+          if printf '%s\n' "$help_out" | grep -q -- '--identity-source'; then
             supports_identity=true
+          fi
+          is_one_time_bootstrap=false
+          if [ "$supports_identity" != "true" ] && [ "${EVENT_NAME:-}" = "push" ] && [ "${GITHUB_REF:-}" = "refs/heads/main" ] && [ "${PUSH_BEFORE:-}" = "$BOOTSTRAP_BEFORE" ]; then
+            is_one_time_bootstrap=true
+          fi
+          if [ "$supports_identity" != "true" ] && [ "$is_one_time_bootstrap" != "true" ]; then
+            echo "::error::trusted base scanner lacks --identity-source outside the pinned one-time main bootstrap ($BOOTSTRAP_BEFORE); rebase target branch onto main"
+            exit 1
           fi
           set +e
           if [ "$supports_identity" = "true" ]; then
@@ -252,7 +301,7 @@ jobs:
               exit 1
             fi
           else
-            echo "::notice::One-time bootstrap: trusted base scanner predates --identity-source; running base privacy scan without identity verification"
+            echo "::notice::One-time pinned bootstrap ($BOOTSTRAP_BEFORE): trusted base scanner predates --identity-source; running base privacy scan without identity verification"
             if [ "$SCAN_MODE" = "range" ]; then
               out=$(python3 -I -B tests/check_public_release.py --range "$BASE_SHA" "$HEAD_SHA" 2>&1)
               status=$?
@@ -285,6 +334,9 @@ jobs:
     steps:
       - name: Require verified deterministic privacy and identity scan on Linux and macOS
         env:
+          EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF: ${{ github.ref }}
+          PUSH_BEFORE: ${{ github.event.before }}
           LINUX_RESULT: ${{ needs.scan-linux.result }}
           LINUX_VERIFIED: ${{ needs.scan-linux.outputs.scan_verified }}
           LINUX_IDENTITY_VERIFIED: ${{ needs.scan-linux.outputs.identity_verified }}
@@ -293,6 +345,7 @@ jobs:
           MACOS_IDENTITY_VERIFIED: ${{ needs.scan-macos.outputs.identity_verified }}
         run: |
           set -euo pipefail
+          BOOTSTRAP_BEFORE="85f4b9eccbf5fb4a62599beeb32a4cd4cd6961d4"
           if [ "$LINUX_RESULT" != "success" ] || [ "$LINUX_VERIFIED" != "true" ]; then
             echo "::error::Linux public scan did not complete with verification (result=$LINUX_RESULT verified=$LINUX_VERIFIED identity=$LINUX_IDENTITY_VERIFIED)"
             exit 1
@@ -303,9 +356,9 @@ jobs:
           fi
           if [ "$LINUX_IDENTITY_VERIFIED" = "true" ] && [ "$MACOS_IDENTITY_VERIFIED" = "true" ]; then
             echo "Deterministic public and identity scan verified on Linux and macOS."
-          elif [ "$LINUX_IDENTITY_VERIFIED" = "bootstrap" ] && [ "$MACOS_IDENTITY_VERIFIED" = "bootstrap" ]; then
-            echo "::notice::One-time bootstrap verified on Linux and macOS against a base scanner predating --identity-source."
+          elif [ "${EVENT_NAME:-}" = "push" ] && [ "${GITHUB_REF:-}" = "refs/heads/main" ] && [ "${PUSH_BEFORE:-}" = "$BOOTSTRAP_BEFORE" ] && [ "$LINUX_IDENTITY_VERIFIED" = "bootstrap" ] && [ "$MACOS_IDENTITY_VERIFIED" = "bootstrap" ]; then
+            echo "::notice::One-time pinned bootstrap ($BOOTSTRAP_BEFORE) verified on Linux and macOS against the final pre-TSK-008 base scanner."
           else
-            echo "::error::Identity scan verification failed or mismatched (linux=$LINUX_IDENTITY_VERIFIED macos=$MACOS_IDENTITY_VERIFIED)"
+            echo "::error::Identity scan verification failed or mismatched (event=${EVENT_NAME:-} ref=${GITHUB_REF:-} linux=$LINUX_IDENTITY_VERIFIED macos=$MACOS_IDENTITY_VERIFIED)"
             exit 1
           fi

@@ -1875,15 +1875,15 @@ class Round2ReviewRegressionTests(unittest.TestCase):
             write_scan_configs(root)
             git(root, "init", "-q", "-b", "main")
             (root / "docs").mkdir()
-            # Bare CR inside line 1 MUST NOT count as an extra line break relative to git diff hunks.
-            (root / "docs/cr.txt").write_bytes(b"line1-left\rline1-right\nsecond line\n")
+            # Several bare CR characters inside line 1 MUST NOT count as extra line breaks relative to git diff hunks.
+            (root / "docs/cr.txt").write_bytes(b"seg1\rseg2\rseg3\rseg4\nsecond line\n")
             git(root, "add", "-A")
             git(root, "commit", "-q", "-m", "chore: base with bare CR")
             base = git(root, "rev-parse", "HEAD").stdout.strip()
 
             git(root, "checkout", "-q", "-b", "feat/cr-line")
             (root / "docs/cr.txt").write_bytes(
-                b"line1-left\rline1-right\nsecond line\nAuthor: " + author.encode("utf-8") + b"\n"
+                b"seg1\rseg2\rseg3\rseg4\nsecond line\nAuthor: " + author.encode("utf-8") + b"\n"
             )
             git(root, "add", "docs/cr.txt")
             git(
@@ -2027,10 +2027,14 @@ class Round2ReviewRegressionTests(unittest.TestCase):
             root = Path(directory)
             (root / "tests").mkdir()
             gh_out = root / "gh_output.txt"
+            pinned_before = "85f4b9eccbf5fb4a62599beeb32a4cd4cd6961d4"
             base_env = {
                 "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                "EVENT_NAME": "push",
+                "GITHUB_REF": "refs/heads/main",
+                "PUSH_BEFORE": pinned_before,
                 "SCAN_MODE": "range",
-                "BASE_SHA": "a" * 40,
+                "BASE_SHA": pinned_before,
                 "HEAD_SHA": "b" * 40,
                 "GITHUB_OUTPUT": str(gh_out),
             }
@@ -2120,6 +2124,9 @@ class Round2ReviewRegressionTests(unittest.TestCase):
                         ["bash", "-c", result_script],
                         env={
                             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                            "EVENT_NAME": "push",
+                            "GITHUB_REF": "refs/heads/main",
+                            "PUSH_BEFORE": pinned_before,
                             "LINUX_RESULT": "success",
                             "LINUX_VERIFIED": "true",
                             "LINUX_IDENTITY_VERIFIED": linux_id,
@@ -2429,6 +2436,290 @@ class Round2ReviewRegressionTests(unittest.TestCase):
             )
             self.assertNotEqual(0, proc_zero.returncode, proc_zero.stdout + proc_zero.stderr)
             self.assertIn("non-root", (proc_zero.stdout + proc_zero.stderr).lower())
+
+
+class Round3ReviewRegressionTests(unittest.TestCase):
+    """Regression tests for PR #45 round 3 cross-family review findings (N1-N5)."""
+
+    SYNTHETIC_KEY_BYTES = bytes(range(20, 52))
+    PINNED_BOOTSTRAP_BEFORE = "85f4b9eccbf5fb4a62599beeb32a4cd4cd6961d4"
+
+    def _keyed_mod(self):
+        return _load_module("public_scan_keyed_r3", "tests/public_scan_keyed.py")
+
+    def _extract_step(self, step_name: str) -> str:
+        return Round2ReviewRegressionTests()._extract_workflow_step_run(
+            ".github/workflows/public-scan.yml", step_name
+        )
+
+    def test_n1_bootstrap_is_strictly_one_time_for_pinned_main_push_only(self) -> None:
+        workflow = (ROOT / ".github/workflows/public-scan.yml").read_text(encoding="utf-8")
+        self.assertIn(self.PINNED_BOOTSTRAP_BEFORE, workflow)
+
+        run_scan_script = self._extract_step("Run deterministic privacy and identity scan on every commit")
+        result_script = self._extract_step(
+            "Require verified deterministic privacy and identity scan on Linux and macOS"
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "tests").mkdir()
+            gh_out = root / "gh_output.txt"
+            old_scanner = (
+                "import sys\n"
+                "if '--help' in sys.argv:\n"
+                "    print('usage: check_public_release.py [--range BASE HEAD]')\n"
+                "    raise SystemExit(0)\n"
+                "if '--identity-source' in sys.argv:\n"
+                "    print('unrecognized arguments: --identity-source', file=sys.stderr)\n"
+                "    raise SystemExit(2)\n"
+                "print('PUBLIC_SCAN_VERIFIED=1')\n"
+            )
+            (root / "tests/check_public_release.py").write_text(old_scanner, encoding="utf-8")
+
+            common_env = {
+                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                "SCAN_MODE": "range",
+                "BASE_SHA": self.PINNED_BOOTSTRAP_BEFORE,
+                "HEAD_SHA": "b" * 40,
+                "GITHUB_OUTPUT": str(gh_out),
+            }
+
+            # (a) PR into an old branch lacking --identity-source MUST FAIL CLOSED.
+            gh_out.write_text("", encoding="utf-8")
+            proc_pr_old = subprocess.run(
+                ["bash", "-c", run_scan_script],
+                cwd=root,
+                env={
+                    **common_env,
+                    "EVENT_NAME": "pull_request_target",
+                    "GITHUB_REF": "refs/heads/old-branch",
+                    "PUSH_BEFORE": "",
+                },
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(0, proc_pr_old.returncode, proc_pr_old.stdout + proc_pr_old.stderr)
+            self.assertEqual("", gh_out.read_text(encoding="utf-8").strip())
+
+            # (b) Push to main with a DIFFERENT before SHA MUST FAIL CLOSED.
+            gh_out.write_text("", encoding="utf-8")
+            proc_other_push = subprocess.run(
+                ["bash", "-c", run_scan_script],
+                cwd=root,
+                env={
+                    **common_env,
+                    "EVENT_NAME": "push",
+                    "GITHUB_REF": "refs/heads/main",
+                    "PUSH_BEFORE": "1" * 40,
+                },
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(0, proc_other_push.returncode, proc_other_push.stdout + proc_other_push.stderr)
+
+            # (c) Failed --help probe on a PR (or even pinned push) MUST FAIL CLOSED.
+            (root / "tests/check_public_release.py").write_text(
+                "import sys\nprint('broken scanner', file=sys.stderr)\nraise SystemExit(1)\n",
+                encoding="utf-8",
+            )
+            for label, ev_env in (
+                ("pr_probe_fail", {"EVENT_NAME": "pull_request_target", "GITHUB_REF": "refs/heads/main", "PUSH_BEFORE": ""}),
+                ("push_probe_fail", {"EVENT_NAME": "push", "GITHUB_REF": "refs/heads/main", "PUSH_BEFORE": self.PINNED_BOOTSTRAP_BEFORE}),
+            ):
+                with self.subTest(case=label):
+                    gh_out.write_text("", encoding="utf-8")
+                    proc_fail = subprocess.run(
+                        ["bash", "-c", run_scan_script],
+                        cwd=root,
+                        env={**common_env, **ev_env},
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    self.assertNotEqual(0, proc_fail.returncode, proc_fail.stdout + proc_fail.stderr)
+                    self.assertEqual("", gh_out.read_text(encoding="utf-8").strip())
+
+            # (d) ONLY push to refs/heads/main with before == PINNED_BOOTSTRAP_BEFORE is allowed bootstrap.
+            (root / "tests/check_public_release.py").write_text(old_scanner, encoding="utf-8")
+            gh_out.write_text("", encoding="utf-8")
+            proc_pinned = subprocess.run(
+                ["bash", "-c", run_scan_script],
+                cwd=root,
+                env={
+                    **common_env,
+                    "EVENT_NAME": "push",
+                    "GITHUB_REF": "refs/heads/main",
+                    "PUSH_BEFORE": self.PINNED_BOOTSTRAP_BEFORE,
+                },
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(0, proc_pinned.returncode, proc_pinned.stdout + proc_pinned.stderr)
+            self.assertIn("identity_verified=bootstrap", gh_out.read_text(encoding="utf-8"))
+
+            # Result aggregator also rejects bootstrap outside the single pinned main push.
+            proc_res_pr_boot = subprocess.run(
+                ["bash", "-c", result_script],
+                env={
+                    "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                    "EVENT_NAME": "pull_request_target",
+                    "GITHUB_REF": "refs/heads/main",
+                    "PUSH_BEFORE": "",
+                    "LINUX_RESULT": "success",
+                    "LINUX_VERIFIED": "true",
+                    "LINUX_IDENTITY_VERIFIED": "bootstrap",
+                    "MACOS_RESULT": "success",
+                    "MACOS_VERIFIED": "true",
+                    "MACOS_IDENTITY_VERIFIED": "bootstrap",
+                },
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(0, proc_res_pr_boot.returncode, proc_res_pr_boot.stdout + proc_res_pr_boot.stderr)
+
+    def test_n2_bare_cr_yaml_phone_list_is_caught_while_preserving_git_line_numbers(self) -> None:
+        bare_digits = join("415", "867", "5309")
+        hyphen_phone = join("415", "-", "867", "-", "5309")
+        for label, payload, secret_token in (
+            ("bare_digits_yaml_list", f"phones:\r  - {bare_digits}\n".encode("utf-8"), bare_digits),
+            ("multi_item_bare_digits", f"phones:\r  - 5555550100\r  - {bare_digits}\n".encode("utf-8"), bare_digits),
+            ("hyphenated_yaml_list", f"phones:\r  - {hyphen_phone}\n".encode("utf-8"), hyphen_phone),
+        ):
+            with self.subTest(case=label):
+                res = scan.scan_sources([scan.SourceFile("docs/contacts.yaml", payload)])
+                self.assertEqual(["docs/contacts.yaml:1: matched rule 'phone'"], res.failures)
+                self.assertNotIn(secret_token, "\n".join(res.failures))
+
+    def test_n3_clean_edit_next_to_unchanged_identity_line_passes_while_real_wrap_fails(self) -> None:
+        author = join("Kestrel", " ", "Nolan")
+        email = join("knolan", "@", "northwind-lab", ".test")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_scan_configs(root)
+            git(root, "init", "-q", "-b", "main")
+            (root / "docs").mkdir()
+            (root / "docs/notes.md").write_text(
+                f"Reviewed by {author}.\n",
+                encoding="utf-8",
+            )
+            git(root, "add", "-A")
+            git(root, "commit", "-q", "-m", "chore: pre-existing identity line")
+            base = git(root, "rev-parse", "HEAD").stdout.strip()
+
+            # (a) Adding a clean line right next to the unchanged identity line MUST pass in CI --range mode.
+            git(root, "checkout", "-q", "-b", "feat/clean-adjacent")
+            (root / "docs/notes.md").write_text(
+                f"Reviewed by {author}.\nAdded a clean follow-up sentence.\n",
+                encoding="utf-8",
+            )
+            git(root, "add", "docs/notes.md")
+            git(
+                root,
+                "commit",
+                "-q",
+                "-m",
+                "docs: add clean adjacent line",
+                author_name=author,
+                author_email=email,
+            )
+            clean_head = git(root, "rev-parse", "HEAD").stdout.strip()
+            code_clean, out_clean, err_clean = run_main(
+                ["--root", str(root), "--range", base, clean_head, "--identity-source", "ci"]
+            )
+            self.assertEqual(0, code_clean, out_clean + err_clean)
+
+            # (b) Adding the second word of a wrapped two-word identity on an added line MUST still fail.
+            git(root, "checkout", "-q", "-b", "feat/real-wrap", base)
+            (root / "docs/wrap.md").write_text("Assigned to Kestrel\n", encoding="utf-8")
+            git(root, "add", "docs/wrap.md")
+            git(root, "commit", "-q", "-m", "chore: first word on base")
+            wrap_base = git(root, "rev-parse", "HEAD").stdout.strip()
+
+            (root / "docs/wrap.md").write_text("Assigned to Kestrel\nNolan today.\n", encoding="utf-8")
+            git(root, "add", "docs/wrap.md")
+            git(
+                root,
+                "commit",
+                "-q",
+                "-m",
+                "docs: complete wrapped name",
+                author_name=author,
+                author_email=email,
+            )
+            wrap_head = git(root, "rev-parse", "HEAD").stdout.strip()
+            code_wrap, out_wrap, err_wrap = run_main(
+                ["--root", str(root), "--range", wrap_base, wrap_head, "--identity-source", "ci"]
+            )
+            self.assertEqual(1, code_wrap, out_wrap + err_wrap)
+            self.assertIn("docs/wrap.md:1: matched rule 'identity'", out_wrap + err_wrap)
+
+    def test_n4_keyed_list_matches_mailto_with_query_string_in_linear_time(self) -> None:
+        keyed = self._keyed_mod()
+        email_val = join("client", "@", "northwind-corp", ".test")
+        digest = keyed.compute_keyed_digest(
+            self.SYNTHETIC_KEY_BYTES,
+            email_val,
+            normalize_fn=scan.normalize_text,
+        )
+        matcher = keyed.KeyedListMatcher(
+            self.SYNTHETIC_KEY_BYTES,
+            frozenset({digest}),
+            normalize_fn=scan.normalize_text,
+        )
+        for label, line in (
+            ("markdown_mailto_subject", f"[x](mailto:{email_val}?subject=hi)"),
+            ("bare_mailto_cc", f"mailto:{email_val}?cc=x"),
+        ):
+            with self.subTest(case=label):
+                hits = matcher.detect(scan.normalize_text(line))
+                self.assertIn(digest, hits, f"missed keyed mailto query shape '{label}'")
+
+    def test_n5_collection_failure_redacts_angle_bracket_exemption_and_synthetic_ref_filename(self) -> None:
+        secret_host = join("leaked", "-", "node88")
+        angle_path = f"<{secret_host}>"
+        spoof_filename = f"commit:{secret_host}:message"
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_scan_configs(
+                root,
+                exemptions=[
+                    {
+                        "path": angle_path,
+                        "rule": "identity",
+                        "digest": scan.compute_exemption_digest("identity", secret_host),
+                        "reason": "expired angle-bracket fixture",
+                        "approved_by": "@owner",
+                        "expires": "2020-01-01",
+                    }
+                ],
+            )
+            git(root, "init", "-q", "-b", "main")
+            # Create a real tracked file whose name mimics commit:<id>:message and contains an uncollected secret token
+            # plus a binary payload (NUL byte) so scan_source emits a failure referencing the file path!
+            (root / spoof_filename).write_bytes(b"bin\x00payload")
+            git(root, "add", "-f", "-A")
+            git(root, "commit", "-q", "-m", "chore: n5 fixture")
+            head = git(root, "rev-parse", "HEAD").stdout.strip()
+
+            err_obj = scan._identity_mod.IdentityCollectionError("simulated collection error")
+            for mode_name, argv in (
+                ("commits", ["--root", str(root), "--commits", head, "--identity-source", "local"]),
+                ("worktree", ["--root", str(root), "--allow-missing-license", "--identity-source", "local"]),
+            ):
+                with self.subTest(mode=mode_name):
+                    with mock.patch.object(scan, "_collect_identity_profile", side_effect=err_obj):
+                        code, out, err = run_main(argv)
+                    combined = out + err
+                    self.assertEqual(1, code, combined)
+                    self.assertIn("identity check failed", combined)
+                    self.assertIn("<redacted-", combined)
+                    self.assertNotIn(secret_host, combined.casefold())
 
 
 if __name__ == "__main__":
