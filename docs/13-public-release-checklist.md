@@ -123,10 +123,114 @@ or finding caps).
 
 ### Detector modes
 
-`tests/public_scan_modes.json` assigns every detector one of `block`, `warn`, or
-`off`. All detectors default to `block`. Any detector set to `warn` or `off` is
-printed on every run under `Non-default detector modes:`, so a disabled detector
-never produces a silent clean result.
+`tests/public_scan_modes.json` assigns every rule one of `block`, `warn`, or
+`off`. All ten deterministic detectors and `identity` default to `block`;
+`keyed-list` defaults to `off`. Any rule set away from its default is printed on
+every run under `Non-default detector modes:`, so a weakened or enabled optional
+rule never runs silently.
+
+### Contributor identity check (`identity`)
+
+`tests/public_scan_identity.py` (invoked by `tests/check_public_release.py`)
+stops a contributor or agent from pushing their own machine's identity without
+storing any personal value on disk or printing it to stdout or stderr:
+
+- **Local runs** (`make ci-check`, `make public-check`, and `pre-push`): at
+  check time, reads in memory only, with explicit required vs optional source
+  classification:
+  - **Required sources** (error, timeout, or empty/missing value fails closed):
+    - Git `user.name` and `user.email`
+    - Account username (`pwd.getpwuid` `pw_name`)
+    - OS host name (`socket.gethostname`)
+    - On macOS: `scutil --get ComputerName` and `scutil --get LocalHostName`
+    - On Linux: `hostnamectl` static hostname (`Static hostname:`)
+  - **Optional sources** (unavailable when explicitly absent/unset; never emit
+    an empty token; error, timeout, or malformed/incomplete output fails closed):
+    - Account full name (`pwd.getpwuid` GECOS first field) and `os.getlogin`
+    - On macOS: `scutil --get HostName` (explicit `HostName: not set` or an
+      empty zero-exit response is treated as unavailable/unset and emits no
+      token; command errors or timeouts fail closed)
+    - On Linux: `hostnamectl` `Pretty hostname:` and `Transient hostname:`
+    - Tailscale node name, MagicDNS name, and tailnet name (`tailscale status
+      --json`, checking both `PATH` and, on macOS,
+      `/Applications/Tailscale.app/Contents/MacOS/Tailscale`): when Tailscale is
+      not installed, the scan reports it as absent and continues; when installed,
+      an error, timeout, malformed JSON, or incomplete JSON missing either a node
+      name or a tailnet/DNS name fails closed
+- **Fail-closed local rules**: any required source failure or installed Tailscale
+  failure exits nonzero with no success report (`PUBLIC_SCAN_VERIFIED=1` and
+  `PUBLIC_SCAN_IDENTITY_VERIFIED=1` are not printed).
+- **Folding, matching, and exact allow list**: every collected value goes
+  through the same decoding and folding as the deterministic detectors
+  (NFKD/NFKC, confusable lookalikes, case, combining marks, zero-width marks,
+  JSON/URL escapes) plus whitespace, hyphen/separator, line-wrap, zero-padding,
+  and camelCase matching in linear time (Aho-Corasick, no regex backtracking).
+  Tokens shorter than 3 characters and exact documented placeholders from the
+  table above (`alice`, `host-a`, `localhost`, `example.com`, and the other exact
+  allow-list entries) are ignored after folding. Matching is bounded on
+  alphanumeric edges and masks only the two documented public project addresses
+  (`github.com/sathyassn/agent-workstation-kit` and
+  `github.com/sathyassn/codeflow`) plus owner handles in `.github/CODEOWNERS`
+  and `approved_by` fields in `tests/public_scan_exemptions.json`.
+- **Redacted output**: matches block the push and print only the file (or
+  commit/tag ref), line, and `matched rule 'identity'` (or `<redacted-ID>` when
+  a filename matches, including metadata/path failures and exemption inventory
+  entries), never any identity value.
+- **CI runs** (`--identity-source ci` in `.github/workflows/public-scan.yml`):
+  where the contributor's machine is absent, reads the git author and committer
+  names and emails of every commit in `base..head` (exempting exact platform bot
+  identities such as `GitHub`, `dependabot[bot]`, `github-actions[bot]`, and
+  `renovate[bot]` on both author and committer sides while still requiring
+  non-empty fields on every commit). In CI range mode, `identity` matches only
+  against content added by each commit in `base..head` (added lines, added or
+  renamed file paths, modified binary/UTF-16 files, and commit messages) so a
+  contributor whose handle appears in pre-existing files is not blocked on
+  untouched history. Fails closed on shallow or incomplete history (missing
+  `base`, missing merge-base, or shallow grafts in range), on any missing/empty
+  commit author or committer field, or when `identity` is not active in `block`
+  mode (`PUBLIC_SCAN_IDENTITY_VERIFIED=1` is omitted).
+
+### Commit hooks and push-time enforcement
+
+The local Git hooks under `.codeflow/git-hooks/` (`pre-commit`, `commit-msg`,
+`pre-push`, `pre-merge-commit`, `reference-transaction`, enabled with
+`git config core.hooksPath .codeflow/git-hooks` and guarded by
+`git.hook_integrity: block` in `.codeflow/policy.json`) are managed by
+CodeFlow. Because CodeFlow owns the `pre-commit` hook shim, this repository
+does not fork or edit `pre-commit` locally; instead, the contributor identity
+check runs at **push time** via `pre-push` (`make ci-check` and
+`tests/check_public_release.py --commits` / `--tag-objects`). Commit-time
+privacy and identity checks will be added once CodeFlow ships the general
+public-safety check in its managed `pre-commit` hook and
+`.codeflow/policy.json` schema and this repository adopts it via
+`codeflow update`.
+
+### Optional keyed HMAC digest list (`keyed-list`)
+
+`tests/public_scan_keyed.py` preserves an optional keyed HMAC-SHA256 layer for
+private repositories (such as a private fleet repository) that need to block
+organisation-specific terms no deterministic pattern can infer:
+
+- **Off by default**: `tests/public_scan_modes.json` sets `"keyed-list": "off"`,
+  requiring no key and no keyed-list file in this public repository.
+- **Digest-only rule file**: `tests/public_scan_keyed_list.json` (or
+  `--keyed-list-file`) holds only lowercase 64-hex HMAC-SHA256 digests
+  (`schema_version: 1`, `algorithm: "hmac-sha256"`, `digests` array) and is
+  covered by `.github/CODEOWNERS`. Whenever the file is present on disk or in a
+  scanned commit tree, its digest-only schema is validated even while
+  `keyed-list` is `off`, so any plaintext or malformed entry fails closed
+  without echoing the entry. When `keyed-list` is `block` or `warn`, the file
+  must exist and contain a non-empty `digests` array.
+- **Key material**: resolved from `--keyed-list-key-file`,
+  `PUBLIC_SCAN_HMAC_KEY_FILE`, `PUBLIC_SCAN_HMAC_KEY` (CI secret), or untracked
+  `.secrets/public-scan-hmac` (regular file, no symlinks, `chmod 0600`, not
+  tracked by Git). When `keyed-list` is `block` or `warn`, a missing, empty,
+  malformed, tracked, or group/world-readable key fails closed.
+- **Redacted output and keyed exemptions**: matches print only file, line, and
+  `matched rule 'keyed-list'`, never matched text or key material. Tracked
+  exemptions for `keyed-list` in `tests/public_scan_exemptions.json` store the
+  keyed HMAC digest (generated with
+  `printf '%s\n' '<value>' | python3 tests/check_public_release.py --exemption-digest keyed-list`).
 
 ### Tracked digest-bound exemptions
 
@@ -181,18 +285,43 @@ Hash-bound binary exceptions live in `tests/public_scan_binary_exceptions.json`:
 
 - `.github/workflows/public-scan.yml` is the sole authoritative CI privacy
   gate. It runs on `pull_request_target` (targeting any branch) and pushes to
-  `main` across both `ubuntu-24.04` and `macos-latest` with no secret. It checks
-  out the trusted default branch commit (`github.sha`) with full history for the
-  scanner, detectors, mode configuration, exemptions, and binary exceptions,
-  fetches the pull request head purely as git objects, and scans every commit in
-  `base..head` with `--range` (failing closed on incomplete history). Head code
-  never runs, and head edits to exemptions, modes, binary exceptions, or the
-  scanner do not take effect until reviewed and merged.
-- Both platform jobs (`scan-linux` and `scan-macos`) require exit 0 and the
-  positive completion marker `PUBLIC_SCAN_VERIFIED=1` before setting
-  `scan_verified=true`. The aggregator job publishes the exact GitHub check
-  context `public-scan / result` (via `name: public-scan / result`) and fails
-  closed unless both Linux and macOS succeeded and reported `scan_verified=true`.
+  `main` across both `ubuntu-24.04` and `macos-latest` with no secret. On pull
+  requests it checks out the pull request's exact target base commit
+  (`github.event.pull_request.base.sha`, verified against `refs/heads/<base.ref>`)
+  so a PR targeting an older or non-default branch cannot inherit exemptions
+  from the default branch. On pushes to `main` it checks out the previous
+  trusted commit (`github.event.before`, failing closed if zero on a non-root
+  commit) to supply the scanner, detectors, mode configuration, exemptions,
+  binary exceptions, and identity helpers, fetches head purely as git objects,
+  and scans every commit in `base..head` with `--range`. Head code never runs,
+  and head edits to exemptions, modes, binary exceptions, or the scanner do not
+  take effect until reviewed and merged.
+- **One-time bootstrap and post-merge live verification**: because
+  `pull_request_target` executes `.github/workflows/public-scan.yml` from the
+  base branch, the pull request that first introduces the identity check
+  (`TSK-008`) runs against the pre-TSK-008 base workflow (which checks
+  `PUBLIC_SCAN_VERIFIED=1` only). When that PR merges to `main`, the push run
+  checks out `github.event.before` (pinned to the final pre-TSK-008 commit
+  `85f4b9eccbf5fb4a62599beeb32a4cd4cd6961d4`); the workflow allows the one-time
+  bootstrap fallback ONLY on `push` to `refs/heads/main` with that exact
+  `before` SHA when a working `--help` probe confirms the trusted base lacks
+  `--identity-source`. Every other event (including any pull request into an
+  older branch, any different `before` SHA, or any failed probe) fails closed;
+  older branches must be rebased onto `main` first. On every subsequent pull
+  request and push, the trusted base supports `--identity-source` and both
+  platform jobs and `public-scan / result` strictly require both
+  `PUBLIC_SCAN_VERIFIED=1` and `PUBLIC_SCAN_IDENTITY_VERIFIED=1`. Live GitHub test pull requests verifying
+  AC-3 (a PR that weakens the identity check and still fails) and AC-4 (a PR
+  whose commit author name appears in a changed file and fails with only file,
+  line, and rule) remain an open post-merge live-verification acceptance step
+  and are not satisfied by local temporary-repository journeys alone.
+- Both platform jobs (`scan-linux` and `scan-macos`) run with
+  `--identity-source ci` and require exit 0 plus both positive completion
+  markers (`PUBLIC_SCAN_VERIFIED=1` and `PUBLIC_SCAN_IDENTITY_VERIFIED=1`)
+  before setting `scan_verified=true` and `identity_verified=true`. The
+  aggregator job publishes the exact GitHub check context
+  `public-scan / result` (via `name: public-scan / result`) and fails closed
+  unless both Linux and macOS succeeded and reported both verification outputs.
 - Required jobs in `.github/workflows/ci.yml` (`repository-validation`,
   `secret-scan`, `macos-host-lock`) run no head-controlled privacy or
   public-release scan steps (`repository-validation` runs `make repo-ci-check`,
@@ -200,21 +329,29 @@ Hash-bound binary exceptions live in `tests/public_scan_binary_exceptions.json`:
   `check_repository.py --skip-privacy-checks`, omitting `public-draft-check` and
   `test_public_*.py`). The separate `linux-public-scan` and `macos-public-scan`
   jobs in `.github/workflows/ci.yml` execute pull-request head code
-  (`make public-check` and `test_public_*.py`) and are non-authoritative
-  self-tests only: no required privacy or identity verdict comes from
-  `.github/workflows/ci.yml`.
+  (`tests/check_public_release.py --identity-source ci` and `test_public_*.py`)
+  and are non-authoritative self-tests only: no required privacy or identity
+  verdict comes from `.github/workflows/ci.yml`.
 - Require `public-scan / result` on `main`, next to the existing required
   checks. Repository protection setup must fail closed if `public-scan / result`
   is absent rather than silently skipping it. Enforcement of code-owner review
-  for `.github/CODEOWNERS` (covering the scanner, mode config, exemptions,
-  binary exceptions, scan workflows, and `.github/CODEOWNERS` itself) depends on
-  the repository protection setup in `TSK-040`.
-- Locally, the `pre-push` hook runs `make ci-check` (worktree check) and scans
+  for `.github/CODEOWNERS` (covering the scanner, identity helper
+  `tests/public_scan_identity.py`, keyed-list helper
+  `tests/public_scan_keyed.py`, optional keyed digest list
+  `tests/public_scan_keyed_list.json`, mode config, exemptions, binary
+  exceptions, scan workflows, and `.github/CODEOWNERS` itself) depends on the
+  repository protection setup in `TSK-040`.
+- Locally, the `pre-push` hook runs `make IDENTITY_SOURCE=local ci-check`
+  (worktree check with strict local workstation identity) and scans
   every new commit (tree and commit message) and annotated tag message pushed to
   the destination remote across all pushed refs (branches and tags alike,
   excluding commits via `--remotes=<remote>` only when the destination push URL
-  matches `remote.<name>.url`) through `tests/check_public_release.py --commits`
-  and `--tag-objects`. In CI, `--range` scans both the trees and commit messages
+  matches `remote.<name>.url`) through `tests/check_public_release.py --identity-source local --commits`
+  and `--tag-objects`. When `make check`, `make ci-check`, or `make public-check`
+  runs on a GitHub Actions runner (`GITHUB_ACTIONS=true`) without an explicit
+  `IDENTITY_SOURCE=local` override, `Makefile` passes `--identity-source ci`
+  so runner gates read commit author/committer identity instead of unset local
+  Git configuration. In CI, `--range` scans both the trees and commit messages
   of every commit in `base..head`.
 
 ## Private fleet repositories

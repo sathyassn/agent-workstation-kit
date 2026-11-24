@@ -298,6 +298,14 @@
       "expires": "2027-06-01"
     },
     {
+      "path": "tests/check_repository.py",
+      "rule": "identity",
+      "digest": "7e4298243a013c0dce4c1a54597f0ac643280a0a8dce17e169698b2ed1f19afe",
+      "reason": "private CodeFlow repository slug guard in workflow validator",
+      "approved_by": "@sathyassn",
+      "expires": "2027-06-01"
+    },
+    {
       "path": "tests/test_fleetctl.py",
       "rule": "ipv4",
       "digest": "1bed174da5ca2c5dd8bc4df3b2109b1305e5141a3c874a9e0007abffa0e34eac",
