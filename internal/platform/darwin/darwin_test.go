@@ -85,12 +85,18 @@ type launchd struct {
 	pendingFor int
 	unkillable bool
 	bootoutRC  int
+	stuck      bool // bootout is acknowledged but the job keeps running
+	registerAt int  // an in-flight bootstrap lands, ended, just after this print
+	events     *[]string
 }
 
 func (l *launchd) runner() *platformtest.Runner {
 	return platformtest.NewRunner(func(argv []string) (platform.ExecResult, error) {
 		l.mu.Lock()
 		defer l.mu.Unlock()
+		if l.events != nil {
+			*l.events = append(*l.events, "launchctl "+argv[1])
+		}
 		switch argv[1] {
 		case "bootstrap":
 			l.loaded = true
@@ -102,6 +108,9 @@ func (l *launchd) runner() *platformtest.Runner {
 			if !l.loaded {
 				return platform.ExecResult{ExitCode: launchctlNotFound}, nil
 			}
+			if l.stuck {
+				return platform.ExecResult{}, nil
+			}
 			l.loaded, l.ended = false, true
 			return platform.ExecResult{}, nil
 		case "kill":
@@ -110,6 +119,14 @@ func (l *launchd) runner() *platformtest.Runner {
 			}
 			return platform.ExecResult{}, nil
 		case "print":
+			if l.registerAt > 0 && !l.loaded {
+				l.prints++
+				if l.prints == l.registerAt {
+					l.loaded, l.started, l.ended = true, true, true
+					l.registerAt = 0
+				}
+				return platform.ExecResult{ExitCode: launchctlNotFound}, nil
+			}
 			if !l.loaded {
 				return platform.ExecResult{ExitCode: launchctlNotFound}, nil
 			}
@@ -208,7 +225,7 @@ func TestEmptyJob(t *testing.T) {
 		{"bootout not acknowledged", &launchd{loaded: true, started: true, ended: true, bootoutRC: 5}, opts, false, platform.ErrSupervisorState},
 		{"running, signalled until empty", running(), opts, true, nil},
 		{"pending, removed before it starts", &launchd{loaded: true, pendingFor: 1000}, opts, true, nil},
-		{"cannot be emptied", &launchd{loaded: true, started: true, unkillable: true, bootoutRC: 5}, opts, true, platform.ErrContainmentNotEmpty},
+		{"cannot be emptied", &launchd{loaded: true, started: true, unkillable: true, stuck: true}, opts, true, platform.ErrContainmentNotEmpty},
 		{"package transaction running, never signalled", running(), pkg, false, platform.ErrContainmentNotEmpty},
 		{"package transaction pending, never removed", &launchd{loaded: true, pendingFor: 1000}, pkg, false, platform.ErrContainmentNotEmpty},
 	}
@@ -354,5 +371,70 @@ func TestPlistIsPrivateAtBootstrap(t *testing.T) {
 	}
 	if !checked {
 		t.Fatal("bootstrap never ran")
+	}
+}
+
+// recordingProcs is a supervisor that logs signals into a shared event list
+// and dies only on SIGKILL.
+type recordingProcs struct {
+	fixedIdentity
+	alive  bool
+	events *[]string
+}
+
+func (p *recordingProcs) Alive(context.Context, platform.ProcessIdentity) (bool, error) {
+	return p.alive, nil
+}
+
+func (p *recordingProcs) Signal(_ context.Context, _ platform.ProcessIdentity, sig syscall.Signal) error {
+	*p.events = append(*p.events, "supervisor "+sig.String())
+	if sig == syscall.SIGKILL {
+		p.alive = false
+	}
+	return nil
+}
+
+// TestSupervisorKilledBeforeBootout is round 3, item 3: the supervisor is
+// killed before launchd is asked to boot the job out, so a bootstrap still
+// in progress cannot load the job again afterwards.
+func TestSupervisorKilledBeforeBootout(t *testing.T) {
+	var events []string
+	l := &launchd{loaded: true, started: true, unkillable: true, events: &events}
+	procs := &recordingProcs{alive: true, events: &events}
+	c := &Containment{Runner: l.runner(), Inspector: procs, PlistDir: privateDir(t)}
+	opts := platform.EmptyOptions{Scope: contract.ScopeRoot, KillWait: 10 * time.Millisecond, PollInterval: time.Millisecond, Supervisor: platform.ProcessIdentity{BootID: "b", PID: 9, StartTime: "1"}}
+	if err := c.Empty(context.Background(), label, opts); err != nil {
+		t.Fatal(err)
+	}
+	kill := slices.Index(events, "supervisor killed")
+	bootout := slices.Index(events, "launchctl bootout")
+	if kill < 0 || bootout < 0 || kill > bootout {
+		t.Fatalf("events = %q, want the supervisor killed before the first bootout", events)
+	}
+}
+
+// TestBootoutMustBeAcknowledged is round 3, item 3: a bootout launchd
+// refuses is an error at once, never ignored.
+func TestBootoutMustBeAcknowledged(t *testing.T) {
+	l := &launchd{loaded: true, started: true, unkillable: true, bootoutRC: 5}
+	c := &Containment{Runner: l.runner(), PlistDir: privateDir(t)}
+	opts := platform.EmptyOptions{Scope: contract.ScopeRoot, KillWait: 10 * time.Millisecond, PollInterval: time.Millisecond}
+	if err := c.Empty(context.Background(), label, opts); !errors.Is(err, platform.ErrSupervisorState) {
+		t.Fatalf("err = %v, want ErrSupervisorState", err)
+	}
+}
+
+// TestUnloadProvesAbsence is round 3, item 3: a job that reads not loaded
+// once is not proven absent. Here an in-flight bootstrap lands on a later
+// print; unload must boot it out and see it absent twice in a row.
+func TestUnloadProvesAbsence(t *testing.T) {
+	l := &launchd{registerAt: 3}
+	c := &Containment{Runner: l.runner(), PlistDir: privateDir(t)}
+	opts := platform.EmptyOptions{Scope: contract.ScopeRoot, KillWait: 10 * time.Millisecond, PollInterval: time.Millisecond}
+	if err := c.Empty(context.Background(), label, opts); err != nil {
+		t.Fatal(err)
+	}
+	if l.loaded {
+		t.Fatal("a late-loaded job was left loaded")
 	}
 }

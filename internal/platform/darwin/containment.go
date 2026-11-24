@@ -193,37 +193,54 @@ func (c *Containment) Signal(ctx context.Context, name string, sel platform.Scop
 		return err
 	}
 	if sig == syscall.SIGKILL {
-		if _, err := c.launchctl(ctx, "bootout", target); err != nil {
-			return err
-		}
+		return c.bootout(ctx, target)
 	}
 	return nil
 }
 
-// unload boots the ended job out, requires launchd to acknowledge it, and
-// then verifies the job is no longer loaded before removing its files.
-func (c *Containment) unload(ctx context.Context, name string, sel platform.ScopeSelector) error {
-	target := c.target(name, sel)
-	st, err := c.print(ctx, target)
+// bootout asks launchd to unload the job and requires an acknowledgement:
+// exit 0, or "not found" when it is already gone. Anything else is an
+// error, never ignored.
+func (c *Containment) bootout(ctx context.Context, target string) error {
+	res, err := c.launchctl(ctx, "bootout", target)
 	if err != nil {
 		return err
 	}
-	if st.loaded {
-		if st.state != platform.StateGone {
-			return fmt.Errorf("%w: job %s is not quiet", platform.ErrContainmentNotEmpty, target)
-		}
-		res, err := c.launchctl(ctx, "bootout", target)
+	if res.ExitCode != 0 && res.ExitCode != launchctlNotFound {
+		return fmt.Errorf("%w: launchctl bootout %s exited %d", platform.ErrSupervisorState, target, res.ExitCode)
+	}
+	return nil
+}
+
+// unloadRounds bounds how often unload may find the job loaded again.
+const unloadRounds = 8
+
+// unload runs once the supervisor is proven dead. It proves the label
+// absent: two consecutive prints must show it not loaded. A job found
+// loaded and ended in between, as from a bootstrap that was still in
+// flight, is booted out with an acknowledgement and the count restarts. A
+// job found running is not quiet. Only then are its files removed.
+func (c *Containment) unload(ctx context.Context, name string, sel platform.ScopeSelector) error {
+	target := c.target(name, sel)
+	absent := 0
+	for round := 0; absent < 2; {
+		st, err := c.print(ctx, target)
 		if err != nil {
 			return err
 		}
-		if res.ExitCode != 0 && res.ExitCode != launchctlNotFound {
-			return fmt.Errorf("%w: launchctl bootout %s exited %d", platform.ErrSupervisorState, target, res.ExitCode)
+		if !st.loaded {
+			absent++
+			continue
 		}
-		if st, err = c.print(ctx, target); err != nil {
+		absent = 0
+		if round++; round > unloadRounds {
+			return fmt.Errorf("%w: job %s keeps loading", platform.ErrSupervisorState, target)
+		}
+		if st.state != platform.StateGone {
+			return fmt.Errorf("%w: job %s is not quiet", platform.ErrContainmentNotEmpty, target)
+		}
+		if err := c.bootout(ctx, target); err != nil {
 			return err
-		}
-		if st.loaded {
-			return fmt.Errorf("%w: job %s still loaded after bootout", platform.ErrSupervisorState, target)
 		}
 	}
 	f := c.jobFiles(name)
