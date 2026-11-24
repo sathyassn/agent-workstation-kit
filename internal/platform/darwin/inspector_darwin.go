@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -136,10 +137,16 @@ func NewContainment(plistDir string) (*Containment, error) {
 			return nil, fmt.Errorf("darwin containment: %w", err)
 		}
 	}
+	// Resolve the job folder once: later operations walk this canonical
+	// path without following links.
+	dir, err := filepath.EvalSymlinks(plistDir)
+	if err != nil {
+		return nil, fmt.Errorf("darwin containment: %w", err)
+	}
 	return &Containment{
 		Runner:    platform.OSCommandRunner{},
 		Inspector: NewProcessInspector(),
-		PlistDir:  plistDir,
+		PlistDir:  dir,
 		UID:       os.Getuid(),
 	}, nil
 }

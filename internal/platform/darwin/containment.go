@@ -15,6 +15,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/sathyassn/agent-workstation-kit/internal/contract"
 	"github.com/sathyassn/agent-workstation-kit/internal/platform"
 )
@@ -107,16 +109,23 @@ func (c *Containment) Run(ctx context.Context, spec platform.LaunchSpec, onSuper
 	if err := platform.CheckToolEnv(spec.Env); err != nil {
 		return contract.CommandResult{}, fmt.Errorf("launchd job %q: %w", spec.Name, err)
 	}
-	if err := platform.CheckPrivateDir(c.PlistDir); err != nil {
-		return contract.CommandResult{}, fmt.Errorf("launchd job folder: %w", err)
+	dir, err := c.openJobDir()
+	if err != nil {
+		return contract.CommandResult{}, err
 	}
+	defer func() { _ = dir.Close() }()
 	start := time.Now()
 	files := c.jobFiles(spec.Name)
 	plist, err := RenderPlist(spec.Name, spec.Argv, spec.Env, spec.Dir, files.out, files.out)
 	if err != nil {
 		return contract.CommandResult{}, err
 	}
-	if err := c.writeDurable(files.plist, plist); err != nil {
+	// The output file is created here, 0600, so launchd never creates it
+	// with a mode of its own choosing.
+	if err := c.writeDurable(dir, filepath.Base(files.out), nil); err != nil {
+		return contract.CommandResult{}, err
+	}
+	if err := c.writeDurable(dir, filepath.Base(files.plist), plist); err != nil {
 		return contract.CommandResult{}, err
 	}
 	sel := platform.ScopeSelector{User: spec.Scope != contract.ScopeRoot}
@@ -157,7 +166,7 @@ func (c *Containment) Run(ctx context.Context, spec platform.LaunchSpec, onSuper
 	if !st.exited {
 		return contract.CommandResult{}, fmt.Errorf("%w: job %s ended without an exit code", platform.ErrSupervisorState, target)
 	}
-	copyOutput(files.out, spec.Output)
+	copyOutput(dir, filepath.Base(files.out), spec.Output)
 	return contract.CommandResult{ExitCode: st.exitCode, Duration: time.Since(start)}, nil
 }
 
@@ -243,10 +252,7 @@ func (c *Containment) unload(ctx context.Context, name string, sel platform.Scop
 			return err
 		}
 	}
-	f := c.jobFiles(name)
-	_ = os.Remove(f.plist)
-	_ = os.Remove(f.out)
-	return nil
+	return c.removeJobFiles(name)
 }
 
 func (c *Containment) launchctl(ctx context.Context, args ...string) (platform.ExecResult, error) {
@@ -379,51 +385,86 @@ func (c *Containment) target(name string, sel platform.ScopeSelector) string {
 	return c.domain(sel) + "/" + name
 }
 
-// writeDurable creates path with mode 0600, refusing to follow or replace
-// anything already there, then fsyncs the file and its folder, so launchd
-// never loads a definition that power loss could take back.
-func (c *Containment) writeDurable(path string, data []byte) error {
+// openJobDir opens the job folder through the no-follow walk, after
+// checking it is private: owned by this user and mode 0700. PlistDir must
+// be a canonical path; a link anywhere on it is refused.
+func (c *Containment) openJobDir() (*os.File, error) {
+	if err := platform.CheckPrivateDir(c.PlistDir); err != nil {
+		return nil, fmt.Errorf("launchd job folder: %w", err)
+	}
+	dir, err := platform.OpenDirNoFollow(c.PlistDir)
+	if err != nil {
+		return nil, fmt.Errorf("launchd job folder: %w", err)
+	}
+	info, err := dir.Stat()
+	if err != nil {
+		_ = dir.Close()
+		return nil, fmt.Errorf("launchd job folder: %w", err)
+	}
+	if info.Mode().Perm() != 0o700 {
+		_ = dir.Close()
+		return nil, fmt.Errorf("%w: launchd job folder %q has mode %v, want 0700", platform.ErrUnsafeDir, c.PlistDir, info.Mode().Perm())
+	}
+	return dir, nil
+}
+
+// writeDurable creates name in dir with mode 0600, refusing to follow or
+// replace anything already there, then fsyncs the file and the folder, so
+// launchd never loads a definition that power loss could take back.
+func (c *Containment) writeDurable(dir *os.File, name string, data []byte) error {
 	sync := c.syncFn
 	if sync == nil {
 		sync = (*os.File).Sync
 	}
-	// #nosec G304 -- path is inside the checked private folder.
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, plistMode)
+	fd, err := unix.Openat(int(dir.Fd()), name, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, plistMode)
 	if err != nil {
-		return fmt.Errorf("create %q: %w", path, err)
+		return fmt.Errorf("create %q: %w", name, err)
 	}
+	f := os.NewFile(uintptr(fd), filepath.Join(dir.Name(), name))
 	if _, err := f.Write(data); err != nil {
 		_ = f.Close()
-		return fmt.Errorf("write %q: %w", path, err)
+		return fmt.Errorf("write %q: %w", name, err)
 	}
 	if err := sync(f); err != nil {
 		_ = f.Close()
-		return fmt.Errorf("fsync %q: %w", path, err)
+		return fmt.Errorf("fsync %q: %w", name, err)
 	}
 	if err := f.Close(); err != nil {
-		return fmt.Errorf("close %q: %w", path, err)
+		return fmt.Errorf("close %q: %w", name, err)
 	}
-	// #nosec G304 -- the checked private folder.
-	d, err := os.Open(filepath.Dir(path))
-	if err != nil {
-		return fmt.Errorf("open folder of %q: %w", path, err)
-	}
-	defer func() { _ = d.Close() }()
-	if err := sync(d); err != nil {
-		return fmt.Errorf("fsync folder of %q: %w", path, err)
+	if err := sync(dir); err != nil {
+		return fmt.Errorf("fsync job folder: %w", err)
 	}
 	return nil
 }
 
-func copyOutput(path string, w io.Writer) {
+// removeJobFiles deletes the job's files through the no-follow walk. If the
+// walk fails, as when a folder above was swapped for a link, nothing is
+// deleted and the error is returned.
+func (c *Containment) removeJobFiles(name string) error {
+	dir, err := platform.OpenDirNoFollow(c.PlistDir)
+	if err != nil {
+		return fmt.Errorf("launchd job folder: %w", err)
+	}
+	defer func() { _ = dir.Close() }()
+	f := c.jobFiles(name)
+	for _, p := range []string{f.plist, f.out} {
+		if err := unix.Unlinkat(int(dir.Fd()), filepath.Base(p), 0); err != nil && !errors.Is(err, unix.ENOENT) {
+			return fmt.Errorf("remove %q: %w", p, err)
+		}
+	}
+	return nil
+}
+
+func copyOutput(dir *os.File, name string, w io.Writer) {
 	if w == nil {
 		return
 	}
-	// #nosec G304 -- path is inside the checked private folder.
-	f, err := os.Open(path)
+	fd, err := unix.Openat(int(dir.Fd()), name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return
 	}
+	f := os.NewFile(uintptr(fd), name)
 	defer func() { _ = f.Close() }()
 	_, _ = io.Copy(w, f)
 }

@@ -152,7 +152,11 @@ func (l *launchd) runner() *platformtest.Runner {
 
 func privateDir(t *testing.T) string {
 	t.Helper()
-	d := filepath.Join(t.TempDir(), "jobs")
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := filepath.Join(base, "jobs")
 	if err := os.Mkdir(d, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -436,5 +440,74 @@ func TestUnloadProvesAbsence(t *testing.T) {
 	}
 	if l.loaded {
 		t.Fatal("a late-loaded job was left loaded")
+	}
+}
+
+// TestJobFilesArePrivate is round 3, item 5b: the job folder must be 0700;
+// when launchd is asked to load the job, the definition and the output file
+// both exist, mode 0600, created by the engine without following links.
+func TestJobFilesArePrivate(t *testing.T) {
+	loose := privateDir(t)
+	if err := os.Chmod(loose, 0o755); err != nil { //nolint:gosec // a folder others can read, under test
+		t.Fatal(err)
+	}
+	r := (&launchd{runFor: 1}).runner()
+	c := &Containment{Runner: r, Inspector: fixedIdentity{}, PlistDir: loose, PollInterval: time.Millisecond}
+	if _, err := c.Run(context.Background(), platform.LaunchSpec{Name: label, Scope: contract.ScopeRoot, Argv: []string{"/usr/bin/true"}}, nil); !errors.Is(err, platform.ErrUnsafeDir) {
+		t.Fatalf("0755 job folder: err = %v, want ErrUnsafeDir", err)
+	}
+
+	dir := privateDir(t)
+	inner := (&launchd{runFor: 1}).runner()
+	checked := false
+	r = platformtest.NewRunner(func(argv []string) (platform.ExecResult, error) {
+		if argv[1] == "bootstrap" {
+			for _, f := range []string{label + ".plist", label + ".log"} {
+				info, err := os.Lstat(filepath.Join(dir, f))
+				if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+					t.Errorf("%s at bootstrap: %v, %v; want a 0600 file", f, info, err)
+				}
+			}
+			checked = true
+		}
+		return inner.Run(context.Background(), platform.ExecSpec{Argv: argv})
+	})
+	c = &Containment{Runner: r, Inspector: fixedIdentity{}, PlistDir: dir, PollInterval: time.Millisecond}
+	if _, err := c.Run(context.Background(), platform.LaunchSpec{Name: label, Scope: contract.ScopeRoot, Argv: []string{"/usr/bin/true"}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !checked {
+		t.Fatal("bootstrap never ran")
+	}
+}
+
+// TestJobFilesNeverFollowSwappedAncestor is round 3, item 5b: if a folder
+// above the job folder is swapped for a link after the job ran, unloading
+// it must not delete files through the link.
+func TestJobFilesNeverFollowSwappedAncestor(t *testing.T) {
+	dir := privateDir(t)
+	l := &launchd{runFor: 1}
+	c := &Containment{Runner: l.runner(), Inspector: fixedIdentity{}, PlistDir: dir, PollInterval: time.Millisecond}
+	if _, err := c.Run(context.Background(), platform.LaunchSpec{Name: label, Scope: contract.ScopeRoot, Argv: []string{"/usr/bin/true"}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	parent := filepath.Dir(dir)
+	outside := filepath.Join(filepath.Dir(parent), "outside")
+	if err := os.MkdirAll(filepath.Join(outside, "jobs"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	victim := filepath.Join(outside, "jobs", label+".plist")
+	if err := os.WriteFile(victim, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(parent, parent+"-moved"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, parent); err != nil {
+		t.Fatal(err)
+	}
+	_ = c.Empty(context.Background(), label, platform.EmptyOptions{Scope: contract.ScopeRoot})
+	if _, err := os.Stat(victim); err != nil {
+		t.Fatalf("a file was deleted through the swapped ancestor: %v", err)
 	}
 }

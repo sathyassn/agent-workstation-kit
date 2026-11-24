@@ -7,9 +7,10 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/sathyassn/agent-workstation-kit/internal/platform"
 )
 
 // Every file operation the engine makes opens the target's folder by walking
@@ -20,36 +21,19 @@ import (
 // to the canonical paths the walk then follows.
 
 // ErrPathLink is wrapped when a walk meets a link or a non-folder where a
-// folder should be.
-var ErrPathLink = errors.New("path holds a link or a non-folder")
+// folder should be. It is platform.ErrPathLink, so errors.Is matches either.
+var ErrPathLink = platform.ErrPathLink
 
 const dirFlags = unix.O_RDONLY | unix.O_DIRECTORY | unix.O_NOFOLLOW | unix.O_CLOEXEC
 
 // openDir opens the folder at the absolute path abs without following any
-// link on the way.
+// link on the way (platform.OpenDirNoFollow).
 func openDir(abs string) (*os.File, error) {
-	if !filepath.IsAbs(abs) || filepath.Clean(abs) != abs {
-		return nil, fmt.Errorf("%w: %q is not a clean absolute path", ErrPathLink, abs)
-	}
-	fd, err := unix.Open("/", dirFlags, 0)
+	d, err := platform.OpenDirNoFollow(abs)
 	if err != nil {
-		return nil, fmt.Errorf("open /: %w", err)
+		return nil, fmt.Errorf("walk: %w", err)
 	}
-	for _, comp := range strings.Split(strings.TrimPrefix(abs, "/"), "/") {
-		if comp == "" {
-			continue
-		}
-		next, err := unix.Openat(fd, comp, dirFlags, 0)
-		_ = unix.Close(fd)
-		if err != nil {
-			if errors.Is(err, unix.ELOOP) || errors.Is(err, unix.ENOTDIR) {
-				return nil, fmt.Errorf("%w: %q at %q: %w", ErrPathLink, abs, comp, err)
-			}
-			return nil, fmt.Errorf("open %q at %q: %w", abs, comp, err)
-		}
-		fd = next
-	}
-	return os.NewFile(uintptr(fd), abs), nil
+	return d, nil
 }
 
 // parent is an open folder and a name inside it.
