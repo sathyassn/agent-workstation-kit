@@ -99,10 +99,14 @@ func (p parent) open() (*os.File, error) {
 	return os.NewFile(uintptr(fd), p.path()), nil
 }
 
-// refuseMetadata fails with ErrUnsupportedMetadata when the name is a
-// regular file carrying an ACL or extended attributes. A missing name or a
-// link has nothing to check.
-func (p parent) refuseMetadata() error {
+// errLinkTarget explains why a link target is refused.
+const errLinkTarget = "is a symbolic link; the unit description cannot declare link handling yet, so link targets are refused"
+
+// refuseUnsafeTarget runs before a target is replaced or removed. A
+// missing name is fine. A regular file must carry no ACL or extended
+// attributes (ErrUnsupportedMetadata). A symbolic link, a folder or any
+// other type is refused (ErrUnsupportedTarget).
+func (p parent) refuseUnsafeTarget() error {
 	st, err := p.lstat()
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
@@ -110,8 +114,12 @@ func (p parent) refuseMetadata() error {
 	if err != nil {
 		return err
 	}
-	if st.Mode&unix.S_IFMT != unix.S_IFREG {
-		return nil
+	switch st.Mode & unix.S_IFMT {
+	case unix.S_IFREG:
+	case unix.S_IFLNK:
+		return fmt.Errorf("%w: %q %s", ErrUnsupportedTarget, p.path(), errLinkTarget)
+	default:
+		return fmt.Errorf("%w: %q is not a regular file", ErrUnsupportedTarget, p.path())
 	}
 	f, err := p.open()
 	if err != nil {

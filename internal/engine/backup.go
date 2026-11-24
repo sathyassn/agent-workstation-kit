@@ -126,11 +126,7 @@ func (e *Engine) backupOne(dir, name, path string) (ManifestEntry, error) {
 			return ManifestEntry{}, err
 		}
 	case unix.S_IFLNK:
-		link, err := p.readlink()
-		if err != nil {
-			return ManifestEntry{}, err
-		}
-		en.Kind, en.Link = KindSymlink, link
+		return ManifestEntry{}, fmt.Errorf("%w: %q %s", ErrUnsupportedTarget, path, errLinkTarget)
 	default:
 		return ManifestEntry{}, fmt.Errorf("%w: %q has file type %o", ErrUnsupportedTarget, path, st.Mode&unix.S_IFMT)
 	}

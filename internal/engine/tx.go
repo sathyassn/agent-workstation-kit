@@ -140,7 +140,7 @@ func (t *tx) WriteFile(ctx context.Context, path string, data []byte, perm fs.Fi
 		return err
 	}
 	defer p.close()
-	if err := p.refuseMetadata(); err != nil {
+	if err := p.refuseUnsafeTarget(); err != nil {
 		return err
 	}
 	if err := t.e.atomicWriteAt(p, fileSpec{data: data, perm: perm, owner: &owner}); err != nil {
@@ -230,17 +230,12 @@ func (t *tx) Remove(ctx context.Context, path string) error {
 		return err
 	}
 	defer p.close()
-	st, err := p.lstat()
-	if errors.Is(err, fs.ErrNotExist) {
+	if _, err := p.lstat(); errors.Is(err, fs.ErrNotExist) {
 		return nil
-	}
-	if err != nil {
+	} else if err != nil {
 		return err
 	}
-	if st.Mode&unix.S_IFMT == unix.S_IFDIR {
-		return fmt.Errorf("%w: %q is a folder", ErrUnsupportedTarget, path)
-	}
-	if err := p.refuseMetadata(); err != nil {
+	if err := p.refuseUnsafeTarget(); err != nil {
 		return err
 	}
 	if err := unix.Unlinkat(p.fd(), p.name, 0); err != nil {

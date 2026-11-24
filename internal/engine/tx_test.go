@@ -277,33 +277,62 @@ func TestCorruptRecordFailsClosed(t *testing.T) {
 	w.assertState(t, originalState(), "after corrupt record")
 }
 
-// TestApplyRestoresSymlinkAndKeepsTarget: a declared path that was a link is
-// put back as the same link, and the restore never writes through it.
-func TestApplyRestoresSymlinkAndKeepsTarget(t *testing.T) {
-	w := newWorld(t)
-	outside := filepath.Join(w.dir, "outside.conf")
-	if err := os.WriteFile(outside, []byte("outside\n"), 0o600); err != nil {
-		t.Fatal(err)
+// TestRefusesSymlinkTargets is round 3, item 7. The contract cannot yet say
+// that a unit handles symbolic links, so a declared path that is a link is
+// refused: at the backup when it is one from the start, and before WriteFile
+// or Remove when it becomes one during the apply. The link and what it
+// points to are left as they were.
+func TestRefusesSymlinkTargets(t *testing.T) {
+	owner := contract.Owner{UID: os.Getuid(), GID: os.Getgid()}
+	tests := []struct {
+		name  string
+		early bool // the link exists before the apply
+		op    func(ctx context.Context, tx contract.Tx) error
+	}{
+		{"link before the apply", true, func(ctx context.Context, tx contract.Tx) error {
+			return tx.WriteFile(ctx, pathD, []byte("replaced\n"), 0o600, owner)
+		}},
+		{"WriteFile over a new link", false, func(ctx context.Context, tx contract.Tx) error {
+			return tx.WriteFile(ctx, pathD, []byte("replaced\n"), 0o600, owner)
+		}},
+		{"Remove of a new link", false, func(ctx context.Context, tx contract.Tx) error {
+			return tx.Remove(ctx, pathD)
+		}},
 	}
-	link := filepath.Join(w.root, pathD)
-	if err := os.Symlink(outside, link); err != nil {
-		t.Fatal(err)
-	}
-	e, _ := w.engine(t)
-	u := &refusalUnit{testUnit: testUnit{root: w.root}, op: func(ctx context.Context, tx contract.Tx) error {
-		if err := tx.WriteFile(ctx, pathD, []byte("replaced\n"), 0o600, contract.Owner{UID: os.Getuid(), GID: os.Getgid()}); err != nil {
-			return err
-		}
-		return errNotRestored
-	}}
-	if err := e.Apply(context.Background(), u, testPlan()); !errors.Is(err, engine.ErrApplyFailed) {
-		t.Fatalf("err = %v", err)
-	}
-	if got, err := os.Readlink(link); err != nil || got != outside {
-		t.Fatalf("link = %q, %v; want %q", got, err, outside)
-	}
-	if data, _ := os.ReadFile(outside); string(data) != "outside\n" { //nolint:gosec // test temp dir
-		t.Fatalf("link target changed: %q", data)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newWorld(t)
+			outside := filepath.Join(w.dir, "outside.conf")
+			if err := os.WriteFile(outside, []byte("outside\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			link := filepath.Join(w.root, pathD)
+			makeLink := func() error { return os.Symlink(outside, link) }
+			if tc.early {
+				if err := makeLink(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			e, _ := w.engine(t)
+			u := &refusalUnit{testUnit: testUnit{root: w.root}, op: func(ctx context.Context, tx contract.Tx) error {
+				if !tc.early {
+					if err := makeLink(); err != nil {
+						return err
+					}
+				}
+				return tc.op(ctx, tx)
+			}}
+			err := e.Apply(context.Background(), u, testPlan())
+			if !errors.Is(err, engine.ErrUnsupportedTarget) {
+				t.Fatalf("err = %v, want ErrUnsupportedTarget", err)
+			}
+			if got, err := os.Readlink(link); tc.early && (err != nil || got != outside) {
+				t.Fatalf("link = %q, %v; want it untouched", got, err)
+			}
+			if data, _ := os.ReadFile(outside); string(data) != "outside\n" { //nolint:gosec // test temp dir
+				t.Fatalf("link target changed: %q", data)
+			}
+		})
 	}
 }
 
