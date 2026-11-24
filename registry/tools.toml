@@ -56,6 +56,18 @@ next_review = "2027-05-22"
 purpose = "Lip Gloss styled CLI help and error presentation for Cobra"
 
 [[tool]]
+id = "pflag"
+kind = "go-library"
+module = "github.com/spf13/pflag"
+version = "v1.0.10"
+sum = "h1:4EBh2KAYBwaONj6b2Ye1GiHfwjqyROoF4RwYO+vPwFk="
+source = "https://github.com/spf13/pflag"
+licence = "BSD-3-Clause"
+last_review = "2026-11-23"
+next_review = "2027-05-23"
+purpose = "POSIX flag parsing under Cobra; read directly to choose the output mode before a run"
+
+[[tool]]
 id = "bubbletea"
 kind = "go-library"
 module = "charm.land/bubbletea/v2"

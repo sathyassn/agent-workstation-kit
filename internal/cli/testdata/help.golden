@@ -1,0 +1,66 @@
+wskit plans, applies, verifies and reverts the setup of Ubuntu and macOS workstations for AI coding agents. Changes are previewed unless --apply is given.
+
+Usage:
+  wskit [flags]
+  wskit [command]
+
+Commands:
+  adopt            Adopt existing machine state into a unit
+  disarm           Disarm an armed dead-man timer
+  doctor           Check the machine's health
+  explain          Explain a unit or a configuration field
+  next             Show the next action for the conductor
+  plan             Show the resolved setup plan
+  resume           Resume an interrupted run
+  revert           Revert to a restore point or to the baseline
+  setup            Run setup by stage (previews unless --apply is given)
+  status           Show the recorded status of every unit
+  unmanage         Stop managing a unit and keep its files
+
+Configuration commands:
+  config           Show, change and check layered configuration
+  interview        Answer questions to write a configuration
+  migrate          Migrate configuration to the current schema
+
+Unit commands (wskit UNIT VERB):
+  accounts         The accounts unit (identity)
+  agent-settings   The agent-settings unit (agent)
+  agentctl         The agentctl unit (system)
+  audit-agent      The audit-agent unit (ops)
+  baseline         The baseline unit (system)
+  browser-tunnel   The browser-tunnel unit (remote)
+  firewall         The firewall unit (network)
+  git-identity     The git-identity unit (identity)
+  indexing         The indexing unit (system)
+  machine-identity The machine-identity unit (identity)
+  mcp              The mcp unit (agent)
+  mesh-vpn         The mesh-vpn unit (network)
+  packages         The packages unit (system)
+  packages-user    The packages-user unit (system)
+  remote-desktop   The remote-desktop unit (remote)
+  resource-limits  The resource-limits unit (ops)
+  runtimes         The runtimes unit (agent)
+  shell            The shell unit (agent)
+  snapshots        The snapshots unit (data)
+  ssh              The ssh unit (remote)
+  tools            The tools unit (agent)
+  vpn              The vpn unit (network)
+  workloads        The workloads unit (system)
+  workspace        The workspace unit (workspace)
+
+Additional Commands:
+  completion       Print a shell completion script
+  help             Help about any command
+  version          Print the wskit version
+
+Flags:
+      --apply           make the changes; without it, commands only preview
+      --config string   read configuration from this file
+  -h, --help            help for wskit
+      --json            write the result as versioned JSON on standard output and events as JSON lines on standard error
+      --plain           write plain lines with no styling and no prompts (also WSKIT_PLAIN=1)
+      --quiet           show only results and errors
+      --stage stage     select one setup stage by its ID
+      --verbose         show more detail
+
+Use "wskit [command] --help" for more information about a command.
