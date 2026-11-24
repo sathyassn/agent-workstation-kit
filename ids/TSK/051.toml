@@ -1,0 +1,11 @@
+id = "TSK-051"
+uid = "664c1997-b777-44c5-b5d0-4a891b71f27e"
+kind = "TSK"
+title = "Claude instructions route and guided trust steps"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-24T01:07:36Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
