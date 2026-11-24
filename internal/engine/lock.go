@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -24,6 +25,9 @@ const lockCreateRetries = 10
 // the open descriptor, that the folder is private: owned by this user and
 // not writable by group or others.
 func acquireLock(ctx context.Context, path string, poll time.Duration) (*fileLock, error) {
+	if err := platform.CheckTrustedAncestors(filepath.Dir(path)); err != nil {
+		return nil, fmt.Errorf("lock folder: %w", err)
+	}
 	p, err := openParent(path)
 	if err != nil {
 		return nil, fmt.Errorf("lock folder: %w", err)

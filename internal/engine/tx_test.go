@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 
@@ -414,4 +415,62 @@ func (u *loaderUnit) Describe(ctx context.Context) (contract.Description, error)
 	d, err := u.refusalUnit.Describe(ctx)
 	d.DeclaredEnv = []string{"LD_PRELOAD"}
 	return d, err
+}
+
+// TestRefusesWritableAncestors is round 3, item 5a: a journal or host lock
+// below a folder that others can write is refused, at New and again on a
+// later lock acquire, since such a folder can be swapped. A root-owned
+// sticky folder such as /tmp is accepted: its sticky bit keeps others from
+// replacing entries they do not own.
+func TestRefusesWritableAncestors(t *testing.T) {
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	shared := filepath.Join(base, "shared")
+	if err := os.Mkdir(shared, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(shared, 0o777); err != nil { //nolint:gosec // deliberately unsafe folder under test
+		t.Fatal(err)
+	}
+	w := worldAt(base)
+	opts := func(journal, lock string) engine.Options {
+		return engine.Options{JournalDir: journal, HostLock: lock, Scope: contract.ScopeUser, Containment: w.cont, Inspector: w.table.Inspector(w.table.Spawn())}
+	}
+	for name, o := range map[string]engine.Options{
+		"journal below a writable folder":   opts(filepath.Join(shared, "journal"), filepath.Join(base, "host.lock")),
+		"host lock below a writable folder": opts(filepath.Join(base, "journal"), filepath.Join(shared, "host.lock")),
+	} {
+		if _, err := engine.New(o); !errors.Is(err, platform.ErrUnsafeDir) {
+			t.Errorf("%s: err = %v, want ErrUnsafeDir", name, err)
+		}
+	}
+
+	// A folder that becomes writable after New is refused at the next lock.
+	safe := filepath.Join(base, "safe")
+	if err := os.Mkdir(safe, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	e, err := engine.New(opts(filepath.Join(safe, "journal"), filepath.Join(base, "host.lock")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(safe, 0o777); err != nil { //nolint:gosec // deliberately unsafe folder under test
+		t.Fatal(err)
+	}
+	if _, err := e.Resume(context.Background(), resolverFor(&testUnit{root: base}), engine.ResumeOptions{}); !errors.Is(err, platform.ErrUnsafeDir) {
+		t.Fatalf("lock below a folder made writable: err = %v, want ErrUnsafeDir", err)
+	}
+
+	if runtime.GOOS == "darwin" || runtime.GOOS == "linux" {
+		tmp, err := os.MkdirTemp("/tmp", "wskit-anc")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(tmp) })
+		if _, err := engine.New(opts(filepath.Join(tmp, "journal"), filepath.Join(tmp, "host.lock"))); err != nil {
+			t.Fatalf("journal below the root-owned sticky /tmp: %v", err)
+		}
+	}
 }

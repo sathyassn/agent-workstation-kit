@@ -105,6 +105,9 @@ func New(opts Options) (*Engine, error) {
 	case !opts.Scope.Valid():
 		return nil, fmt.Errorf("%w: scope %q", ErrInvalidOptions, opts.Scope)
 	}
+	if err := checkExistingAncestors(opts.JournalDir); err != nil {
+		return nil, fmt.Errorf("journal folder: %w", err)
+	}
 	if err := (&Engine{opts: opts}).mkdirAllDurable(opts.JournalDir); err != nil {
 		return nil, fmt.Errorf("create journal folder: %w", err)
 	}
@@ -122,6 +125,9 @@ func New(opts Options) (*Engine, error) {
 		return nil, err
 	}
 	opts.HostLock = filepath.Join(lockDir, filepath.Base(opts.HostLock))
+	if err := platform.CheckTrustedAncestors(lockDir); err != nil {
+		return nil, fmt.Errorf("host lock folder: %w", err)
+	}
 	if opts.Root != "" {
 		if opts.Root, err = canonical(opts.Root); err != nil {
 			return nil, err

@@ -14,6 +14,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/sathyassn/agent-workstation-kit/internal/contract"
+	"github.com/sathyassn/agent-workstation-kit/internal/platform"
 )
 
 // tempMarker is in the name of every temporary file the engine creates next
@@ -174,6 +175,27 @@ func (e *Engine) mkdirDurable(path string) error {
 		return fmt.Errorf("create folder %q: %w", path, err)
 	}
 	return e.syncDir(p)
+}
+
+// checkExistingAncestors checks the deepest existing folder of path and
+// everything above it (platform.CheckTrustedAncestors), before anything is
+// created below it.
+func checkExistingAncestors(path string) error {
+	p := filepath.Clean(path)
+	for {
+		if _, err := os.Lstat(p); err == nil || p == "/" {
+			break
+		}
+		p = filepath.Dir(p)
+	}
+	c, err := canonical(p)
+	if err != nil {
+		return err
+	}
+	if err := platform.CheckTrustedAncestors(c); err != nil {
+		return fmt.Errorf("ancestors of %q: %w", path, err)
+	}
+	return nil
 }
 
 // mkdirAllDurable creates path and every missing ancestor, each with mkdir

@@ -68,3 +68,33 @@ func CheckTrustedBinary(path string) error {
 		}
 	}
 }
+
+// CheckTrustedAncestors checks dir and every folder above it, up to "/". As
+// root, each must be owned by root; as another account, by root or that
+// account. None may be writable by group or others, except a root-owned
+// folder with the sticky bit, such as /tmp: the sticky bit keeps others
+// from renaming or replacing entries they do not own. Anyone who could
+// write such a folder could swap the path below it.
+func CheckTrustedAncestors(dir string) error {
+	euid := os.Geteuid()
+	for p := filepath.Clean(dir); ; p = filepath.Dir(p) {
+		info, err := os.Lstat(p)
+		if err != nil {
+			return fmt.Errorf("%w: %q: %w", ErrUnsafeDir, p, err)
+		}
+		st, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || !info.IsDir() {
+			return fmt.Errorf("%w: %q is not a folder", ErrUnsafeDir, p)
+		}
+		uid := int(st.Uid)
+		if uid != 0 && (euid == 0 || uid != euid) {
+			return fmt.Errorf("%w: %q is owned by uid %d", ErrUnsafeDir, p, uid)
+		}
+		if info.Mode().Perm()&0o022 != 0 && (uid != 0 || info.Mode()&os.ModeSticky == 0) {
+			return fmt.Errorf("%w: %q has mode %v; others could replace what is below it", ErrUnsafeDir, p, info.Mode())
+		}
+		if p == "/" {
+			return nil
+		}
+	}
+}
