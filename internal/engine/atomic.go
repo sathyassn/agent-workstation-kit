@@ -149,20 +149,33 @@ func (e *Engine) removeTemps(path string) error {
 	return nil
 }
 
-// hasStaleTemps reports whether p's folder holds any leftover temporary file
-// for p.name.
-func hasStaleTemps(p parent) (bool, error) {
+// validateStaleTemps checks every leftover temporary entry for p.name in p's
+// folder. It returns true if at least one stale temp exists, and refuses any
+// stale temp that is a directory (which unlinkat would fail to remove).
+func validateStaleTemps(p parent) (bool, error) {
 	names, err := listDir(p.dir)
 	if err != nil {
 		return false, err
 	}
 	prefix := "." + p.name + tempMarker
+	found := false
 	for _, n := range names {
-		if strings.HasPrefix(n, prefix) {
-			return true, nil
+		if !strings.HasPrefix(n, prefix) {
+			continue
 		}
+		var st unix.Stat_t
+		if err := unix.Fstatat(p.fd(), n, &st, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+			if errors.Is(err, unix.ENOENT) {
+				continue
+			}
+			return false, fmt.Errorf("stat stale temp %q: %w", filepath.Join(p.dir.Name(), n), err)
+		}
+		if st.Mode&unix.S_IFMT == unix.S_IFDIR {
+			return false, fmt.Errorf("%w: stale temp %q is a folder", ErrUnsupportedTarget, filepath.Join(p.dir.Name(), n))
+		}
+		found = true
 	}
-	return false, nil
+	return found, nil
 }
 
 // listDir lists an open folder's names through a duplicate descriptor, so

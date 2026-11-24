@@ -67,6 +67,10 @@ var (
 	// ErrTargetChanged reports a target whose device, inode, file type or size
 	// changed between stat and open/read.
 	ErrTargetChanged = errors.New("target changed between stat and open")
+	// ErrHardLinkTarget reports a regular-file target with multiple hard links
+	// (Nlink > 1), which is unsafe to back up, replace or remove as a single
+	// path.
+	ErrHardLinkTarget = errors.New("target has multiple hard links")
 	// ErrProtectedMetadata reports a target carrying OS-protected metadata
 	// (such as macOS SIP com.apple.rootless) that cannot be preserved across
 	// replacement or restore.
@@ -116,6 +120,7 @@ func ExitCode(err error) contract.ExitCode {
 	case errors.Is(err, contract.ErrUndeclaredTarget),
 		errors.Is(err, ErrPackageDBPath),
 		errors.Is(err, ErrTargetChanged),
+		errors.Is(err, ErrHardLinkTarget),
 		errors.Is(err, ErrProtectedMetadata),
 		errors.Is(err, ErrUnregisteredProvider),
 		errors.Is(err, platform.ErrForbiddenEnv):

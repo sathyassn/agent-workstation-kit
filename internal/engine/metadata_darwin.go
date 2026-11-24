@@ -69,6 +69,10 @@ func isDarwinRefusedXattr(name []byte) bool {
 	}
 }
 
+func isDarwinDroppedXattr(name []byte) bool {
+	return string(name) == xattrDarwinMACL
+}
+
 func classifyDarwinXattr(path string, name []byte) (skip bool, err error) {
 	if isDarwinRefusedXattr(name) {
 		return false, fmt.Errorf("%w: %q carries %q", ErrProtectedMetadata, path, string(name))
@@ -100,8 +104,16 @@ func validateACLForOS(acl *FileACL) error {
 }
 
 func readFileMetadata(f *os.File) (FileMetadata, error) {
+	var dropped []string
 	xStatus, xattrs, err := readAllXattrs(f, func(name []byte) (bool, error) {
-		return classifyDarwinXattr(f.Name(), name)
+		skip, cerr := classifyDarwinXattr(f.Name(), name)
+		if cerr != nil {
+			return false, cerr
+		}
+		if skip && isDarwinDroppedXattr(name) {
+			dropped = append(dropped, string(name))
+		}
+		return skip, nil
 	})
 	if err != nil {
 		return FileMetadata{}, err
@@ -111,10 +123,11 @@ func readFileMetadata(f *os.File) (FileMetadata, error) {
 		return FileMetadata{}, err
 	}
 	return FileMetadata{
-		XattrsStatus: xStatus,
-		Xattrs:       xattrs,
-		ACLStatus:    aclStatus,
-		ACL:          acl,
+		XattrsStatus:  xStatus,
+		Xattrs:        xattrs,
+		DroppedXattrs: dropped,
+		ACLStatus:     aclStatus,
+		ACL:           acl,
 	}, nil
 }
 

@@ -176,9 +176,9 @@ func TestRestoreValidatorsAndMismatchesFailClosed(t *testing.T) {
 			t.Fatal(err)
 		}
 		e, _ := w.engine(t, func(o *engine.Options) { o.Providers = providers })
-		resolve := func(context.Context, contract.UnitID) (contract.Unit, contract.Plan, error) {
+		resolve := engine.Resolver(func(context.Context, contract.UnitID) (contract.Unit, contract.Plan, error) {
 			return u, statePlan(), nil
-		}
+		})
 		_, err := e.Resume(ctx, resolve, engine.ResumeOptions{RestoreOnly: true})
 		if !errors.Is(err, engine.ErrBackupMismatch) || engine.ExitCode(err) != contract.ExitRecoveryBlocks {
 			t.Fatalf("Resume err = %v (exit %d), want ErrBackupMismatch and exit 4", err, engine.ExitCode(err))
@@ -208,9 +208,9 @@ func TestRestoreValidatorsAndMismatchesFailClosed(t *testing.T) {
 
 		// Resume with no Providers registered.
 		e, _ := w.engine(t)
-		resolve := func(context.Context, contract.UnitID) (contract.Unit, contract.Plan, error) {
+		resolve := engine.Resolver(func(context.Context, contract.UnitID) (contract.Unit, contract.Plan, error) {
 			return u, statePlan(), nil
-		}
+		})
 		_, err := e.Resume(ctx, resolve, engine.ResumeOptions{RestoreOnly: true})
 		if !errors.Is(err, engine.ErrRestoreMismatch) || engine.ExitCode(err) != contract.ExitRecoveryBlocks {
 			t.Fatalf("Resume err = %v (exit %d), want ErrRestoreMismatch and exit 4", err, engine.ExitCode(err))
@@ -574,9 +574,9 @@ func TestSetStateRefusesUnregisteredProvider(t *testing.T) {
 			t.Fatalf("hostname after crash = %+v, %v; want lab-ws-mutated", got, err)
 		}
 		e, _ := w.engine(t, func(o *engine.Options) { o.Providers = providers })
-		resolve := func(context.Context, contract.UnitID) (contract.Unit, contract.Plan, error) {
+		resolve := engine.Resolver(func(context.Context, contract.UnitID) (contract.Unit, contract.Plan, error) {
 			return u, statePlan(), nil
-		}
+		})
 		res, err := e.Resume(ctx, resolve, engine.ResumeOptions{RestoreOnly: true})
 		if err != nil || res.Action != engine.ResumeRestored {
 			t.Fatalf("Resume = %+v, %v; want restored", res, err)
@@ -1087,9 +1087,9 @@ func TestSetStateRunsInsideRecordedContainment(t *testing.T) {
 		})
 
 		e, _ := w.engine(t, func(o *engine.Options) { o.Providers = providers })
-		resolve := func(context.Context, contract.UnitID) (contract.Unit, contract.Plan, error) {
+		resolve := engine.Resolver(func(context.Context, contract.UnitID) (contract.Unit, contract.Plan, error) {
 			return u, statePlan(), nil
-		}
+		})
 		res, err := e.Resume(ctx, resolve, engine.ResumeOptions{RestoreOnly: true})
 		if err != nil || res.Action != engine.ResumeRestored {
 			t.Fatalf("Resume = %+v, %v; want ResumeRestored", res, err)
@@ -1133,9 +1133,9 @@ func TestSetStateRunsInsideRecordedContainment(t *testing.T) {
 		w.cont.SetUnkillable(rec.Command.Name)
 
 		e, _ := w.engine(t, func(o *engine.Options) { o.Providers = providers })
-		resolve := func(context.Context, contract.UnitID) (contract.Unit, contract.Plan, error) {
+		resolve := engine.Resolver(func(context.Context, contract.UnitID) (contract.Unit, contract.Plan, error) {
 			return u, statePlan(), nil
-		}
+		})
 		_, err := e.Resume(ctx, resolve, engine.ResumeOptions{RestoreOnly: true})
 		if !errors.Is(err, engine.ErrEmptinessUnknown) || engine.ExitCode(err) != contract.ExitRecoveryBlocks {
 			t.Fatalf("Resume err = %v (exit %d), want ErrEmptinessUnknown (exit 4)", err, engine.ExitCode(err))
@@ -1156,4 +1156,230 @@ func (p *orderedStateProvider) Restore(ctx context.Context, s contract.Snapshot)
 		p.onRestore()
 	}
 	return p.StateProvider.Restore(ctx, s)
+}
+
+// TestRestorePreValidatesStaleTempDirectoryBeforeMutatingState is R1: if a
+// directory sits at a stale temp path alongside a state mutation, preflight
+// must reject it with exit 4 before calling any state provider Restore.
+func TestRestorePreValidatesStaleTempDirectoryBeforeMutatingState(t *testing.T) {
+	ctx := context.Background()
+	w := newWorld(t)
+	hostProv := &countingStateProvider{
+		FakeStateProvider: contracttest.NewFakeStateProvider(contract.ProviderHostname, map[contract.StateKey]contract.State{
+			platform.HostnameKeyStatic: {Value: "lab-ws-orig"},
+		}),
+	}
+	providers := map[contract.StateProviderName]contract.StateProvider{contract.ProviderHostname: hostProv}
+	u := &absentFileAndStateUnit{root: w.root, hostProv: hostProv, newHostname: "lab-ws-mutated"}
+	eCrash, self := w.engine(t, func(o *engine.Options) {
+		o.Providers = providers
+		o.Fault = crashAt(engine.PointApplied)
+	})
+	if !runCrashing(func() { _ = eCrash.Apply(ctx, u, statePlan()) }) {
+		t.Fatal("apply did not reach PointApplied")
+	}
+	w.table.Kill(self)
+
+	// Place a directory at a stale temp path for pathA.
+	staleTempDir := filepath.Join(w.root, filepath.Dir(pathA), "."+filepath.Base(pathA)+".wskit-tmp-deadbeef")
+	if err := os.Mkdir(staleTempDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	restoresBefore := hostProv.restores
+	e, _ := w.engine(t, func(o *engine.Options) { o.Providers = providers })
+	resolve := func(context.Context, contract.UnitID) (contract.Unit, contract.Plan, error) {
+		return u, statePlan(), nil
+	}
+	_, err := e.Resume(ctx, resolve, engine.ResumeOptions{RestoreOnly: true})
+	if !errors.Is(err, engine.ErrRestoreFailed) || engine.ExitCode(err) != contract.ExitRecoveryBlocks {
+		t.Fatalf("Resume err = %v (exit %d), want ErrRestoreFailed and exit 4", err, engine.ExitCode(err))
+	}
+	if hostProv.restores != restoresBefore {
+		t.Fatalf("hostname Restore called %d times despite stale temp directory; want 0", hostProv.restores-restoresBefore)
+	}
+}
+
+// TestRecoveryStateRestoreRunsInsideRecordedContainment is R4: provider
+// Restore during recovery must run inside recorded containment so recovery
+// tracks and drains restore commands (and blocks if unkillable).
+func TestRecoveryStateRestoreRunsInsideRecordedContainment(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("recovery Restore runs in containment and drains it", func(t *testing.T) {
+		w := newWorld(t)
+		runner := platformtest.NewHostnameRunner(platformtest.HostnameState{
+			Static: "lab-ws-orig", Pretty: "Lab Orig", Transient: "lab-ws-orig", Local: "lab-ws-orig",
+		})
+		w.wireHostnameRunner(runner)
+		hostProv := newHostnameProvider(runner)
+		providers := map[contract.StateProviderName]contract.StateProvider{contract.ProviderHostname: hostProv}
+		u := &fileAndStateUnit{root: w.root, hostProv: hostProv, newHostname: "lab-ws-mutated"}
+
+		eCrash, self := w.engine(t, func(o *engine.Options) {
+			o.Providers = providers
+			o.Fault = crashAt(engine.PointApplied)
+		})
+		if !runCrashing(func() { _ = eCrash.Apply(ctx, u, statePlan()) }) {
+			t.Fatal("apply did not reach PointApplied")
+		}
+		w.table.Kill(self)
+
+		launchedBefore := len(w.cont.Launched())
+		emptiesBefore := len(w.cont.EmptyCalls())
+		e, _ := w.engine(t, func(o *engine.Options) { o.Providers = providers })
+		resolve := engine.Resolver(func(context.Context, contract.UnitID) (contract.Unit, contract.Plan, error) {
+			return u, statePlan(), nil
+		})
+		res, err := e.Resume(ctx, resolve, engine.ResumeOptions{RestoreOnly: true})
+		if err != nil || res.Action != engine.ResumeRestored {
+			t.Fatalf("Resume = %+v, %v; want ResumeRestored", res, err)
+		}
+		if len(w.cont.Launched()) <= launchedBefore {
+			t.Fatalf("recovery state Restore launched %d contained commands, want > 0", len(w.cont.Launched())-launchedBefore)
+		}
+		if len(w.cont.EmptyCalls()) <= emptiesBefore {
+			t.Fatalf("recovery state Restore emptied %d containments, want > 0", len(w.cont.EmptyCalls())-emptiesBefore)
+		}
+	})
+
+	t.Run("unkillable recovery Restore containment blocks cleanly exit 4", func(t *testing.T) {
+		w := newWorld(t)
+		runner := platformtest.NewHostnameRunner(platformtest.HostnameState{
+			Static: "lab-ws-orig", Pretty: "Lab Orig", Transient: "lab-ws-orig", Local: "lab-ws-orig",
+		})
+		w.wireHostnameRunner(runner)
+		hostProv := newHostnameProvider(runner)
+		providers := map[contract.StateProviderName]contract.StateProvider{contract.ProviderHostname: hostProv}
+		u := &fileAndStateUnit{root: w.root, hostProv: hostProv, newHostname: "lab-ws-mutated"}
+
+		eCrash, self := w.engine(t, func(o *engine.Options) {
+			o.Providers = providers
+			o.Fault = crashAt(engine.PointApplied)
+		})
+		if !runCrashing(func() { _ = eCrash.Apply(ctx, u, statePlan()) }) {
+			t.Fatal("apply did not reach PointApplied")
+		}
+		w.table.Kill(self)
+
+		// Crash recovery mid-Restore at PointCommandDone, leaving an unfinished
+		// restore CommandRecord, then mark that containment busy and unkillable.
+		eRecCrash, selfRec := w.engine(t, func(o *engine.Options) {
+			o.Providers = providers
+			o.Fault = crashAt(engine.PointCommandDone)
+		})
+		resolve := engine.Resolver(func(context.Context, contract.UnitID) (contract.Unit, contract.Plan, error) {
+			return u, statePlan(), nil
+		})
+		if !runCrashing(func() { _, _ = eRecCrash.Resume(ctx, resolve, engine.ResumeOptions{RestoreOnly: true}) }) {
+			t.Fatal("recovery did not hit PointCommandDone inside state Restore")
+		}
+		w.table.Kill(selfRec)
+
+		rec := w.record(t)
+		if rec == nil || rec.Status != engine.StatusRestoring || rec.Command == nil || rec.Command.Finished {
+			t.Fatalf("record after crashed recovery Restore = %+v, want StatusRestoring with unfinished Command", rec)
+		}
+		w.cont.SetBusy(rec.Command.Name, true)
+		w.cont.SetUnkillable(rec.Command.Name)
+
+		eNext, _ := w.engine(t, func(o *engine.Options) { o.Providers = providers })
+		_, err := eNext.Resume(ctx, resolve, engine.ResumeOptions{RestoreOnly: true})
+		if !errors.Is(err, engine.ErrEmptinessUnknown) || engine.ExitCode(err) != contract.ExitRecoveryBlocks {
+			t.Fatalf("Resume with unkillable restore containment = %v (exit %d), want ErrEmptinessUnknown (exit 4)", err, engine.ExitCode(err))
+		}
+	})
+}
+
+// TestResumeDecodesAndRestoresLegacyStringXattrManifest is R5: a manifest
+// written with the earlier string-encoded xattr name format (no version field)
+// must decode cleanly and restore without wedging at exit 4.
+func TestResumeDecodesAndRestoresLegacyStringXattrManifest(t *testing.T) {
+	ctx := context.Background()
+	w := newWorld(t)
+	u := &testUnit{root: w.root}
+	w.abandon(t, engine.PointMutation, u)
+	rec := w.record(t)
+
+	// Read current manifest to grab the real backup digest/uid/gid for pathA,
+	// then rewrite manifest.json in the legacy string-encoded xattr format
+	// (omitting version).
+	mPath := filepath.Join(w.journal, "backups", string(rec.RunID), "manifest.json")
+	raw, err := os.ReadFile(mPath) //nolint:gosec // test temp journal
+	if err != nil {
+		t.Fatal(err)
+	}
+	var current engine.Manifest
+	if err := json.Unmarshal(raw, &current); err != nil {
+		t.Fatal(err)
+	}
+	var entryA engine.ManifestEntry
+	for _, en := range current.Entries {
+		if en.Path == pathA {
+			entryA = en
+			break
+		}
+	}
+	legacyName := xattrName()
+	legacyJSON, err := json.MarshalIndent(map[string]any{
+		"run_id": string(rec.RunID),
+		"unit":   string(current.Unit),
+		"entries": []map[string]any{{
+			"path":          pathA,
+			"kind":          "file",
+			"mode":          entryA.Mode,
+			"uid":           entryA.UID,
+			"gid":           entryA.GID,
+			"digest":        string(entryA.Digest),
+			"data":          entryA.Data,
+			"xattrs_status": "captured",
+			"xattrs": []map[string]any{{
+				"name":  legacyName,
+				"value": []byte("legacy-val"),
+			}},
+			"acl_status": "captured",
+		}},
+	}, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(mPath, legacyJSON, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	e, _ := w.engine(t)
+	res, err := e.Resume(ctx, resolverFor(u), engine.ResumeOptions{RestoreOnly: true})
+	if err != nil || res.Action != engine.ResumeRestored {
+		t.Fatalf("Resume with legacy string-xattr manifest = %+v, %v; want ResumeRestored", res, err)
+	}
+	gotXA, ok := getXattrValue(t, filepath.Join(w.root, pathA), legacyName)
+	if !ok || string(gotXA) != "legacy-val" {
+		t.Fatalf("restored xattr %q = %q (ok=%v), want legacy-val", legacyName, gotXA, ok)
+	}
+}
+
+// TestContainedStateRunnerSeparatesStdoutAndStderr is R7: a hostname tool that
+// writes warnings to stderr while printing the hostname to stdout must not
+// contaminate the parsed hostname.
+func TestContainedStateRunnerSeparatesStdoutAndStderr(t *testing.T) {
+	ctx := context.Background()
+	baseRunner := platformtest.NewHostnameRunner(platformtest.HostnameState{
+		Static: "lab-ws-clean", Pretty: "Lab Clean", Transient: "lab-ws-clean", Local: "lab-ws-clean",
+	})
+	noisyRunner := &stderrNoisyRunner{inner: baseRunner, warning: "warning: noisy stderr message\n"}
+	hostProv := newHostnameProvider(noisyRunner)
+	got, err := hostProv.Read(ctx, platform.HostnameKeyStatic)
+	if err != nil || got.Value != "lab-ws-clean" {
+		t.Fatalf("hostname.static = %+v, %v; want lab-ws-clean (without stderr warning)", got, err)
+	}
+}
+
+type stderrNoisyRunner struct {
+	inner   platform.CommandRunner
+	warning string
+}
+
+func (r *stderrNoisyRunner) Run(ctx context.Context, spec platform.ExecSpec) (platform.ExecResult, error) {
+	res, err := r.inner.Run(ctx, spec)
+	res.Stderr += r.warning
+	return res, err
 }

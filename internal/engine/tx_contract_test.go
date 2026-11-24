@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/sathyassn/agent-workstation-kit/internal/contract"
 	"github.com/sathyassn/agent-workstation-kit/internal/contract/contracttest"
 	"github.com/sathyassn/agent-workstation-kit/internal/platform"
@@ -715,5 +717,223 @@ func TestNonUTF8XattrNameRoundTripsThroughBackupAndRestore(t *testing.T) {
 	}
 	if len(ops.applied) != 1 || !bytes.Equal(ops.applied[0].Name, rawName) || !bytes.Equal(ops.applied[0].Value, rawVal) {
 		t.Fatalf("applied xattrs = %+v, want exact raw name %x and value %x", ops.applied, rawName, rawVal)
+	}
+}
+
+// TestPackageDBGuardRefusesSubfolderAndHardLinkTarget is R2:
+//  1. Subdirectories under a package-DB root have their (dev, ino) recorded
+//     at startup so a bind mount of a subfolder (e.g. /var/lib/dpkg/info) is
+//     refused with ErrPackageDBPath.
+//  2. Regular-file targets with link count (Nlink) > 1 are refused before any
+//     backup or write (exit 2).
+func TestPackageDBGuardRefusesSubfolderAndHardLinkTarget(t *testing.T) {
+	t.Run("subfolder under package-DB root is recorded and refused", func(t *testing.T) {
+		dir, err := filepath.EvalSymlinks(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		pkgRoot := filepath.Join(dir, "dpkg-root")
+		pkgSub := filepath.Join(pkgRoot, "info", "nested")
+		if err := os.MkdirAll(pkgSub, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		outsideDir := filepath.Join(dir, "outside")
+		if err := os.MkdirAll(outsideDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		// Symlink inside pkgRoot must NOT be followed into outsideDir.
+		if err := os.Symlink(outsideDir, filepath.Join(pkgRoot, "escape-link")); err != nil {
+			t.Fatal(err)
+		}
+		root := filepath.Join(dir, "root")
+		if err := os.MkdirAll(root, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		table := platformtest.NewProcessTable("boot-pkgdb-sub")
+		e, err := New(Options{
+			JournalDir:          filepath.Join(dir, "journal"),
+			HostLock:            filepath.Join(dir, "host.lock"),
+			Root:                root,
+			Scope:               contract.ScopeUser,
+			Containment:         platformtest.NewContainment(table),
+			Inspector:           table.Inspector(table.Spawn()),
+			extraPackageDBPaths: []string{pkgRoot},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var subSt, outSt unix.Stat_t
+		if err := unix.Stat(pkgSub, &subSt); err != nil {
+			t.Fatal(err)
+		}
+		if err := unix.Stat(outsideDir, &outSt); err != nil {
+			t.Fatal(err)
+		}
+		if err := e.checkPackageDBStat(subSt, "/mnt/bind-info"); !errors.Is(err, ErrPackageDBPath) {
+			t.Fatalf("checkPackageDBStat(subfolder) = %v, want ErrPackageDBPath", err)
+		}
+		if err := e.checkPackageDBStat(outSt, "/mnt/outside"); err != nil {
+			t.Fatalf("symlinked outside dir was unexpectedly added to pkgDBIDs: %v", err)
+		}
+	})
+
+	t.Run("hard-linked regular file target (Nlink > 1) is refused exit 2", func(t *testing.T) {
+		dir, err := filepath.EvalSymlinks(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		root := filepath.Join(dir, "root")
+		target := "/etc/wskit-hardlink.conf"
+		realTarget := filepath.Join(root, target)
+		if err := os.MkdirAll(filepath.Dir(realTarget), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(realTarget, []byte("orig-hl\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Link(realTarget, filepath.Join(dir, "other-link")); err != nil {
+			t.Fatal(err)
+		}
+		table := platformtest.NewProcessTable("boot-hardlink")
+		e, err := New(Options{
+			JournalDir:  filepath.Join(dir, "journal"),
+			HostLock:    filepath.Join(dir, "host.lock"),
+			Root:        root,
+			Scope:       contract.ScopeUser,
+			Containment: platformtest.NewContainment(table),
+			Inspector:   table.Inspector(table.Spawn()),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = e.Apply(context.Background(), failingWriteUnit{path: target, fail: false}, contract.Plan{ID: "p", Unit: contract.UnitShell, Digest: "d"})
+		if !errors.Is(err, ErrHardLinkTarget) || ExitCode(err) != contract.ExitRefused {
+			t.Fatalf("Apply on hard-linked file = %v (exit %d), want ErrHardLinkTarget (exit 2)", err, ExitCode(err))
+		}
+		rec, rerr := e.readRecord()
+		if rerr != nil || rec != nil {
+			t.Fatalf("intent written for hard-linked target: %+v, %v", rec, rerr)
+		}
+		if got, rerr := os.ReadFile(realTarget); rerr != nil || string(got) != "orig-hl\n" { //nolint:gosec // test temp root
+			t.Fatalf("hard-linked file mutated: %q, %v", got, rerr)
+		}
+	})
+}
+
+// TestBackupRefusesSwappedFIFOWithoutBlocking is R3: a FIFO swapped in between
+// lstat and open must not block open() waiting for a writer; it must return
+// immediately with ErrTargetChanged (exit 2).
+func TestBackupRefusesSwappedFIFOWithoutBlocking(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(dir, "root")
+	target := "/etc/wskit-fifo.conf"
+	realTarget := filepath.Join(root, target)
+	if err := os.MkdirAll(filepath.Dir(realTarget), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(realTarget, []byte("before-fifo\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	table := platformtest.NewProcessTable("boot-fifo")
+	e, err := New(Options{
+		JournalDir:  filepath.Join(dir, "journal"),
+		HostLock:    filepath.Join(dir, "host.lock"),
+		Root:        root,
+		Scope:       contract.ScopeUser,
+		Containment: platformtest.NewContainment(table),
+		Inspector:   table.Inspector(table.Spawn()),
+		afterLstat: func(_ string) {
+			_ = os.Remove(realTarget)
+			_ = unix.Mkfifo(realTarget, 0o600)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- e.Apply(context.Background(), failingWriteUnit{path: target, fail: false}, contract.Plan{ID: "p", Unit: contract.UnitShell, Digest: "d"})
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrTargetChanged) || ExitCode(err) != contract.ExitRefused {
+			t.Fatalf("Apply err = %v (exit %d), want ErrTargetChanged (exit 2)", err, ExitCode(err))
+		}
+	case <-time.After(time.Second):
+		// Unblock any hung O_RDONLY FIFO open so the goroutine exits cleanly.
+		if wfd, oerr := unix.Open(realTarget, unix.O_WRONLY|unix.O_NONBLOCK, 0); oerr == nil {
+			_ = unix.Close(wfd)
+		}
+		t.Fatal("Apply hung opening swapped FIFO (missing O_NONBLOCK)")
+	}
+}
+
+// TestContainedStateRunnerSeparatesStdoutAndStderrInternal is R7: running a
+// hostname provider command through containedCommandRunner with concurrent
+// stdout + stderr writes under -race parses ONLY stdout without stderr
+// contamination.
+func TestContainedStateRunnerSeparatesStdoutAndStderrInternal(t *testing.T) {
+	ctx := context.Background()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(dir, "root")
+	if err := os.MkdirAll(root, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	table := platformtest.NewProcessTable("boot-stdout-stderr")
+	cont := platformtest.NewContainment(table)
+	cont.SetRun(func(_ context.Context, spec platform.LaunchSpec) (contract.CommandResult, error) {
+		var wg sync.WaitGroup
+		wg.Go(func() {
+			if spec.Output != nil {
+				_, _ = spec.Output.Write([]byte("lab-ws-clean\n"))
+			}
+		})
+		wg.Go(func() {
+			errW := spec.Stderr
+			if errW == nil {
+				errW = spec.Output
+			}
+			if errW != nil {
+				_, _ = errW.Write([]byte("warning: noisy stderr message\n"))
+			}
+		})
+		wg.Wait()
+		return contract.CommandResult{ExitCode: 0}, nil
+	})
+	e, err := New(Options{
+		JournalDir:  filepath.Join(dir, "journal"),
+		HostLock:    filepath.Join(dir, "host.lock"),
+		Root:        root,
+		Scope:       contract.ScopeUser,
+		Containment: cont,
+		Inspector:   table.Inspector(table.Spawn()),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.prepareJournal(); err != nil {
+		t.Fatal(err)
+	}
+	rec := &Record{Status: StatusApplying, RunID: "rstdoutsep", Unit: contract.UnitMachineIdentity, Scope: contract.ScopeUser}
+	l := &locks{e: e}
+	runner := e.containedStateRunner(l, rec, false, nil, nil, nil)
+	res, err := runner.Run(ctx, platform.ExecSpec{
+		Argv: []string{"/usr/sbin/scutil", "--get", "HostName"},
+		Env:  []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "LANG=C"},
+	})
+	if err != nil {
+		t.Fatalf("contained runner Run: %v", err)
+	}
+	if strings.TrimSpace(res.Stdout) != "lab-ws-clean" {
+		t.Fatalf("Stdout = %q, want %q (must not contain stderr)", res.Stdout, "lab-ws-clean")
+	}
+	if !strings.Contains(res.Stderr, "noisy stderr message") {
+		t.Fatalf("Stderr = %q, want diagnostic warning preserved", res.Stderr)
 	}
 }

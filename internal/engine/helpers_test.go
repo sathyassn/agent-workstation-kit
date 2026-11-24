@@ -91,13 +91,15 @@ func (w *world) wireHostnameRunner(runner platform.CommandRunner) {
 				Env:  spec.Env,
 				Dir:  spec.Dir,
 			})
-			if spec.Output != nil {
-				if res.Stdout != "" {
-					_, _ = spec.Output.Write([]byte(res.Stdout))
-				}
-				if res.Stderr != "" {
-					_, _ = spec.Output.Write([]byte(res.Stderr))
-				}
+			if spec.Output != nil && res.Stdout != "" {
+				_, _ = spec.Output.Write([]byte(res.Stdout))
+			}
+			stderrW := spec.Stderr
+			if stderrW == nil {
+				stderrW = spec.Output
+			}
+			if stderrW != nil && res.Stderr != "" {
+				_, _ = stderrW.Write([]byte(res.Stderr))
 			}
 			return contract.CommandResult{ExitCode: res.ExitCode, Duration: res.Duration}, err
 		}

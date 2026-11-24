@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -31,31 +32,37 @@ const (
 	KindSymlink EntryKind = "symlink"
 )
 
-const stateBackupPrefix = "state-"
+const (
+	stateBackupPrefix     = "state-"
+	manifestVersionLegacy = 1
+	manifestVersion       = 2
+)
 
 // ManifestEntry is the full backup of one declared path, including owner,
 // mode, extended attributes, ACLs and content digest.
 type ManifestEntry struct {
-	Path         string          `json:"path"`
-	Kind         EntryKind       `json:"kind"`
-	Mode         fs.FileMode     `json:"mode,omitempty"`
-	UID          int             `json:"uid,omitempty"`
-	GID          int             `json:"gid,omitempty"`
-	Digest       contract.Digest `json:"digest,omitempty"`
-	Data         string          `json:"data,omitempty"`
-	Link         string          `json:"link,omitempty"`
-	XattrsStatus MetadataSupport `json:"xattrs_status,omitempty"`
-	Xattrs       []XattrEntry    `json:"xattrs,omitempty"`
-	ACLStatus    MetadataSupport `json:"acl_status,omitempty"`
-	ACL          *FileACL        `json:"acl,omitempty"`
+	Path          string          `json:"path"`
+	Kind          EntryKind       `json:"kind"`
+	Mode          fs.FileMode     `json:"mode,omitempty"`
+	UID           int             `json:"uid,omitempty"`
+	GID           int             `json:"gid,omitempty"`
+	Digest        contract.Digest `json:"digest,omitempty"`
+	Data          string          `json:"data,omitempty"`
+	Link          string          `json:"link,omitempty"`
+	XattrsStatus  MetadataSupport `json:"xattrs_status,omitempty"`
+	Xattrs        []XattrEntry    `json:"xattrs,omitempty"`
+	DroppedXattrs []string        `json:"dropped_xattrs,omitempty"`
+	ACLStatus     MetadataSupport `json:"acl_status,omitempty"`
+	ACL           *FileACL        `json:"acl,omitempty"`
 }
 
 func (en ManifestEntry) fileMetadata() FileMetadata {
 	return FileMetadata{
-		XattrsStatus: en.XattrsStatus,
-		Xattrs:       en.Xattrs,
-		ACLStatus:    en.ACLStatus,
-		ACL:          en.ACL,
+		XattrsStatus:  en.XattrsStatus,
+		Xattrs:        en.Xattrs,
+		DroppedXattrs: en.DroppedXattrs,
+		ACLStatus:     en.ACLStatus,
+		ACL:           en.ACL,
 	}
 }
 
@@ -68,12 +75,138 @@ type ManifestState struct {
 }
 
 // Manifest lists the backups of a run. It is written and fsynced last, so it
-// exists only for a complete backup.
+// exists only for a complete backup. Version 2 encodes XattrEntry.Name as
+// base64 bytes for lossless non-UTF-8 support; UnmarshalJSON also decodes
+// legacy (version 0/1) manifests whose xattr names were plain JSON strings.
 type Manifest struct {
+	Version int             `json:"version,omitempty"`
 	RunID   contract.RunID  `json:"run_id"`
 	Unit    contract.UnitID `json:"unit"`
 	Entries []ManifestEntry `json:"entries"`
 	States  []ManifestState `json:"states,omitempty"`
+}
+
+// MarshalJSON always writes the current versioned manifest format (version 2,
+// with lossless base64-encoded xattr names).
+func (m Manifest) MarshalJSON() ([]byte, error) {
+	type manifestWire struct {
+		Version int             `json:"version"`
+		RunID   contract.RunID  `json:"run_id"`
+		Unit    contract.UnitID `json:"unit"`
+		Entries []ManifestEntry `json:"entries"`
+		States  []ManifestState `json:"states,omitempty"`
+	}
+	w := manifestWire{
+		Version: manifestVersion,
+		RunID:   m.RunID,
+		Unit:    m.Unit,
+		Entries: m.Entries,
+		States:  m.States,
+	}
+	data, err := json.Marshal(w)
+	if err != nil {
+		return nil, fmt.Errorf("marshal manifest: %w", err)
+	}
+	return data, nil
+}
+
+// UnmarshalJSON decodes both version 2 manifests (base64 []byte xattr names)
+// and legacy version 0/1 manifests (plain string xattr names) strictly,
+// rejecting unknown fields and unsupported versions.
+func (m *Manifest) UnmarshalJSON(data []byte) error {
+	type rawEntry struct {
+		Path          string            `json:"path"`
+		Kind          EntryKind         `json:"kind"`
+		Mode          fs.FileMode       `json:"mode,omitempty"`
+		UID           int               `json:"uid,omitempty"`
+		GID           int               `json:"gid,omitempty"`
+		Digest        contract.Digest   `json:"digest,omitempty"`
+		Data          string            `json:"data,omitempty"`
+		Link          string            `json:"link,omitempty"`
+		XattrsStatus  MetadataSupport   `json:"xattrs_status,omitempty"`
+		Xattrs        []json.RawMessage `json:"xattrs,omitempty"`
+		DroppedXattrs []string          `json:"dropped_xattrs,omitempty"`
+		ACLStatus     MetadataSupport   `json:"acl_status,omitempty"`
+		ACL           *FileACL          `json:"acl,omitempty"`
+	}
+	type rawManifest struct {
+		Version int             `json:"version,omitempty"`
+		RunID   contract.RunID  `json:"run_id"`
+		Unit    contract.UnitID `json:"unit"`
+		Entries []rawEntry      `json:"entries"`
+		States  []ManifestState `json:"states,omitempty"`
+	}
+	var raw rawManifest
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&raw); err != nil {
+		return fmt.Errorf("decode manifest: %w", err)
+	}
+	ver := raw.Version
+	if ver == 0 {
+		ver = manifestVersionLegacy
+	}
+	if ver != manifestVersionLegacy && ver != manifestVersion {
+		return fmt.Errorf("%w: unsupported manifest version %d", ErrCorruptRecord, raw.Version)
+	}
+	entries := make([]ManifestEntry, len(raw.Entries))
+	for i, re := range raw.Entries {
+		xattrs, err := decodeManifestXattrs(ver, re.Xattrs)
+		if err != nil {
+			return err
+		}
+		entries[i] = ManifestEntry{
+			Path:          re.Path,
+			Kind:          re.Kind,
+			Mode:          re.Mode,
+			UID:           re.UID,
+			GID:           re.GID,
+			Digest:        re.Digest,
+			Data:          re.Data,
+			Link:          re.Link,
+			XattrsStatus:  re.XattrsStatus,
+			Xattrs:        xattrs,
+			DroppedXattrs: re.DroppedXattrs,
+			ACLStatus:     re.ACLStatus,
+			ACL:           re.ACL,
+		}
+	}
+	*m = Manifest{
+		Version: ver,
+		RunID:   raw.RunID,
+		Unit:    raw.Unit,
+		Entries: entries,
+		States:  raw.States,
+	}
+	return nil
+}
+
+func decodeManifestXattrs(ver int, raw []json.RawMessage) ([]XattrEntry, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	out := make([]XattrEntry, len(raw))
+	for i, item := range raw {
+		dec := json.NewDecoder(bytes.NewReader(item))
+		dec.DisallowUnknownFields()
+		if ver == manifestVersionLegacy {
+			var legacy struct {
+				Name  string `json:"name"`
+				Value []byte `json:"value"`
+			}
+			if err := dec.Decode(&legacy); err != nil {
+				return nil, fmt.Errorf("decode legacy xattr entry: %w", err)
+			}
+			out[i] = XattrEntry{Name: []byte(legacy.Name), Value: legacy.Value}
+			continue
+		}
+		var cur XattrEntry
+		if err := dec.Decode(&cur); err != nil {
+			return nil, fmt.Errorf("decode xattr entry: %w", err)
+		}
+		out[i] = cur
+	}
+	return out, nil
 }
 
 func (m *Manifest) entry(path string) (ManifestEntry, bool) {
@@ -111,7 +244,7 @@ func (e *Engine) backup(ctx context.Context, runID contract.RunID, desc contract
 	if err := e.mkdirDurable(dir); err != nil {
 		return nil, err
 	}
-	m := &Manifest{RunID: runID, Unit: desc.Unit}
+	m := &Manifest{Version: manifestVersion, RunID: runID, Unit: desc.Unit}
 	for i, p := range paths {
 		if err := ctx.Err(); err != nil {
 			return nil, fmt.Errorf("backup: %w", err)
@@ -220,6 +353,10 @@ func (e *Engine) backupOne(dir, name, path string) (ManifestEntry, error) {
 			_ = f.Close()
 			return ManifestEntry{}, err
 		}
+		if fst.Nlink > 1 {
+			_ = f.Close()
+			return ManifestEntry{}, fmt.Errorf("%w: %q has %d links", ErrHardLinkTarget, path, fst.Nlink)
+		}
 		// Take every attribute (mode, owner, size, xattrs, ACLs and content)
 		// from the opened descriptor so a concurrent swap cannot split them.
 		en := ManifestEntry{
@@ -244,7 +381,7 @@ func (e *Engine) backupOne(dir, name, path string) (ManifestEntry, error) {
 			return ManifestEntry{}, fmt.Errorf("%w: %q size changed during read (%d vs %d)", ErrTargetChanged, path, len(data), fst.Size)
 		}
 		en.Digest = digest(data)
-		en.XattrsStatus, en.Xattrs = meta.XattrsStatus, meta.Xattrs
+		en.XattrsStatus, en.Xattrs, en.DroppedXattrs = meta.XattrsStatus, meta.Xattrs, meta.DroppedXattrs
 		en.ACLStatus, en.ACL = meta.ACLStatus, meta.ACL
 		if err := e.atomicWrite(filepath.Join(dir, name), fileSpec{data: data, perm: 0o600}); err != nil {
 			return ManifestEntry{}, err
@@ -291,14 +428,14 @@ func (e *Engine) readManifest(runID contract.RunID) (*Manifest, error) {
 // restore a kill interrupted is finished by running it again. Every error is
 // wrapped in ErrRestoreFailed so it fails closed with exit 4 and leaves the
 // intent unfinished.
-func (e *Engine) restore(ctx context.Context, m *Manifest) error {
-	if err := e.restoreInner(ctx, m); err != nil {
+func (e *Engine) restore(ctx context.Context, l *locks, rec *Record, m *Manifest) error {
+	if err := e.restoreInner(ctx, l, rec, m); err != nil {
 		return fmt.Errorf("%w: %w", ErrRestoreFailed, err)
 	}
 	return nil
 }
 
-func (e *Engine) restoreInner(ctx context.Context, m *Manifest) error {
+func (e *Engine) restoreInner(ctx context.Context, l *locks, rec *Record, m *Manifest) error {
 	dir := e.backupDir(m.RunID)
 	if err := e.validateManifestForRestore(dir, m); err != nil {
 		return err
@@ -307,7 +444,7 @@ func (e *Engine) restoreInner(ctx context.Context, m *Manifest) error {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("restore state %s: %w", st.Provider, err)
 		}
-		if err := e.restoreState(ctx, dir, st); err != nil {
+		if err := e.restoreState(ctx, l, rec, dir, st); err != nil {
 			return err
 		}
 		e.fault(PointRestoreEntry)
@@ -407,18 +544,21 @@ func (e *Engine) validateTargetRestorable(en ManifestEntry) error {
 		if err := e.checkPackageDBStat(st, en.Path); err != nil {
 			return err
 		}
+		if st.Mode&unix.S_IFMT == unix.S_IFREG && st.Nlink > 1 {
+			return fmt.Errorf("%w: %q has %d links", ErrHardLinkTarget, en.Path, st.Nlink)
+		}
 	case errors.Is(statErr, fs.ErrNotExist):
 	default:
 		return statErr
+	}
+	stale, err := validateStaleTemps(p)
+	if err != nil {
+		return err
 	}
 	switch en.Kind {
 	case KindAbsent:
 		if exists && st.Mode&unix.S_IFMT == unix.S_IFDIR {
 			return fmt.Errorf("%w: %q became a folder", ErrUnsupportedTarget, en.Path)
-		}
-		stale, err := hasStaleTemps(p)
-		if err != nil {
-			return err
 		}
 		if exists || stale {
 			return p.checkWritable()
@@ -434,7 +574,7 @@ func (e *Engine) validateTargetRestorable(en ManifestEntry) error {
 	}
 }
 
-func (e *Engine) restoreState(ctx context.Context, dir string, st ManifestState) error {
+func (e *Engine) restoreState(ctx context.Context, l *locks, rec *Record, dir string, st ManifestState) error {
 	data, err := readFileAt(filepath.Join(dir, st.Data))
 	if err != nil {
 		return fmt.Errorf("%w: read state backup %q: %w", ErrRestoreMismatch, st.Provider, err)
@@ -446,8 +586,19 @@ func (e *Engine) restoreState(ctx context.Context, dir string, st ManifestState)
 	if !ok {
 		return fmt.Errorf("%w: no state provider registered for %q", ErrRestoreMismatch, st.Provider)
 	}
-	if err := p.Restore(ctx, contract.Snapshot{Provider: st.Provider, Data: data}); err != nil {
-		return fmt.Errorf("%w: restore state %q: %w", ErrRestoreMismatch, st.Provider, err)
+	pkgTxn := st.Provider == contract.ProviderPackages
+	var failed error
+	runner := e.containedStateRunner(l, rec, pkgTxn, func(err error) {
+		if failed == nil {
+			failed = err
+		}
+	}, func() error { return failed }, nil)
+	restoreCtx := platform.WithCommandRunner(ctx, runner)
+	if err := p.Restore(restoreCtx, contract.Snapshot{Provider: st.Provider, Data: data}); err != nil {
+		return errors.Join(fmt.Errorf("%w: restore state %q: %w", ErrRestoreMismatch, st.Provider, err), failed)
+	}
+	if failed != nil {
+		return failed
 	}
 	e.fault(PointStateRestore)
 	after, err := p.Snapshot(ctx)

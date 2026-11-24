@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -11,7 +12,13 @@ import (
 	"github.com/sathyassn/agent-workstation-kit/internal/platform"
 )
 
-const darwinDataVolumePrefix = "/System/Volumes/Data"
+const (
+	darwinDataVolumePrefix = "/System/Volumes/Data"
+	// maxPackageDBWalkDirs bounds the startup directory walk under existing
+	// package-DB roots so an unusually large or adversarial directory tree
+	// cannot hang startup.
+	maxPackageDBWalkDirs = 65536
+)
 
 // packageDBPrefixes lists the package-manager database and store roots on
 // supported platforms (Ubuntu apt/dpkg/debconf/ucf, macOS Homebrew and
@@ -98,12 +105,14 @@ func isPackageDBPathForOS(path, goos string) bool {
 	return false
 }
 
-// resolvePackageDBIDs resolves every existing directory in roots once and
-// records its (dev, ino) identity, so path walks can refuse crossing into a
-// package-manager database even via bind mounts or path aliases.
-func resolvePackageDBIDs(roots []string) map[platform.FileID]string {
+// resolvePackageDBIDs resolves every existing directory under walkRoots
+// recursively without following symlinks inside them (bounded by
+// maxPackageDBWalkDirs and ignoring unreadable directories), and also stats
+// the top-level statOnlyRoots. Recording subfolder (dev, ino) identities
+// catches bind mounts of subdirectories (such as /var/lib/dpkg/info).
+func resolvePackageDBIDs(walkRoots, statOnlyRoots []string) map[platform.FileID]string {
 	ids := make(map[platform.FileID]string)
-	for _, r := range roots {
+	for _, r := range statOnlyRoots {
 		var st unix.Stat_t
 		if err := unix.Stat(r, &st); err != nil {
 			continue
@@ -116,7 +125,91 @@ func resolvePackageDBIDs(roots []string) map[platform.FileID]string {
 			ids[id] = r
 		}
 	}
+	visited := 0
+	for _, r := range walkRoots {
+		if visited >= maxPackageDBWalkDirs {
+			break
+		}
+		walkPackageDBRoot(r, ids, &visited)
+	}
 	return ids
+}
+
+func walkPackageDBRoot(root string, ids map[platform.FileID]string, visited *int) {
+	// Follow links only for the configured root path itself (for example
+	// /var/db/receipts -> /private/var/db/receipts), then walk every child
+	// directory strictly with O_NOFOLLOW|O_DIRECTORY.
+	fd, err := unix.Open(root, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return
+	}
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil || st.Mode&unix.S_IFMT != unix.S_IFDIR {
+		_ = unix.Close(fd)
+		return
+	}
+	rootID := platform.FileIDFromStat(st)
+	if _, seen := ids[rootID]; seen {
+		_ = unix.Close(fd)
+		return
+	}
+	ids[rootID] = root
+	*visited++
+
+	type item struct {
+		fd   int
+		path string
+	}
+	queue := []item{{fd: fd, path: root}}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		names := readDirNamesUnchecked(cur.fd, cur.path)
+		for _, name := range names {
+			if *visited >= maxPackageDBWalkDirs {
+				break
+			}
+			var cst unix.Stat_t
+			if err := unix.Fstatat(cur.fd, name, &cst, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+				continue
+			}
+			if cst.Mode&unix.S_IFMT != unix.S_IFDIR {
+				continue
+			}
+			cid := platform.FileIDFromStat(cst)
+			if _, seen := ids[cid]; seen {
+				continue
+			}
+			childPath := filepath.Join(cur.path, name)
+			ids[cid] = childPath
+			*visited++
+			if *visited >= maxPackageDBWalkDirs {
+				continue
+			}
+			cfd, err := unix.Openat(cur.fd, name, dirFlags, 0)
+			if err != nil {
+				// Ignore unreadable or disappeared subdirectories while still
+				// keeping the directory's (dev, ino) from fstatat recorded.
+				continue
+			}
+			queue = append(queue, item{fd: cfd, path: childPath})
+		}
+		_ = unix.Close(cur.fd)
+	}
+}
+
+func readDirNamesUnchecked(dirFD int, path string) []string {
+	dupFD, err := unix.Openat(dirFD, ".", dirFlags, 0)
+	if err != nil {
+		return nil
+	}
+	d := os.NewFile(uintptr(dupFD), path)
+	defer func() { _ = d.Close() }()
+	names, err := d.Readdirnames(-1)
+	if err != nil {
+		return nil
+	}
+	return names
 }
 
 func (e *Engine) checkPackageDBStat(st unix.Stat_t, path string) error {

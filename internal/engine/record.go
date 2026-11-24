@@ -91,6 +91,7 @@ type Record struct {
 	PlanDigest  contract.Digest          `json:"plan_digest"`
 	Scope       contract.Scope           `json:"scope"`
 	Executor    platform.ProcessIdentity `json:"executor"`
+	CmdSeq      int                      `json:"cmd_seq,omitempty"`
 	Command     *CommandRecord           `json:"command,omitempty"`
 	Claim       *Claim                   `json:"claim,omitempty"`
 	RestoreOnly bool                     `json:"restore_only,omitempty"`

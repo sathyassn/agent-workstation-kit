@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -223,8 +224,17 @@ func New(opts Options) (*Engine, error) {
 	if opts.Fault == nil {
 		opts.Fault = defaultFault()
 	}
-	roots := append(packageDBPrefixes(), opts.extraPackageDBPaths...)
-	return &Engine{opts: opts, pkgDBIDs: resolvePackageDBIDs(roots)}, nil
+	var walkRoots, statOnlyRoots []string
+	if opts.Root == "" {
+		walkRoots = append(packageDBPrefixes(), opts.extraPackageDBPaths...)
+	} else {
+		for _, pref := range packageDBPrefixes() {
+			walkRoots = append(walkRoots, filepath.Join(opts.Root, pref))
+		}
+		walkRoots = append(walkRoots, opts.extraPackageDBPaths...)
+		statOnlyRoots = packageDBPrefixes()
+	}
+	return &Engine{opts: opts, pkgDBIDs: resolvePackageDBIDs(walkRoots, statOnlyRoots)}, nil
 }
 
 func (e *Engine) meta() metadataOps {
@@ -344,6 +354,7 @@ func (e *Engine) runApply(ctx context.Context, l *locks, self platform.ProcessId
 	if err != nil {
 		return err
 	}
+	e.emitBackupWarnings(runID, desc.Unit, m)
 	rec := &Record{
 		Status: StatusApplying, RunID: runID, Unit: desc.Unit, PlanID: p.ID,
 		PlanDigest: p.Digest, Scope: e.opts.Scope, Executor: self,
@@ -415,6 +426,33 @@ func (e *Engine) failRun(ctx context.Context, l *locks, rec *Record, m *Manifest
 	return fmt.Errorf("%w: %w", ErrApplyFailed, cause)
 }
 
+// emitBackupWarnings surfaces non-preservable OS-protected attributes (such as
+// macOS com.apple.macl) detected on declared targets before apply begins.
+func (e *Engine) emitBackupWarnings(runID contract.RunID, unit contract.UnitID, m *Manifest) {
+	if e.opts.Sink == nil || m == nil {
+		return
+	}
+	var seq uint64
+	for _, en := range m.Entries {
+		if len(en.DroppedXattrs) == 0 {
+			continue
+		}
+		seq++
+		e.opts.Sink.Deliver(contract.Event{
+			Seq:   seq,
+			Time:  e.opts.Now().UTC(),
+			RunID: runID,
+			Unit:  unit,
+			Step:  contract.StepBackup,
+			Kind:  contract.EventWarning,
+			Text:  fmt.Sprintf("replacing %s will drop OS-protected extended attribute %s (cannot be re-set)", en.Path, strings.Join(en.DroppedXattrs, ", ")),
+			Data: map[contract.DataKey]string{
+				contract.DataPath: en.Path,
+			},
+		})
+	}
+}
+
 // restoreRun marks the record restoring, restores and validates the manifest,
 // writes a failed receipt for the run and moves the record to next.
 func (e *Engine) restoreRun(ctx context.Context, l *locks, rec *Record, m *Manifest, next Status) error {
@@ -423,7 +461,7 @@ func (e *Engine) restoreRun(ctx context.Context, l *locks, rec *Record, m *Manif
 		return err
 	}
 	e.fault(PointRestoreStart)
-	if err := e.restore(ctx, m); err != nil {
+	if err := e.restore(ctx, l, rec, m); err != nil {
 		return err
 	}
 	if err := e.writeReceipt(contract.Receipt{

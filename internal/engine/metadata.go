@@ -50,10 +50,11 @@ type FileACL struct {
 
 // FileMetadata holds the extended attributes and ACL of a file.
 type FileMetadata struct {
-	XattrsStatus MetadataSupport
-	Xattrs       []XattrEntry
-	ACLStatus    MetadataSupport
-	ACL          *FileACL
+	XattrsStatus  MetadataSupport
+	Xattrs        []XattrEntry
+	DroppedXattrs []string
+	ACLStatus     MetadataSupport
+	ACL           *FileACL
 }
 
 // metadataOps abstracts reading and applying extended file metadata so

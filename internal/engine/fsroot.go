@@ -94,9 +94,11 @@ func (p parent) lstat() (unix.Stat_t, error) {
 	return st, nil
 }
 
-// open opens the name for reading without following a link.
+// open opens the name for reading without following a link, without blocking
+// on a swapped FIFO (O_NONBLOCK) and without acquiring a controlling terminal
+// (O_NOCTTY).
 func (p parent) open() (*os.File, error) {
-	fd, err := unix.Openat(p.fd(), p.name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	fd, err := unix.Openat(p.fd(), p.name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_NOCTTY|unix.O_CLOEXEC, 0)
 	if err != nil {
 		if errors.Is(err, unix.ENOENT) {
 			return nil, fmt.Errorf("open %q: %w", p.path(), fs.ErrNotExist)
@@ -106,8 +108,9 @@ func (p parent) open() (*os.File, error) {
 	return os.NewFile(uintptr(fd), p.path()), nil
 }
 
-// openChecked opens the regular file at p without following links, fstats the
-// opened descriptor, and refuses if dev, ino or file type changed since st.
+// openChecked opens the regular file at p without following links or blocking
+// on a FIFO, fstats the opened descriptor, and refuses if dev, ino or file
+// type changed since st or if the opened object is not a regular file.
 // Callers must derive every file attribute (mode, owner, size, metadata and
 // content) exclusively from the returned descriptor and stat result.
 func (p parent) openChecked(st unix.Stat_t) (*os.File, unix.Stat_t, error) {
@@ -120,7 +123,7 @@ func (p parent) openChecked(st unix.Stat_t) (*os.File, unix.Stat_t, error) {
 		_ = f.Close()
 		return nil, unix.Stat_t{}, fmt.Errorf("fstat %q: %w", p.path(), err)
 	}
-	if fst.Dev != st.Dev || fst.Ino != st.Ino || (fst.Mode&unix.S_IFMT) != (st.Mode&unix.S_IFMT) {
+	if fst.Dev != st.Dev || fst.Ino != st.Ino || (fst.Mode&unix.S_IFMT) != (st.Mode&unix.S_IFMT) || (fst.Mode&unix.S_IFMT) != unix.S_IFREG {
 		_ = f.Close()
 		return nil, unix.Stat_t{}, fmt.Errorf("%w: %q dev/ino/type changed after stat", ErrTargetChanged, p.path())
 	}
@@ -152,6 +155,9 @@ func (p parent) refuseUnsafeTarget() error {
 	}
 	switch st.Mode & unix.S_IFMT {
 	case unix.S_IFREG:
+		if st.Nlink > 1 {
+			return fmt.Errorf("%w: %q has %d links", ErrHardLinkTarget, p.path(), st.Nlink)
+		}
 		return nil
 	case unix.S_IFLNK:
 		return fmt.Errorf("%w: %q %s", ErrUnsupportedTarget, p.path(), errLinkTarget)

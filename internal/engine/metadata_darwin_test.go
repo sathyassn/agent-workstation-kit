@@ -8,9 +8,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/sathyassn/agent-workstation-kit/internal/contract"
+	"github.com/sathyassn/agent-workstation-kit/internal/contract/contracttest"
 	"github.com/sathyassn/agent-workstation-kit/internal/platform/platformtest"
 )
 
@@ -28,14 +30,19 @@ func (s sipSimulatingMetaOps) Read(f *os.File) (FileMetadata, error) {
 	if err != nil {
 		return FileMetadata{}, err
 	}
-	skip, err := classifyDarwinXattr(f.Name(), []byte(s.injectedName))
+	name := []byte(s.injectedName)
+	skip, err := classifyDarwinXattr(f.Name(), name)
 	if err != nil {
 		return FileMetadata{}, err
 	}
-	if !skip {
-		m.XattrsStatus = MetadataCaptured
-		m.Xattrs = append(m.Xattrs, XattrEntry{Name: []byte(s.injectedName), Value: []byte{1, 2, 3, 4}})
+	if skip {
+		if isDarwinDroppedXattr(name) {
+			m.DroppedXattrs = append(m.DroppedXattrs, s.injectedName)
+		}
+		return m, nil
 	}
+	m.XattrsStatus = MetadataCaptured
+	m.Xattrs = append(m.Xattrs, XattrEntry{Name: name, Value: []byte{1, 2, 3, 4}})
 	return m, nil
 }
 
@@ -151,4 +158,78 @@ func TestDarwinSIPProtectedXattrsNeverWedgeRecovery(t *testing.T) {
 			t.Fatalf("applyFileMetadata with com.apple.rootless = %v, want ErrProtectedMetadata", err)
 		}
 	})
+}
+
+// TestDarwinMACLDropSurfacedInEventsAndReceiptWithoutBlocking is R6: replacing
+// a target carrying com.apple.macl must succeed without blocking or failing
+// verify, surface the drop in events, and record it in the receipt.
+func TestDarwinMACLDropSurfacedInEventsAndReceiptWithoutBlocking(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(dir, "root")
+	target := "/etc/wskit-macl-drop.conf"
+	if err := os.MkdirAll(filepath.Join(root, "etc"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, target), []byte("orig\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sink := contracttest.NewFakeSink(64)
+	table := platformtest.NewProcessTable("boot-macl-drop")
+	e, err := New(Options{
+		JournalDir:  filepath.Join(dir, "journal"),
+		HostLock:    filepath.Join(dir, "host.lock"),
+		Root:        root,
+		Scope:       contract.ScopeUser,
+		Containment: platformtest.NewContainment(table),
+		Inspector:   table.Inspector(table.Spawn()),
+		Sink:        sink,
+		metaOps:     sipSimulatingMetaOps{injectedName: "com.apple.macl"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Apply(context.Background(), failingWriteUnit{path: target, fail: false}, contract.Plan{ID: "p", Unit: contract.UnitShell, Digest: "d"}); err != nil {
+		t.Fatalf("Apply on file with com.apple.macl failed: %v", err)
+	}
+	var sawBackupWarning, sawApplyWarning bool
+	for _, ev := range sink.Events() {
+		if ev.Kind == contract.EventWarning && strings.Contains(ev.Text, "com.apple.macl") && ev.Data[contract.DataPath] == target {
+			switch ev.Step {
+			case contract.StepBackup:
+				sawBackupWarning = true
+			case contract.StepApply:
+				sawApplyWarning = true
+			}
+		}
+	}
+	if !sawBackupWarning || !sawApplyWarning {
+		t.Fatalf("events did not surface com.apple.macl drop in backup (%v) and apply (%v): %+v", sawBackupWarning, sawApplyWarning, sink.Events())
+	}
+	rec, err := e.readRecord()
+	if err != nil || rec == nil {
+		t.Fatalf("readRecord = %v, %v", rec, err)
+	}
+	m, err := e.readManifest(rec.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Entries) != 1 || len(m.Entries[0].DroppedXattrs) != 1 || m.Entries[0].DroppedXattrs[0] != "com.apple.macl" {
+		t.Fatalf("manifest DroppedXattrs = %+v, want [com.apple.macl]", m.Entries[0].DroppedXattrs)
+	}
+	rc, err := e.readReceipt(rec.RunID)
+	if err != nil || rc == nil {
+		t.Fatalf("readReceipt = %v, %v", rc, err)
+	}
+	var sawReceiptDrop bool
+	for _, ch := range rc.Changes {
+		if ch.Target == target+"#xattr:com.apple.macl" && ch.Action == contract.ActionRemove {
+			sawReceiptDrop = true
+		}
+	}
+	if !sawReceiptDrop {
+		t.Fatalf("receipt changes did not record dropped com.apple.macl: %+v", rc.Changes)
+	}
 }
