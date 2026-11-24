@@ -683,6 +683,21 @@ func CheckNoDuplicateKeys(doc map[string]any) error {
 	return err
 }
 
+// CheckRawSafetyFloor verifies that a raw TOML document contains no duplicate
+// quoted/nested keys and violates no safety-floor rule in layer.
+func CheckRawSafetyFloor(layer Layer, doc map[string]any) error {
+	flat, err := flattenTOMLMap(doc)
+	if err != nil {
+		return err
+	}
+	for _, fk := range sortedFlatKeys(flat) {
+		if sfErr := CheckSafetyFloor(layer, fk, flat[fk]); sfErr != nil {
+			return sfErr
+		}
+	}
+	return nil
+}
+
 // flattenTOMLMap flattens a decoded TOML document into dotted keys, keeping
 // string-map fields (like accounts.admin_assignments) as whole leaf values,
 // and refusing any duplicate between quoted dotted keys and nested tables.

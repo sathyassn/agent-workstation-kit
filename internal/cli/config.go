@@ -7,12 +7,14 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/sathyassn/agent-workstation-kit/internal/contract"
 	"github.com/sathyassn/agent-workstation-kit/internal/schema"
+	"github.com/sathyassn/agent-workstation-kit/internal/version"
 )
 
 const (
@@ -314,9 +316,9 @@ func newConfigValidateCommand(opts Options, shared *sharedFlags, cfgFlags *confi
 						Err:   fmt.Errorf("%w: --fleet requires a fleet directory path", ErrUsage),
 					}
 				}
-				wantVersion := expectedVersion
-				if wantVersion == "" {
-					wantVersion = opts.Version
+				wantVersion, verErr := resolveFleetExpectedVersion(expectedVersion, opts.Version)
+				if verErr != nil {
+					return verErr
 				}
 				issues, err := schema.ValidateFleetDir(target, wantVersion)
 				if err != nil {
@@ -335,11 +337,16 @@ func newConfigValidateCommand(opts Options, shared *sharedFlags, cfgFlags *confi
 				if err != nil {
 					return NewRefusal(ruleSchemaValidation, err)
 				}
-				if err := checkRawSafetyNamespace(schema.LayerMachine, raw); err != nil {
+				if err := schema.CheckRawSafetyFloor(schema.LayerMachine, raw); err != nil {
 					return mapSchemaError(err)
 				}
-				for _, ov := range envOverrides {
-					schema.SetValueInMap(raw, ov.Key, ov.Value)
+				if len(envOverrides) > 0 {
+					if fileIssues := schema.ValidateRaw(raw, false); len(fileIssues) > 0 {
+						return emitValidateResult(cmd, shared.json, target, ready, false, fileIssues)
+					}
+					for _, ov := range envOverrides {
+						schema.SetValueInMap(raw, ov.Key, ov.Value)
+					}
 				}
 				issues := schema.ValidateRaw(raw, ready)
 				return emitValidateResult(cmd, shared.json, target, ready, false, issues)
@@ -398,24 +405,46 @@ func emitValidateResult(cmd *cobra.Command, asJSON bool, target string, ready, f
 	return nil
 }
 
-func checkRawSafetyNamespace(layer schema.Layer, raw map[string]any) error {
-	safetyTbl, ok := raw["safety"]
-	if !ok {
-		return nil
+func resolveFleetExpectedVersion(explicit, runningVersion string) (string, error) {
+	if v := strings.TrimSpace(explicit); v != "" {
+		return v, nil
 	}
-	tbl, isMap := safetyTbl.(map[string]any)
-	if !isMap || len(tbl) == 0 {
-		if err := schema.CheckSafetyFloor(layer, "safety", safetyTbl); err != nil {
-			return fmt.Errorf("check safety namespace: %w", err)
-		}
-		return nil
+	if v := strings.TrimSpace(runningVersion); v != "" && v != version.Dev {
+		return v, nil
 	}
-	for k, v := range tbl {
-		if err := schema.CheckSafetyFloor(layer, "safety."+k, v); err != nil {
-			return fmt.Errorf("check safety.%s: %w", k, err)
+	cwd, err := os.Getwd()
+	if err == nil {
+		if repoVer, ok := findRepoVersionFile(cwd); ok {
+			return repoVer, nil
 		}
 	}
-	return nil
+	return "", &Error{
+		Class: ClassUsage,
+		Err: fmt.Errorf(
+			"%w: cannot check kit.lock pin for a %s build without a readable repository VERSION file; pass --%s",
+			ErrUsage, version.Dev, flagExpectedVersion,
+		),
+	}
+}
+
+func findRepoVersionFile(startDir string) (string, bool) {
+	dir := filepath.Clean(startDir)
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			data, readErr := os.ReadFile(filepath.Join(dir, "VERSION")) //nolint:gosec // walking ancestors for repo VERSION file
+			if readErr == nil {
+				if v := strings.TrimSpace(string(data)); v != "" {
+					return v, true
+				}
+			}
+			return "", false
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", false
+		}
+		dir = parent
+	}
 }
 
 func resolveConfigLayers(opts Options, shared *sharedFlags, cfgFlags *configFlags) (*schema.ResolvedConfig, error) {

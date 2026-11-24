@@ -12,6 +12,7 @@ import (
 
 	"github.com/sathyassn/agent-workstation-kit/internal/contract"
 	"github.com/sathyassn/agent-workstation-kit/internal/schema"
+	"github.com/sathyassn/agent-workstation-kit/internal/version"
 )
 
 func executeWithEnv(t *testing.T, env map[string]string, args ...string) result {
@@ -511,4 +512,224 @@ func TestConfigValidateFleetDefaultsToRunningVersion(t *testing.T) {
 	if rOverride.err != nil {
 		t.Fatalf("fleet validate explicit --expected-version failed: err=%v stderr=%q", rOverride.err, rOverride.stderr)
 	}
+}
+
+// TestConfigSetRejectsAllTokenFamiliesAndAgentInHumans covers R1: principal
+// keys must run LooksLikeSecret before returning, and a standalone user
+// override cannot list the agent among accounts.humans.
+func TestConfigSetRejectsAllTokenFamiliesAndAgentInHumans(t *testing.T) {
+	t.Parallel()
+
+	tokens := []struct {
+		name  string
+		value string
+	}{
+		{name: "slack xoxb", value: "xoxb-" + "example"},
+		{name: "aws AKIA", value: "AKIA" + strings.Repeat("A", 16)},
+		{name: "aws ASIA", value: "ASIA" + strings.Repeat("B", 16)},
+		{name: "npm token", value: "npm_" + "example"},
+		{name: "tailscale tskey", value: "tskey-" + "example"},
+		{name: "github ghp", value: "ghp_" + "example"},
+		{name: "google AIza", value: "AIza" + strings.Repeat("C", 35)},
+	}
+
+	for _, tok := range tokens {
+		for _, key := range []string{
+			"source_control.github_principal",
+			"source_control.gitlab_principal",
+			"collaboration.atlassian_principal",
+		} {
+			t.Run(key+"/"+tok.name, func(t *testing.T) {
+				t.Parallel()
+				userFile := filepath.Join(t.TempDir(), "user.toml")
+				r := execute(t, "config", "set", key, tok.value, "--user-config", userFile, "--apply")
+				if ExitCodeFor(r.err) != contract.ExitRefused {
+					t.Fatalf("%s=%s: exit=%d, want 2 (stdout=%q stderr=%q)",
+						key, tok.name, ExitCodeFor(r.err), r.stdout, r.stderr)
+				}
+				if strings.Contains(r.stdout, tok.value) || strings.Contains(r.stderr, tok.value) || (r.err != nil && strings.Contains(r.err.Error(), tok.value)) {
+					t.Fatalf("%s=%s: token echoed in output/error", key, tok.name)
+				}
+				if _, err := os.Stat(userFile); !os.IsNotExist(err) {
+					t.Fatalf("%s=%s: rejected token was written to %s", key, tok.name, userFile)
+				}
+			})
+		}
+	}
+
+	// Standalone user override listing accounts.agent among accounts.humans must be refused.
+	dir := t.TempDir()
+	userFile := filepath.Join(dir, "user.toml")
+	if err := os.WriteFile(userFile, []byte("[accounts]\nagent = \"agent-01\"\n"), 0o600); err != nil {
+		t.Fatalf("write user.toml: %v", err)
+	}
+	rAgent := execute(t, "config", "set", "accounts.humans", "alice,agent-01", "--user-config", userFile, "--apply")
+	if ExitCodeFor(rAgent.err) != contract.ExitRefused {
+		t.Fatalf("standalone user override listing agent in humans: exit=%d, want 2 (stdout=%q stderr=%q)",
+			ExitCodeFor(rAgent.err), rAgent.stdout, rAgent.stderr)
+	}
+}
+
+// TestConfigSetAcceptsAsiaTimezonesAndLabels covers R2: Asia/Tokyo,
+// Asia/Kolkata and Asia-Office are accepted without redaction and do not block
+// subsequent config set calls.
+func TestConfigSetAcceptsAsiaTimezonesAndLabels(t *testing.T) {
+	t.Parallel()
+
+	userFile := filepath.Join(t.TempDir(), "user.toml")
+	for _, tc := range []struct {
+		key string
+		val string
+	}{
+		{key: "maintenance.timezone", val: "Asia/Tokyo"},
+		{key: "maintenance.timezone", val: "Asia/Kolkata"},
+		{key: "backup.target", val: "Asia-Office"},
+		{key: "backup.retention_days", val: "45"},
+	} {
+		r := execute(t, "config", "set", tc.key, tc.val, "--user-config", userFile, "--apply")
+		if r.err != nil {
+			t.Fatalf("config set %s=%s failed: err=%v stderr=%q", tc.key, tc.val, r.err, r.stderr)
+		}
+		if !strings.Contains(r.stdout, tc.val) || strings.Contains(r.stdout, schema.RedactText) {
+			t.Fatalf("config set %s=%s output unexpectedly redacted or missing value: %q", tc.key, tc.val, r.stdout)
+		}
+	}
+}
+
+// TestConfigValidateChecksFileLayerBeforeEnvOverlay covers R3: a valid WSKIT_*
+// env override must never mask a forbidden safety-floor violation or duplicate
+// quoted/nested key inside the file being validated.
+func TestConfigValidateChecksFileLayerBeforeEnvOverlay(t *testing.T) {
+	t.Parallel()
+
+	readyBytes, err := os.ReadFile(filepath.Join("..", "..", "testdata", "profiles", "valid", "ready", "work-linux-ready.toml")) //nolint:gosec // repo fixture
+	if err != nil {
+		t.Fatalf("read ready fixture: %v", err)
+	}
+	readySrc := string(readyBytes)
+
+	t.Run("env cannot hide file safety-floor violation", func(t *testing.T) {
+		t.Parallel()
+		broken := strings.Replace(readySrc, "disk_encryption_required = true", "disk_encryption_required = false", 1)
+		p := filepath.Join(t.TempDir(), "bad-safety.toml")
+		if err := os.WriteFile(p, []byte(broken), 0o600); err != nil { //nolint:gosec // test temp file
+			t.Fatalf("write bad-safety.toml: %v", err)
+		}
+		env := map[string]string{
+			schema.EnvVarForKey(schema.KeySecurityDiskEncryptionRequired): "true",
+		}
+		r := executeWithEnv(t, env, "config", "validate", p, "--ready", "--json")
+		if ExitCodeFor(r.err) != contract.ExitRefused {
+			t.Fatalf("expected exit 2 refusing file safety-floor violation despite env=true, got exit=%d err=%v stdout=%q",
+				ExitCodeFor(r.err), r.err, r.stdout)
+		}
+		var cliErr *Error
+		if !errors.As(r.err, &cliErr) || cliErr.Rule != schema.RuleSafetyFloorDiskEncryption.String() {
+			t.Fatalf("error = %v, want rule %q", r.err, schema.RuleSafetyFloorDiskEncryption)
+		}
+	})
+
+	t.Run("env cannot hide file quoted duplicate key", func(t *testing.T) {
+		t.Parallel()
+		dup := "\"backup.retention_days\" = 10\n" + readySrc
+		p := filepath.Join(t.TempDir(), "dup-quoted.toml")
+		if err := os.WriteFile(p, []byte(dup), 0o600); err != nil { //nolint:gosec // test temp file
+			t.Fatalf("write dup-quoted.toml: %v", err)
+		}
+		env := map[string]string{
+			schema.EnvVarForKey(schema.KeyBackupRetentionDays): "30",
+		}
+		r := executeWithEnv(t, env, "config", "validate", p, "--ready")
+		if ExitCodeFor(r.err) != contract.ExitRefused {
+			t.Fatalf("expected exit 2 refusing duplicate quoted/nested key despite env override, got exit=%d err=%v stdout=%q stderr=%q",
+				ExitCodeFor(r.err), r.err, r.stdout, r.stderr)
+		}
+	})
+}
+
+// TestConfigValidateFleetDevBuildVersionFallback covers R5: dev builds fall
+// back to reading the repository VERSION file when available, and clearly
+// require --expected-version when no readable VERSION file exists.
+func TestConfigValidateFleetDevBuildVersionFallback(t *testing.T) {
+	readyBytes, err := os.ReadFile(filepath.Join("..", "..", "testdata", "profiles", "valid", "ready", "work-linux-ready.toml")) //nolint:gosec // repo fixture
+	if err != nil {
+		t.Fatalf("read ready fixture: %v", err)
+	}
+
+	makeFleet := func(t *testing.T, lockVer string) string {
+		t.Helper()
+		dir := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(dir, "machines"), 0o750); err != nil {
+			t.Fatalf("mkdir machines: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "kit.lock"), []byte(lockVer+"\n"), 0o600); err != nil {
+			t.Fatalf("write kit.lock: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "machines", "acme-ws-001.toml"), readyBytes, 0o600); err != nil { //nolint:gosec // test temp file
+			t.Fatalf("write profile: %v", err)
+		}
+		return dir
+	}
+
+	runDev := func(t *testing.T, args ...string) result {
+		t.Helper()
+		var out, errOut bytes.Buffer
+		err := Execute(context.Background(), args, Options{
+			Stdin:   strings.NewReader(""),
+			Stdout:  &out,
+			Stderr:  &errOut,
+			Getenv:  func(string) string { return "" },
+			Version: version.Dev,
+		})
+		return result{err: err, stdout: out.String(), stderr: errOut.String()}
+	}
+
+	t.Run("dev build reads repository VERSION file", func(t *testing.T) {
+		checkout := t.TempDir()
+		if err := os.WriteFile(filepath.Join(checkout, "go.mod"), []byte("module example.invalid/test\n"), 0o600); err != nil {
+			t.Fatalf("write go.mod: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(checkout, "VERSION"), []byte("0.2.0-rc.7\n"), 0o600); err != nil {
+			t.Fatalf("write VERSION: %v", err)
+		}
+		subDir := filepath.Join(checkout, "sub", "dir")
+		if err := os.MkdirAll(subDir, 0o750); err != nil {
+			t.Fatalf("mkdir sub: %v", err)
+		}
+		t.Chdir(subDir)
+
+		okFleet := makeFleet(t, "0.2.0-rc.7")
+		rOK := runDev(t, "config", "validate", "--fleet", okFleet)
+		if rOK.err != nil {
+			t.Fatalf("dev build with repo VERSION failed on matching kit.lock: err=%v stderr=%q", rOK.err, rOK.stderr)
+		}
+
+		staleFleet := makeFleet(t, "0.0.1")
+		rStale := runDev(t, "config", "validate", "--fleet", staleFleet)
+		if ExitCodeFor(rStale.err) != contract.ExitRefused {
+			t.Fatalf("dev build with repo VERSION accepted stale kit.lock: exit=%d stdout=%q", ExitCodeFor(rStale.err), rStale.stdout)
+		}
+		if !strings.Contains(rStale.stderr, "expected 0.2.0-rc.7") {
+			t.Errorf("stale stderr = %q, want 'expected 0.2.0-rc.7'", rStale.stderr)
+		}
+	})
+
+	t.Run("dev build without VERSION requires --expected-version", func(t *testing.T) {
+		isolated := t.TempDir()
+		t.Chdir(isolated)
+
+		fleet := makeFleet(t, "0.2.0-rc.7")
+		rMissing := runDev(t, "config", "validate", "--fleet", fleet)
+		if ExitCodeFor(rMissing.err) != contract.ExitRefused {
+			t.Fatalf("dev build without VERSION: exit=%d, want 2", ExitCodeFor(rMissing.err))
+		}
+		if !strings.Contains(rMissing.stderr, version.Dev) || !strings.Contains(rMissing.stderr, "--expected-version") {
+			t.Errorf("dev build without VERSION stderr = %q, want clear message mentioning dev and --expected-version", rMissing.stderr)
+		}
+
+		rExplicit := runDev(t, "config", "validate", "--fleet", fleet, "--expected-version", "0.2.0-rc.7")
+		if rExplicit.err != nil {
+			t.Fatalf("dev build with explicit --expected-version failed: err=%v stderr=%q", rExplicit.err, rExplicit.stderr)
+		}
+	})
 }

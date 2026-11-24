@@ -676,7 +676,7 @@ func commitWrites(writes []plannedWrite, ops fileOps) error {
 			for j := i - 1; j >= 0; j-- {
 				if staged[j].existed {
 					if rbErr := ops.rename(staged[j].backupPath, staged[j].target); rbErr != nil {
-						rollbackErrs = append(rollbackErrs, fmt.Errorf("rollback %s: %w", staged[j].label, rbErr))
+						rollbackErrs = append(rollbackErrs, fmt.Errorf("rollback %s failed (original preserved at %s): %w", staged[j].label, staged[j].backupPath, rbErr))
 					} else {
 						staged[j].backupPath = ""
 					}
@@ -684,7 +684,10 @@ func commitWrites(writes []plannedWrite, ops fileOps) error {
 					rollbackErrs = append(rollbackErrs, fmt.Errorf("rollback remove %s: %w", staged[j].label, rmErr))
 				}
 			}
-			cleanupBackups(staged)
+			// Only remove backups of targets that were never overwritten.
+			// Backups for failed rollbacks stay intact on disk so original
+			// files are never lost.
+			cleanupBackups(staged[i:])
 			return errors.Join(append([]error{fmt.Errorf("rename %s: %w", s.label, err)}, rollbackErrs...)...)
 		}
 	}

@@ -29,55 +29,62 @@ const (
 	pathSlash  = "/"
 	doubleDash = "-"
 
-	msgUnsupportedSelection = "unsupported selection"
-	msgHostnameNoURL        = "must be a hostname without a URL scheme/path"
-	msgSecretRejected       = "must not contain a credential or secret"
-	msgUnknownKey           = "unknown key"
-	msgApprovedPkgList      = "must be a list of approved package names (no options, URLs or third-party taps)"
-	msgDuplicatePkg         = "duplicate package selections"
-	msgMiseVersion          = "select an explicit reviewed version with its binary digest"
-	msgMiseSHA256           = "requires the independently reviewed official platform binary SHA-256"
-	msgMacOSNoMisePin       = "macOS baseline uses Homebrew mise; do not select a second installation method"
-	msgMacOSProvisioning    = "requires macOS and local or managed selection"
-	msgNamespace            = "must be 2-8 lowercase letters/digits"
-	msgMatchProfile         = "must match profile"
-	msgHostnameFormat       = "must be <namespace>-<class>-<NNN>, for example acme-ws-001"
-	msgHostnameNamespace    = "namespace prefix must match deployment.namespace"
-	msgDisplayName          = "must be 1-64 trimmed ASCII letters, digits, single spaces, dots, underscores, or hyphens and start with a letter or digit"
-	msgUUID4                = "must be a canonical UUIDv4 generated once per machine"
-	msgPlainValue           = "must be a canonical, trimmed printable value and cannot start with '-'"
-	msgMacOSHostClass       = "macOS hosts must use the mac class"
-	msgLinuxHostClass       = "Linux hosts cannot use the mac class"
-	msgUnixAccount          = "must be a valid Unix account name"
-	msgAgentName            = "must use agent-NN, for example agent-01"
-	msgStringArray          = "must be an array of strings"
-	msgDuplicateNames       = "contains duplicate names"
-	msgAtLeastOneHuman      = "must contain at least one named human"
-	msgAdminName            = "every administrator must use admin-NN"
-	msgServiceName          = "every service account must use svc-purpose"
-	msgSSHAdminRequired     = "must include at least one declared administrator for recovery"
-	msgAdminAssignments     = "must map each admin account to one named human"
-	msgDistinctAdminOwner   = "each admin must be assigned to a different human"
-	msgPortRange            = "must be an integer from 1 through 65535"
-	msgInventoryChoice      = "must be a non-empty inventory choice"
-	msgTailscaleTags        = "must contain at least one tag:* string"
-	msgAgentsRequired       = "Codex, Claude Code, and Grok Build are required"
-	msgAntidoteRef          = "must be ask or a reviewed release ref"
-	msgSCMIdentityRequired  = "at least one source-control identity is required"
-	msgPrincipalNone        = "must be none when the provider identity is none"
-	msgPrincipalValid       = "must be an approved non-secret principal label, not none or a URL"
-	msgAtlassianSvcAuth     = "a service account must use service-account-api-key"
-	msgAtlassianHumanAuth   = "a named human must use oauth-2.1"
-	msgAtlassianUnused      = "an unused Atlassian integration must set principal and MCP auth to none"
-	msgAtlassianPrincipal   = "must be a 6-30 character alphanumeric service-account name or, for named-human, an approved label/email address"
-	msgAtlassianSiteNone    = "must be none when Atlassian is unused"
-	msgAtlassianSiteReq     = "an enabled Atlassian identity requires a site hostname"
-	msgBaselineTrue         = "must be true for this baseline"
-	msgReserveFixedRange    = "must be a positive number below 1000000"
-	msgReserveFixedConflict = "cannot be combined with resources.os_memory_reserve_percent"
-	msgPositiveInt          = "must be a positive integer"
-	msgNonEmptyString       = "must be a non-empty string"
-	msgIANATimezone         = "must be a recognised IANA timezone"
+	msgUnsupportedSelection   = "unsupported selection"
+	msgHostnameNoURL          = "must be a hostname without a URL scheme/path"
+	msgSecretRejected         = "must not contain a credential or secret"
+	msgUnknownKey             = "unknown key"
+	msgApprovedPkgList        = "must be a list of approved package names (no options, URLs or third-party taps)"
+	msgDuplicatePkg           = "duplicate package selections"
+	msgMiseVersion            = "select an explicit reviewed version with its binary digest"
+	msgMiseSHA256             = "requires the independently reviewed official platform binary SHA-256"
+	msgMacOSNoMisePin         = "macOS baseline uses Homebrew mise; do not select a second installation method"
+	msgMacOSProvisioning      = "requires macOS and local or managed selection"
+	msgNamespace              = "must be 2-8 lowercase letters/digits"
+	msgMatchProfile           = "must match profile"
+	msgHostnameFormat         = "must be <namespace>-<class>-<NNN>, for example acme-ws-001"
+	msgHostnameNamespace      = "namespace prefix must match deployment.namespace"
+	msgDisplayName            = "must be 1-64 trimmed ASCII letters, digits, single spaces, dots, underscores, or hyphens and start with a letter or digit"
+	msgUUID4                  = "must be a canonical UUIDv4 generated once per machine"
+	msgPlainValue             = "must be a canonical, trimmed printable value and cannot start with '-'"
+	msgMacOSHostClass         = "macOS hosts must use the mac class"
+	msgLinuxHostClass         = "Linux hosts cannot use the mac class"
+	msgUnixAccount            = "must be a valid Unix account name"
+	msgAgentName              = "must use agent-NN, for example agent-01"
+	msgStringArray            = "must be an array of strings"
+	msgDuplicateNames         = "contains duplicate names"
+	msgAtLeastOneHuman        = "must contain at least one named human"
+	msgAdminName              = "every administrator must use admin-NN"
+	msgServiceName            = "every service account must use svc-purpose"
+	msgServiceSeparate        = "service identities must be separate from human/admin accounts"
+	msgSSHAdminRequired       = "must include at least one declared administrator for recovery"
+	msgAgentSeparate          = "must be separate from every human/admin/service account"
+	msgAdminAssignments       = "must map each admin account to one named human"
+	msgAdminAssignKeys        = "keys must exactly match accounts.admins"
+	msgDistinctAdminOwner     = "each admin must be assigned to a different human"
+	msgWorkNamedHumanAtl      = "a shared work agent cannot use a named-human Atlassian identity"
+	msgMultiOpNamedHumanAtl   = "a multi-operator agent cannot use one person's Atlassian identity"
+	msgWorkNamedHumanModel    = "work shared homes require a workload/enterprise identity"
+	msgMultiOpNamedHumanModel = "a personal identity cannot be shared by multiple operators"
+	msgPortRange              = "must be an integer from 1 through 65535"
+	msgInventoryChoice        = "must be a non-empty inventory choice"
+	msgTailscaleTags          = "must contain at least one tag:* string"
+	msgAgentsRequired         = "Codex, Claude Code, and Grok Build are required"
+	msgAntidoteRef            = "must be ask or a reviewed release ref"
+	msgSCMIdentityRequired    = "at least one source-control identity is required"
+	msgPrincipalNone          = "must be none when the provider identity is none"
+	msgPrincipalValid         = "must be an approved non-secret principal label, not none or a URL"
+	msgAtlassianSvcAuth       = "a service account must use service-account-api-key"
+	msgAtlassianHumanAuth     = "a named human must use oauth-2.1"
+	msgAtlassianUnused        = "an unused Atlassian integration must set principal and MCP auth to none"
+	msgAtlassianPrincipal     = "must be a 6-30 character alphanumeric service-account name or, for named-human, an approved label/email address"
+	msgAtlassianSiteNone      = "must be none when Atlassian is unused"
+	msgAtlassianSiteReq       = "an enabled Atlassian identity requires a site hostname"
+	msgBaselineTrue           = "must be true for this baseline"
+	msgReserveFixedRange      = "must be a positive number below 1000000"
+	msgReserveFixedConflict   = "cannot be combined with resources.os_memory_reserve_percent"
+	msgPositiveInt            = "must be a positive integer"
+	msgNonEmptyString         = "must be a non-empty string"
+	msgIANATimezone           = "must be a recognised IANA timezone"
 
 	// RedactText replaces secret-like or rejected principal values in output.
 	RedactText = "[REDACTED]"
@@ -113,6 +120,10 @@ var (
 	miseVersionRe       = regexp.MustCompile(`^202[6-9]\.[0-9]{1,2}\.[0-9]{1,2}$`)
 	miseSHA256Re        = regexp.MustCompile(`^[a-f0-9]{64}$`)
 	whitespaceCollapseR = regexp.MustCompile(`\s+`)
+	awsAccessKeyRe      = regexp.MustCompile(`^(?:AKIA|ASIA)[A-Z0-9]{16}$`)
+	googleAPIKeyRe      = regexp.MustCompile(`^AIza[0-9A-Za-z_-]{35}$`)
+	slackTokenRe        = regexp.MustCompile(`^xox[baprs]-`)
+	pemPrivateKeyRe     = regexp.MustCompile(`^-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----`)
 )
 
 // LoadRawTOML decodes a TOML document into a raw nested map.
@@ -558,7 +569,7 @@ func validateAccounts(accounts map[string]any) ([]Issue, map[string]bool) {
 	if len(intersectSets(services, humansAndAdmins)) > 0 {
 		issues = append(issues, Issue{
 			Path:    KeyAccountsServices.String(),
-			Message: "service identities must be separate from human/admin accounts",
+			Message: msgServiceSeparate,
 		})
 	}
 	for _, key := range []Key{KeyAccountsOperators, KeyAccountsViewers} {
@@ -591,7 +602,7 @@ func validateAccounts(accounts map[string]any) ([]Issue, map[string]bool) {
 	if agentOK && (humans[agent] || admins[agent] || services[agent]) {
 		issues = append(issues, Issue{
 			Path:    KeyAccountsAgent.String(),
-			Message: "must be separate from every human/admin/service account",
+			Message: msgAgentSeparate,
 		})
 	}
 
@@ -611,7 +622,7 @@ func validateAccounts(accounts map[string]any) ([]Issue, map[string]bool) {
 		if !equalSets(assignKeys, admins) {
 			issues = append(issues, Issue{
 				Path:    KeyAccountsAdminAssignments.String(),
-				Message: "keys must exactly match accounts.admins",
+				Message: msgAdminAssignKeys,
 			})
 		}
 		if unknown := diffSets(toSet(owners), humans); len(unknown) > 0 {
@@ -772,13 +783,13 @@ func validateCollaboration(collab map[string]any, profileKind string, humans map
 	if profileKind == ProfileKindWork.String() && atlIDOK && atlID == AtlassianIdentityNamedHuman.String() {
 		issues = append(issues, Issue{
 			Path:    KeyCollaborationAtlassianIdentity.String(),
-			Message: "a shared work agent cannot use a named-human Atlassian identity",
+			Message: msgWorkNamedHumanAtl,
 		})
 	}
 	if len(humans) > 1 && atlIDOK && atlID == AtlassianIdentityNamedHuman.String() {
 		issues = append(issues, Issue{
 			Path:    KeyCollaborationAtlassianIdentity.String(),
-			Message: "a multi-operator agent cannot use one person's Atlassian identity",
+			Message: msgMultiOpNamedHumanAtl,
 		})
 	}
 	if atlIDOK && atlID == AtlassianIdentityServiceAccount.String() && (!mcpAuthOK || mcpAuth != AtlassianMCPAuthServiceAccountAPIKey.String()) {
@@ -849,13 +860,13 @@ func validateModelAuth(auth map[string]any, profileKind string, humans map[strin
 		if profileKind == ProfileKindWork.String() && ok && val == ModelAuthModeNamedHuman.String() {
 			issues = append(issues, Issue{
 				Path:    key.String(),
-				Message: "work shared homes require a workload/enterprise identity",
+				Message: msgWorkNamedHumanModel,
 			})
 		}
 		if len(humans) > 1 && ok && val == ModelAuthModeNamedHuman.String() {
 			issues = append(issues, Issue{
 				Path:    key.String(),
-				Message: "a personal identity cannot be shared by multiple operators",
+				Message: msgMultiOpNamedHumanModel,
 			})
 		}
 	}
@@ -1037,22 +1048,27 @@ func looksLikeCredential(value string) bool {
 }
 
 // LooksLikeSecret reports whether value carries a recognised credential or
-// token prefix/header that must never be stored in config or echoed back.
+// token shape that must never be stored in config or echoed back. Patterns
+// match real token formats (case-sensitive for AWS/Google/Slack/PEM/npm/tskey
+// tokens) so ordinary labels such as Asia/Tokyo or Asia-Office are never
+// misclassified.
 func LooksLikeSecret(value string) bool {
-	if looksLikeCredential(value) {
+	trimmed := strings.TrimSpace(value)
+	if looksLikeCredential(trimmed) {
 		return true
 	}
-	lowered := cases.Fold().String(strings.TrimSpace(value))
-	for _, prefix := range []string{
-		"xoxb-", "xoxp-", "xoxa-", "xoxr-", "tskey-",
-		"akia", "asia", "aiza", "npm_", "pypi-",
-		"bearer ", "-----begin ",
-	} {
-		if strings.HasPrefix(lowered, prefix) {
+	if awsAccessKeyRe.MatchString(trimmed) ||
+		googleAPIKeyRe.MatchString(trimmed) ||
+		slackTokenRe.MatchString(trimmed) ||
+		pemPrivateKeyRe.MatchString(trimmed) {
+		return true
+	}
+	for _, prefix := range []string{"npm_", "pypi-", "tskey-"} {
+		if strings.HasPrefix(trimmed, prefix) {
 			return true
 		}
 	}
-	return false
+	return strings.HasPrefix(cases.Fold().String(trimmed), "bearer ")
 }
 
 // IsPrincipalKey reports whether k holds a provider principal label whose
@@ -1175,6 +1191,16 @@ func ValidateFieldValue(k Key, val any) []Issue {
 	if err := ValidateValueType(spec, val); err != nil {
 		return []Issue{{Path: k.String(), Message: err.Error()}}
 	}
+	if containsSecretValue(val) {
+		msg := msgSecretRejected
+		if IsPrincipalKey(k) {
+			msg = msgPrincipalValid
+			if k == KeyCollaborationAtlassianPrincipal {
+				msg = msgAtlassianPrincipal
+			}
+		}
+		return []Issue{{Path: k.String(), Message: msg}}
+	}
 	if IsPrincipalKey(k) {
 		s, _ := val.(string)
 		if k == KeyCollaborationAtlassianPrincipal {
@@ -1193,9 +1219,6 @@ func ValidateFieldValue(k Key, val any) []Issue {
 			}}
 		}
 		return nil
-	}
-	if containsSecretValue(val) {
-		return []Issue{{Path: k.String(), Message: msgSecretRejected}}
 	}
 	return validateFieldConstraints(k, val)
 }
@@ -1575,6 +1598,140 @@ func validatePartialCrossField(flat map[string]any) []Issue {
 		})
 	}
 
+	issues = append(issues, validatePartialAccountsAndAuth(flat)...)
+	return issues
+}
+
+func validatePartialAccountsAndAuth(flat map[string]any) []Issue {
+	var issues []Issue
+
+	getStr := func(k Key) (string, bool) {
+		v, ok := flat[k.String()]
+		if !ok {
+			return "", false
+		}
+		s, ok := v.(string)
+		return s, ok
+	}
+	getSlice := func(k Key) ([]string, bool) {
+		v, ok := flat[k.String()]
+		if !ok {
+			return nil, false
+		}
+		return asStringSlice(v)
+	}
+
+	humansList, hasHumans := getSlice(KeyAccountsHumans)
+	adminsList, hasAdmins := getSlice(KeyAccountsAdmins)
+	servicesList, hasServices := getSlice(KeyAccountsServices)
+	humans := toSet(humansList)
+	admins := toSet(adminsList)
+	services := toSet(servicesList)
+
+	if agent, okAgent := getStr(KeyAccountsAgent); okAgent {
+		if (hasHumans && humans[agent]) || (hasAdmins && admins[agent]) || (hasServices && services[agent]) {
+			issues = append(issues, Issue{
+				Path:    KeyAccountsAgent.String(),
+				Message: msgAgentSeparate,
+			})
+		}
+	}
+	if hasHumans && hasAdmins {
+		if overlap := intersectSets(humans, admins); len(overlap) > 0 {
+			issues = append(issues, Issue{
+				Path:    SectionAccounts.String(),
+				Message: fmt.Sprintf("daily and administrator accounts must be separate: %v", overlap),
+			})
+		}
+	}
+	if hasServices && (hasHumans || hasAdmins) {
+		humansAndAdmins := unionSets(humans, admins)
+		if len(intersectSets(services, humansAndAdmins)) > 0 {
+			issues = append(issues, Issue{
+				Path:    KeyAccountsServices.String(),
+				Message: msgServiceSeparate,
+			})
+		}
+	}
+	if hasHumans {
+		for _, key := range []Key{KeyAccountsOperators, KeyAccountsViewers} {
+			if list, ok := getSlice(key); ok {
+				if extra := diffSets(toSet(list), humans); len(extra) > 0 {
+					issues = append(issues, Issue{
+						Path:    key.String(),
+						Message: fmt.Sprintf("must be named humans; unexpected: %v", extra),
+					})
+				}
+			}
+		}
+	}
+	if sshList, hasSSH := getSlice(KeyAccountsSSHUsers); hasSSH {
+		sshUsers := toSet(sshList)
+		if hasHumans && hasAdmins {
+			if extra := diffSets(sshUsers, unionSets(humans, admins)); len(extra) > 0 {
+				issues = append(issues, Issue{
+					Path:    KeyAccountsSSHUsers.String(),
+					Message: fmt.Sprintf("must be declared human/admin accounts: %v", extra),
+				})
+			}
+		}
+		if hasAdmins && len(intersectSets(sshUsers, admins)) == 0 {
+			issues = append(issues, Issue{
+				Path:    KeyAccountsSSHUsers.String(),
+				Message: msgSSHAdminRequired,
+			})
+		}
+	}
+	if rawAssign, ok := flat[KeyAccountsAdminAssignments.String()]; ok {
+		if assignMap, assignOK := asStringMap(rawAssign); assignOK {
+			assignKeys := make(map[string]bool, len(assignMap))
+			owners := make([]string, 0, len(assignMap))
+			for k, v := range assignMap {
+				assignKeys[k] = true
+				owners = append(owners, v)
+			}
+			if hasAdmins && !equalSets(assignKeys, admins) {
+				issues = append(issues, Issue{
+					Path:    KeyAccountsAdminAssignments.String(),
+					Message: msgAdminAssignKeys,
+				})
+			}
+			if hasHumans {
+				if unknown := diffSets(toSet(owners), humans); len(unknown) > 0 {
+					issues = append(issues, Issue{
+						Path:    KeyAccountsAdminAssignments.String(),
+						Message: fmt.Sprintf("owners must be declared humans: %v", unknown),
+					})
+				}
+			}
+		}
+	}
+
+	prof, hasProf := getStr(KeyProfile)
+	if atlID, okA := getStr(KeyCollaborationAtlassianIdentity); okA && atlID == AtlassianIdentityNamedHuman.String() {
+		if hasProf && prof == ProfileKindWork.String() {
+			issues = append(issues, Issue{
+				Path:    KeyCollaborationAtlassianIdentity.String(),
+				Message: msgWorkNamedHumanAtl,
+			})
+		}
+		if hasHumans && len(humans) > 1 {
+			issues = append(issues, Issue{
+				Path:    KeyCollaborationAtlassianIdentity.String(),
+				Message: msgMultiOpNamedHumanAtl,
+			})
+		}
+	}
+	for _, key := range []Key{KeyModelAuthCodex, KeyModelAuthClaude, KeyModelAuthGrok} {
+		if val, ok := getStr(key); ok && val == ModelAuthModeNamedHuman.String() {
+			if hasProf && prof == ProfileKindWork.String() {
+				issues = append(issues, Issue{Path: key.String(), Message: msgWorkNamedHumanModel})
+			}
+			if hasHumans && len(humans) > 1 {
+				issues = append(issues, Issue{Path: key.String(), Message: msgMultiOpNamedHumanModel})
+			}
+		}
+	}
 	return issues
 }
 

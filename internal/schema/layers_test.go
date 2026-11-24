@@ -364,6 +364,22 @@ func TestAtomicWriteFilePreservesMetadataAndRefusesSymlink(t *testing.T) {
 		t.Fatalf("chmod initial file: %v", err)
 	}
 
+	var beforeSys unix.Stat_t
+	if err := unix.Stat(dst, &beforeSys); err != nil {
+		t.Fatalf("stat initial file: %v", err)
+	}
+	wantUID, wantGID := beforeSys.Uid, beforeSys.Gid
+	if groups, gErr := os.Getgroups(); gErr == nil {
+		for _, g := range groups {
+			if g >= 0 && uint32(g) != wantGID { //nolint:gosec // checked non-negative GID
+				if chErr := os.Chown(dst, -1, g); chErr == nil {
+					wantGID = uint32(g) //nolint:gosec // checked non-negative GID
+					break
+				}
+			}
+		}
+	}
+
 	const xattrName = "user.wskit_p7_test"
 	wantXattr := []byte("preserve-me")
 	xattrErr := unix.Setxattr(dst, xattrName, wantXattr, 0)
@@ -392,6 +408,13 @@ func TestAtomicWriteFilePreservesMetadataAndRefusesSymlink(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o640 {
 		t.Errorf("mode after replace = %04o, want 0640", info.Mode().Perm())
+	}
+	var afterSys unix.Stat_t
+	if err := unix.Stat(dst, &afterSys); err != nil {
+		t.Fatalf("unix.Stat replaced file: %v", err)
+	}
+	if afterSys.Uid != wantUID || afterSys.Gid != wantGID {
+		t.Errorf("owner after replace = %d:%d, want %d:%d", afterSys.Uid, afterSys.Gid, wantUID, wantGID)
 	}
 
 	if xattrSupported {
@@ -429,5 +452,57 @@ func TestAtomicWriteFilePreservesMetadataAndRefusesSymlink(t *testing.T) {
 	gotTarget, err := os.ReadFile(target) //nolint:gosec // temp file
 	if err != nil || string(gotTarget) != "original = true\n" {
 		t.Fatalf("symlink target modified: err=%v content=%q", err, string(gotTarget))
+	}
+}
+
+// TestLooksLikeSecretShapes covers R2: real-shaped credentials are flagged
+// while benign Asia/* timezones and Asia-Office labels are accepted and not
+// redacted.
+func TestLooksLikeSecretShapes(t *testing.T) {
+	t.Parallel()
+
+	benign := []string{
+		"Asia/Tokyo",
+		"Asia/Kolkata",
+		"Asia-Office",
+		"akia-team",
+		"aiza-label",
+		"acme-agent-dev",
+	}
+	for _, val := range benign {
+		if schema.LooksLikeSecret(val) {
+			t.Errorf("LooksLikeSecret(%q) = true, want false", val)
+		}
+		if got := schema.RedactValue(schema.KeyMaintenanceTimezone, val); got != val {
+			t.Errorf("RedactValue(%q) = %v, want unredacted", val, got)
+		}
+	}
+
+	secrets := []struct {
+		name string
+		val  string
+	}{
+		{name: "aws AKIA", val: "AKIA" + strings.Repeat("A", 16)},
+		{name: "aws ASIA", val: "ASIA" + strings.Repeat("B", 16)},
+		{name: "google AIza", val: "AIza" + strings.Repeat("C", 35)},
+		{name: "github ghp", val: "ghp_" + "example"},
+		{name: "github pat", val: "github_pat_" + "example"},
+		{name: "slack xoxb", val: "xoxb-" + "example"},
+		{name: "slack xoxp", val: "xoxp-" + "example"},
+		{name: "slack xoxa", val: "xoxa-" + "example"},
+		{name: "slack xoxr", val: "xoxr-" + "example"},
+		{name: "slack xoxs", val: "xoxs-" + "example"},
+		{name: "npm token", val: "npm_" + "example"},
+		{name: "tailscale tskey", val: "tskey-" + "example"},
+		{name: "openai sk", val: "sk-" + "example"},
+		{name: "pem private key", val: "-----BEGIN " + "RSA PRIVATE KEY-----"},
+	}
+	for _, tc := range secrets {
+		if !schema.LooksLikeSecret(tc.val) {
+			t.Errorf("LooksLikeSecret(%s) = false, want true", tc.name)
+		}
+		if got := schema.RedactValue(schema.KeyBackupTarget, tc.val); got != schema.RedactText {
+			t.Errorf("RedactValue(%s) = %v, want %q", tc.name, got, schema.RedactText)
+		}
 	}
 }
