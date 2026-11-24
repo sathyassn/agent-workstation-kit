@@ -1,0 +1,11 @@
+id = "TSK-048"
+uid = "ca66f9b9-d06c-49be-bc19-3dc523b3b706"
+kind = "TSK"
+title = "Remote desktop mode and privacy"
+issuer = "26560960+sathyassn@users.noreply.github.com"
+created = "2026-11-24T00:38:13Z"
+target = "main"
+introduced = "none"
+landed = "none"
+mapped = []
+mapped_by = "none"
