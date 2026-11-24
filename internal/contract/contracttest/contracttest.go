@@ -778,8 +778,12 @@ func checkEmitOrder(r reporter, tx contract.DeclarativeTx, inspector TxInspector
 			r.Errorf("event[%d].Time = %v, want %v (Emit must preserve order)", i, tail[i].Time, wantTime)
 			return
 		}
-		if tail[i].Seq == 0 || (i > 0 && tail[i].Seq <= tail[i-1].Seq) {
-			r.Errorf("event[%d].Seq = %d is not strictly increasing (Emit must preserve order)", i, tail[i].Seq)
+		if tail[i].Seq == 0 {
+			r.Errorf("event[%d].Seq = 0, want positive (Emit must preserve order)", i)
+			return
+		}
+		if i > 0 && tail[i].Seq != tail[i-1].Seq+1 {
+			r.Errorf("event[%d].Seq = %d, want %d (Emit must preserve order without gaps)", i, tail[i].Seq, tail[i-1].Seq+1)
 			return
 		}
 	}

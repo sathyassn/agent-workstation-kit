@@ -492,6 +492,16 @@ func (b *brokenReversedEmitTx) Events() []contract.Event {
 	return ev
 }
 
+type brokenGappedEmitTx struct{ *FakeTx }
+
+func (b *brokenGappedEmitTx) Events() []contract.Event {
+	ev := b.FakeTx.Events()
+	for i := range ev {
+		ev[i].Seq = uint64(i*2 + 1)
+	}
+	return ev
+}
+
 type brokenBlockingSink struct {
 	unblock <-chan struct{}
 }
@@ -665,6 +675,11 @@ func TestContractChecksCatchBrokenTxFakes(t *testing.T) {
 		{
 			name:    "reorders emitted events",
 			newTx:   func(d contract.Description) contract.Tx { return &brokenReversedEmitTx{NewFakeTx(d, nil)} },
+			wantErr: "Emit must preserve order",
+		},
+		{
+			name:    "leaves gaps in emitted event sequence",
+			newTx:   func(d contract.Description) contract.Tx { return &brokenGappedEmitTx{NewFakeTx(d, nil)} },
 			wantErr: "Emit must preserve order",
 		},
 	}

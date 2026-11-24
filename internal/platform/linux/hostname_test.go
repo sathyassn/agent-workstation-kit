@@ -108,3 +108,65 @@ func TestLinuxHostnameProviderFileBackedRoundTrip(t *testing.T) {
 		t.Fatalf("Read after Restore = %+v, %v", got, err)
 	}
 }
+
+func TestLinuxHostnameSnapshotRejectsInvalidState(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	runner := platformtest.NewHostnameRunner(platformtest.HostnameState{
+		Static:    "-invalid-leading-dash",
+		Pretty:    "Lab 01",
+		Transient: "lab-ws-01",
+	})
+	p := &linux.HostnameProvider{Runner: runner}
+	if _, err := p.Snapshot(ctx); !errors.Is(err, platform.ErrInvalidStateValue) {
+		t.Fatalf("Snapshot on invalid static hostname = %v, want ErrInvalidStateValue", err)
+	}
+}
+
+func TestLinuxHostnameToolInvocationSafety(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	runner := platformtest.NewHostnameRunner(platformtest.HostnameState{
+		Static:    "lab-ws-01",
+		Pretty:    "Lab 01",
+		Transient: "lab-ws-01",
+	})
+	p := &linux.HostnameProvider{Runner: runner}
+	trickyPretty := "Lab Host; echo $(id) && 'quoted'"
+	if err := p.Write(ctx, platform.HostnameKeyPretty, contract.State{Value: trickyPretty}); err != nil {
+		t.Fatalf("Write pretty with shell metacharacters: %v", err)
+	}
+	calls := runner.Calls()
+	envs := runner.Envs()
+	if len(calls) != 1 || len(envs) != 1 {
+		t.Fatalf("calls=%v envs=%v, want 1", calls, envs)
+	}
+	wantArgv := []string{"/usr/bin/hostnamectl", "set-hostname", "--pretty", trickyPretty}
+	if len(calls[0]) != len(wantArgv) {
+		t.Fatalf("argv = %q, want %q", calls[0], wantArgv)
+	}
+	for i := range wantArgv {
+		if calls[0][i] != wantArgv[i] {
+			t.Fatalf("argv[%d] = %q, want %q", i, calls[0][i], wantArgv[i])
+		}
+	}
+	if len(envs[0]) != 2 || envs[0][0] != "PATH=/usr/sbin:/usr/bin:/sbin:/bin" || envs[0][1] != "LANG=C" {
+		t.Fatalf("env = %q, want minimal PATH and LANG=C only", envs[0])
+	}
+
+	// Fake runner rejects relative binary path and unexpected env variables.
+	if _, err := runner.Run(ctx, platform.ExecSpec{
+		Argv: []string{"hostnamectl", "--static"},
+		Env:  []string{"PATH=/usr/bin", "LANG=C"},
+	}); !errors.Is(err, platformtest.ErrUnexpectedInvocation) {
+		t.Fatalf("relative binary err = %v, want ErrUnexpectedInvocation", err)
+	}
+	if _, err := runner.Run(ctx, platform.ExecSpec{
+		Argv: []string{"/usr/bin/hostnamectl", "--static"},
+		Env:  []string{"PATH=/usr/bin", "LANG=C", "SECRET=leak"},
+	}); !errors.Is(err, platformtest.ErrUnexpectedInvocation) {
+		t.Fatalf("extra env err = %v, want ErrUnexpectedInvocation", err)
+	}
+}

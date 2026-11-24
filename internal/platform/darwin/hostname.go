@@ -97,33 +97,44 @@ func validateDarwinHostnameValue(key contract.StateKey, val string, allowEmpty b
 	return nil
 }
 
-// Read returns the current macOS hostname value for key. When scutil reports
-// that a key is "not set" (common for HostName on fresh Macs), Read returns
-// an empty State without error.
-func (p *HostnameProvider) Read(ctx context.Context, key contract.StateKey) (contract.State, error) {
+// readKey returns the value of key and whether it is currently set in
+// SystemConfiguration preferences. On macOS, scutil --get exits non-zero with
+// "<Key>: not set" when a preference has never been set or was cleared.
+func (p *HostnameProvider) readKey(ctx context.Context, key contract.StateKey) (string, bool, error) {
 	if err := ctx.Err(); err != nil {
-		return contract.State{}, fmt.Errorf("read %s: %w", key, err)
+		return "", false, fmt.Errorf("read %s: %w", key, err)
 	}
 	sk, err := scutilKey(key)
 	if err != nil {
-		return contract.State{}, err
+		return "", false, err
 	}
 	res, err := p.runner().Run(ctx, platform.ExecSpec{
 		Argv: []string{p.bin(), scutilGetFlag, sk},
 		Env:  launchctlEnv(),
 	})
 	if err != nil {
-		return contract.State{}, fmt.Errorf("read %s: %w", key, err)
+		return "", false, fmt.Errorf("read %s: %w", key, err)
 	}
 	if res.ExitCode != 0 {
 		combined := strings.ToLower(res.Stderr + " " + res.Stdout)
 		if strings.Contains(combined, scutilNotSetMarker) {
-			return contract.State{Value: ""}, nil
+			return "", false, nil
 		}
-		return contract.State{}, fmt.Errorf("%w: scutil %s %s exited %d: %s",
+		return "", false, fmt.Errorf("%w: scutil %s %s exited %d: %s",
 			platform.ErrProviderCommandFailed, scutilGetFlag, sk, res.ExitCode, strings.TrimSpace(res.Stderr))
 	}
-	return contract.State{Value: strings.TrimRight(res.Stdout, "\r\n")}, nil
+	return strings.TrimRight(res.Stdout, "\r\n"), true, nil
+}
+
+// Read returns the current macOS hostname value for key. When scutil reports
+// that a key is "not set" (common for HostName on fresh Macs), Read returns
+// an empty State without error.
+func (p *HostnameProvider) Read(ctx context.Context, key contract.StateKey) (contract.State, error) {
+	val, _, err := p.readKey(ctx, key)
+	if err != nil {
+		return contract.State{}, err
+	}
+	return contract.State{Value: val}, nil
 }
 
 // Write sets one macOS hostname key through scutil --set.
@@ -156,36 +167,54 @@ func (p *HostnameProvider) writeValue(ctx context.Context, key contract.StateKey
 	return nil
 }
 
+// darwinHostnameSnapshot stores each macOS hostname preference as a pointer so
+// an unset preference (reported as "not set" by scutil --get) is recorded
+// explicitly as JSON null rather than conflated with an empty string.
+// On restore, a nil pointer clears the preference with `scutil --set KEY ""`
+// (Apple's scutil calls SCPreferencesSetHostName(prefs, NULL) on empty input
+// to remove the preference key).
 type darwinHostnameSnapshot struct {
-	Version  int    `json:"version"`
-	Host     string `json:"host_name"`
-	Computer string `json:"computer_name"`
-	Local    string `json:"local_host_name"`
+	Version  int     `json:"version"`
+	Host     *string `json:"host_name"`
+	Computer *string `json:"computer_name"`
+	Local    *string `json:"local_host_name"`
+}
+
+func optString(val string, set bool) *string {
+	if !set {
+		return nil
+	}
+	v := val
+	return &v
 }
 
 // Snapshot captures HostName, ComputerName and LocalHostName into one JSON
-// snapshot.
+// snapshot, validating every set value so a Write never starts from a
+// snapshot that Restore would reject.
 func (p *HostnameProvider) Snapshot(ctx context.Context) (contract.Snapshot, error) {
 	if err := ctx.Err(); err != nil {
 		return contract.Snapshot{}, fmt.Errorf("snapshot %s: %w", p.Name(), err)
 	}
-	hostVal, err := p.Read(ctx, platform.HostnameKeyStatic)
+	hostVal, hostSet, err := p.readKey(ctx, platform.HostnameKeyStatic)
 	if err != nil {
 		return contract.Snapshot{}, err
 	}
-	compVal, err := p.Read(ctx, platform.HostnameKeyPretty)
+	compVal, compSet, err := p.readKey(ctx, platform.HostnameKeyPretty)
 	if err != nil {
 		return contract.Snapshot{}, err
 	}
-	localVal, err := p.Read(ctx, platform.HostnameKeyLocal)
+	localVal, localSet, err := p.readKey(ctx, platform.HostnameKeyLocal)
 	if err != nil {
 		return contract.Snapshot{}, err
 	}
 	snap := darwinHostnameSnapshot{
 		Version:  hostnameSnapshotVer,
-		Host:     hostVal.Value,
-		Computer: compVal.Value,
-		Local:    localVal.Value,
+		Host:     optString(hostVal, hostSet),
+		Computer: optString(compVal, compSet),
+		Local:    optString(localVal, localSet),
+	}
+	if err := validateDarwinSnapshot(snap); err != nil {
+		return contract.Snapshot{}, fmt.Errorf("snapshot %s: %w", p.Name(), err)
 	}
 	data, err := json.Marshal(snap)
 	if err != nil {
@@ -194,7 +223,29 @@ func (p *HostnameProvider) Snapshot(ctx context.Context) (contract.Snapshot, err
 	return contract.Snapshot{Provider: p.Name(), Data: data}, nil
 }
 
+func validateDarwinSnapshot(snap darwinHostnameSnapshot) error {
+	items := []struct {
+		key        contract.StateKey
+		val        *string
+		allowEmpty bool
+	}{
+		{platform.HostnameKeyStatic, snap.Host, false},
+		{platform.HostnameKeyPretty, snap.Computer, true},
+		{platform.HostnameKeyLocal, snap.Local, false},
+	}
+	for _, item := range items {
+		if item.val == nil {
+			continue
+		}
+		if err := validateDarwinHostnameValue(item.key, *item.val, item.allowEmpty); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Restore returns HostName, ComputerName and LocalHostName to the values in s.
+// A nil (JSON null) field clears the preference via `scutil --set KEY ""`.
 func (p *HostnameProvider) Restore(ctx context.Context, s contract.Snapshot) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("restore %s: %w", p.Name(), err)
@@ -212,22 +263,25 @@ func (p *HostnameProvider) Restore(ctx context.Context, s contract.Snapshot) err
 	if snap.Version != hostnameSnapshotVer {
 		return fmt.Errorf("%w: unsupported snapshot version %d", platform.ErrCorruptSnapshot, snap.Version)
 	}
-	type pair struct {
-		key contract.StateKey
-		val string
+	if err := validateDarwinSnapshot(snap); err != nil {
+		return fmt.Errorf("%w: %w", platform.ErrCorruptSnapshot, err)
 	}
-	items := []pair{
+	items := []struct {
+		key contract.StateKey
+		val *string
+	}{
 		{platform.HostnameKeyStatic, snap.Host},
 		{platform.HostnameKeyPretty, snap.Computer},
 		{platform.HostnameKeyLocal, snap.Local},
 	}
 	for _, item := range items {
-		if err := validateDarwinHostnameValue(item.key, item.val, true); err != nil {
-			return fmt.Errorf("%w: %w", platform.ErrCorruptSnapshot, err)
+		v := ""
+		allowEmpty := true
+		if item.val != nil {
+			v = *item.val
+			allowEmpty = item.key == platform.HostnameKeyPretty
 		}
-	}
-	for _, item := range items {
-		if err := p.writeValue(ctx, item.key, item.val, true); err != nil {
+		if err := p.writeValue(ctx, item.key, v, allowEmpty); err != nil {
 			return err
 		}
 	}

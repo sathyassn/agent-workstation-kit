@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/sathyassn/agent-workstation-kit/internal/platform"
@@ -14,6 +14,8 @@ import (
 
 const (
 	hostnameFileMode    = 0o600
+	absHostnamectlBin   = "/usr/bin/hostnamectl"
+	absScutilBin        = "/usr/sbin/scutil"
 	cmdHostnamectlSet   = "set-hostname"
 	flagStatic          = "--static"
 	flagPretty          = "--pretty"
@@ -26,6 +28,10 @@ const (
 	errUnknownScutilKey = "unknown scutil key\n"
 )
 
+// ErrUnexpectedInvocation reports a fake runner receiving a non-absolute
+// binary path or an unexpected environment variable.
+var ErrUnexpectedInvocation = errors.New("unexpected hostname tool invocation")
+
 // HostnameState holds the fake values read and written by HostnameRunner.
 type HostnameState struct {
 	Static    string `json:"static"`
@@ -35,14 +41,17 @@ type HostnameState struct {
 }
 
 // HostnameRunner is a fake platform.CommandRunner that emulates both Linux
-// hostnamectl(1) and macOS scutil(8) hostname commands. When BackingFile is
-// set, every read and write persists through that JSON file, so cross-process
-// SIGKILL tests observe real mutations across processes.
+// hostnamectl(1) and macOS scutil(8) hostname commands. It verifies that
+// tools are invoked by trusted absolute path (/usr/bin/hostnamectl or
+// /usr/sbin/scutil) with a minimal environment (PATH and LANG only). When
+// backingFile is set, reads and writes persist through that JSON file so
+// cross-process SIGKILL tests observe mutations across processes.
 type HostnameRunner struct {
 	mu          sync.Mutex
 	state       HostnameState
 	backingFile string
 	calls       [][]string
+	envs        [][]string
 }
 
 var _ platform.CommandRunner = (*HostnameRunner)(nil)
@@ -91,7 +100,44 @@ func (r *HostnameRunner) Calls() [][]string {
 	return out
 }
 
-// Run emulates hostnamectl and scutil hostname operations.
+// Envs returns every command environment received so far.
+func (r *HostnameRunner) Envs() [][]string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([][]string, len(r.envs))
+	for i, e := range r.envs {
+		out[i] = append([]string(nil), e...)
+	}
+	return out
+}
+
+func checkMinimalToolEnv(env []string) error {
+	if err := platform.CheckToolEnv(env); err != nil {
+		return fmt.Errorf("%w: %w", ErrUnexpectedInvocation, err)
+	}
+	var hasPath, hasLang bool
+	for _, kv := range env {
+		k, _, ok := strings.Cut(kv, "=")
+		if !ok {
+			return fmt.Errorf("%w: malformed env entry %q", ErrUnexpectedInvocation, kv)
+		}
+		switch k {
+		case "PATH":
+			hasPath = true
+		case "LANG":
+			hasLang = true
+		default:
+			return fmt.Errorf("%w: unexpected env key %q", ErrUnexpectedInvocation, k)
+		}
+	}
+	if !hasPath || !hasLang {
+		return fmt.Errorf("%w: env %v must set PATH and LANG", ErrUnexpectedInvocation, env)
+	}
+	return nil
+}
+
+// Run emulates hostnamectl and scutil hostname operations after checking
+// Argv[0] is an exact trusted absolute path and Env is minimal.
 func (r *HostnameRunner) Run(ctx context.Context, spec platform.ExecSpec) (platform.ExecResult, error) {
 	if err := ctx.Err(); err != nil {
 		return platform.ExecResult{}, fmt.Errorf("fake hostname runner: %w", err)
@@ -99,20 +145,24 @@ func (r *HostnameRunner) Run(ctx context.Context, spec platform.ExecSpec) (platf
 	if len(spec.Argv) < 2 {
 		return platform.ExecResult{ExitCode: 2, Stderr: "too few arguments\n"}, nil
 	}
+	if err := checkMinimalToolEnv(spec.Env); err != nil {
+		return platform.ExecResult{}, err
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls = append(r.calls, append([]string(nil), spec.Argv...))
+	r.envs = append(r.envs, append([]string(nil), spec.Env...))
 	if err := r.loadLocked(); err != nil {
 		return platform.ExecResult{}, err
 	}
-	bin := filepath.Base(spec.Argv[0])
-	switch bin {
-	case "hostnamectl":
+	switch spec.Argv[0] {
+	case absHostnamectlBin:
 		return r.runHostnamectlLocked(spec.Argv[1:])
-	case "scutil":
+	case absScutilBin:
 		return r.runScutilLocked(spec.Argv[1:])
 	default:
-		return platform.ExecResult{ExitCode: 127, Stderr: fmt.Sprintf("unsupported binary %q\n", bin)}, nil
+		return platform.ExecResult{}, fmt.Errorf("%w: binary %q must be %q or %q",
+			ErrUnexpectedInvocation, spec.Argv[0], absHostnamectlBin, absScutilBin)
 	}
 }
 

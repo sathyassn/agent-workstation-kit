@@ -2,6 +2,7 @@ package darwin_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -56,6 +57,16 @@ func TestDarwinHostnameProviderUnsetHostNameRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Snapshot: %v", err)
 	}
+	var raw map[string]any
+	if err := json.Unmarshal(snap.Data, &raw); err != nil {
+		t.Fatalf("unmarshal snapshot: %v", err)
+	}
+	if v, ok := raw["host_name"]; !ok || v != nil {
+		t.Fatalf("unset HostName snapshot host_name = %#v (present=%v), want explicit JSON null", v, ok)
+	}
+	if err := p.Restore(ctx, contract.Snapshot{Provider: contract.ProviderHostname, Data: []byte(`{"version":1,"host_name":"","computer_name":"Lab Mac","local_host_name":"lab-mac"}`)}); !errors.Is(err, platform.ErrCorruptSnapshot) {
+		t.Fatalf("Restore empty non-null host_name = %v, want ErrCorruptSnapshot", err)
+	}
 	if err := p.Write(ctx, platform.HostnameKeyStatic, contract.State{Value: "lab-mac-01"}); err != nil {
 		t.Fatalf("Write HostName: %v", err)
 	}
@@ -92,5 +103,67 @@ func TestDarwinHostnameProviderRejectsInvalidKeysValuesAndSnapshots(t *testing.T
 		if err := p.Restore(ctx, contract.Snapshot{Provider: contract.ProviderHostname, Data: []byte(badJSON)}); !errors.Is(err, platform.ErrCorruptSnapshot) {
 			t.Errorf("Restore %s = %v, want ErrCorruptSnapshot", badJSON, err)
 		}
+	}
+}
+
+func TestDarwinHostnameSnapshotRejectsInvalidState(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	runner := platformtest.NewHostnameRunner(platformtest.HostnameState{
+		Static: "-invalid-leading-dash",
+		Pretty: "Lab Mac 01",
+		Local:  "lab-mac-01",
+	})
+	p := &darwin.HostnameProvider{Runner: runner}
+	if _, err := p.Snapshot(ctx); !errors.Is(err, platform.ErrInvalidStateValue) {
+		t.Fatalf("Snapshot on invalid HostName = %v, want ErrInvalidStateValue", err)
+	}
+}
+
+func TestDarwinHostnameToolInvocationSafety(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	runner := platformtest.NewHostnameRunner(platformtest.HostnameState{
+		Static: "lab-mac-01",
+		Pretty: "Lab Mac",
+		Local:  "lab-mac-01",
+	})
+	p := &darwin.HostnameProvider{Runner: runner}
+	trickyPretty := "Lab Mac; echo $(id) && 'quoted'"
+	if err := p.Write(ctx, platform.HostnameKeyPretty, contract.State{Value: trickyPretty}); err != nil {
+		t.Fatalf("Write pretty with shell metacharacters: %v", err)
+	}
+	calls := runner.Calls()
+	envs := runner.Envs()
+	if len(calls) != 1 || len(envs) != 1 {
+		t.Fatalf("calls=%v envs=%v, want 1", calls, envs)
+	}
+	wantArgv := []string{"/usr/sbin/scutil", "--set", "ComputerName", trickyPretty}
+	if len(calls[0]) != len(wantArgv) {
+		t.Fatalf("argv = %q, want %q", calls[0], wantArgv)
+	}
+	for i := range wantArgv {
+		if calls[0][i] != wantArgv[i] {
+			t.Fatalf("argv[%d] = %q, want %q", i, calls[0][i], wantArgv[i])
+		}
+	}
+	if len(envs[0]) != 2 || envs[0][0] != "PATH=/usr/bin:/bin:/usr/sbin:/sbin" || envs[0][1] != "LANG=C" {
+		t.Fatalf("env = %q, want minimal PATH and LANG=C only", envs[0])
+	}
+
+	// Fake runner rejects relative binary path and unexpected env variables.
+	if _, err := runner.Run(ctx, platform.ExecSpec{
+		Argv: []string{"scutil", "--get", "HostName"},
+		Env:  []string{"PATH=/usr/bin", "LANG=C"},
+	}); !errors.Is(err, platformtest.ErrUnexpectedInvocation) {
+		t.Fatalf("relative binary err = %v, want ErrUnexpectedInvocation", err)
+	}
+	if _, err := runner.Run(ctx, platform.ExecSpec{
+		Argv: []string{"/usr/sbin/scutil", "--get", "HostName"},
+		Env:  []string{"PATH=/usr/bin", "LANG=C", "DYLD_INSERT_LIBRARIES=/tmp/x.dylib"},
+	}); !errors.Is(err, platformtest.ErrUnexpectedInvocation) {
+		t.Fatalf("forbidden env err = %v, want ErrUnexpectedInvocation", err)
 	}
 }

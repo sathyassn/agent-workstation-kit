@@ -183,6 +183,18 @@ func (p *HostnameProvider) Snapshot(ctx context.Context) (contract.Snapshot, err
 		Pretty:    prettyVal.Value,
 		Transient: transVal.Value,
 	}
+	for _, item := range []struct {
+		key contract.StateKey
+		val string
+	}{
+		{platform.HostnameKeyStatic, snap.Static},
+		{platform.HostnameKeyPretty, snap.Pretty},
+		{platform.HostnameKeyTransient, snap.Transient},
+	} {
+		if err := validateLinuxHostnameValue(item.key, item.val, true); err != nil {
+			return contract.Snapshot{}, fmt.Errorf("snapshot %s: %w", p.Name(), err)
+		}
+	}
 	data, err := json.Marshal(snap)
 	if err != nil {
 		return contract.Snapshot{}, fmt.Errorf("marshal %s snapshot: %w", p.Name(), err)
