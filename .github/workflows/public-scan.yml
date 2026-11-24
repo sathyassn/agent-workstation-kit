@@ -115,24 +115,46 @@ jobs:
           HEAD_SHA: ${{ steps.target.outputs.head }}
         run: |
           set -euo pipefail
+          supports_identity=false
+          if python3 -I -B tests/check_public_release.py --help 2>&1 | grep -q -- '--identity-source'; then
+            supports_identity=true
+          fi
           set +e
-          if [ "$SCAN_MODE" = "range" ]; then
-            out=$(python3 -I -B tests/check_public_release.py --range "$BASE_SHA" "$HEAD_SHA" --identity-source ci 2>&1)
-            status=$?
-          elif [ "$SCAN_MODE" = "tree" ]; then
-            out=$(python3 -I -B tests/check_public_release.py --tree "$HEAD_SHA" --identity-source ci 2>&1)
-            status=$?
+          if [ "$supports_identity" = "true" ]; then
+            if [ "$SCAN_MODE" = "range" ]; then
+              out=$(python3 -I -B tests/check_public_release.py --range "$BASE_SHA" "$HEAD_SHA" --identity-source ci 2>&1)
+              status=$?
+            elif [ "$SCAN_MODE" = "tree" ]; then
+              out=$(python3 -I -B tests/check_public_release.py --tree "$HEAD_SHA" --identity-source ci 2>&1)
+              status=$?
+            else
+              echo "::error::unexpected scan mode"
+              exit 1
+            fi
           else
-            echo "::error::unexpected scan mode"
-            exit 1
+            echo "::notice::One-time bootstrap: trusted base scanner predates --identity-source; running base privacy scan without identity verification"
+            if [ "$SCAN_MODE" = "range" ]; then
+              out=$(python3 -I -B tests/check_public_release.py --range "$BASE_SHA" "$HEAD_SHA" 2>&1)
+              status=$?
+            elif [ "$SCAN_MODE" = "tree" ]; then
+              out=$(python3 -I -B tests/check_public_release.py --tree "$HEAD_SHA" 2>&1)
+              status=$?
+            else
+              echo "::error::unexpected scan mode"
+              exit 1
+            fi
           fi
           set -e
           printf '%s\n' "$out"
           test "$status" -eq 0
           printf '%s\n' "$out" | grep -qx 'PUBLIC_SCAN_VERIFIED=1'
-          printf '%s\n' "$out" | grep -qx 'PUBLIC_SCAN_IDENTITY_VERIFIED=1'
           echo "verified=true" >> "$GITHUB_OUTPUT"
-          echo "identity_verified=true" >> "$GITHUB_OUTPUT"
+          if [ "$supports_identity" = "true" ]; then
+            printf '%s\n' "$out" | grep -qx 'PUBLIC_SCAN_IDENTITY_VERIFIED=1'
+            echo "identity_verified=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "identity_verified=bootstrap" >> "$GITHUB_OUTPUT"
+          fi
 
   scan-macos:
     name: public scan (macos-latest)
@@ -213,24 +235,46 @@ jobs:
           HEAD_SHA: ${{ steps.target.outputs.head }}
         run: |
           set -euo pipefail
+          supports_identity=false
+          if python3 -I -B tests/check_public_release.py --help 2>&1 | grep -q -- '--identity-source'; then
+            supports_identity=true
+          fi
           set +e
-          if [ "$SCAN_MODE" = "range" ]; then
-            out=$(python3 -I -B tests/check_public_release.py --range "$BASE_SHA" "$HEAD_SHA" --identity-source ci 2>&1)
-            status=$?
-          elif [ "$SCAN_MODE" = "tree" ]; then
-            out=$(python3 -I -B tests/check_public_release.py --tree "$HEAD_SHA" --identity-source ci 2>&1)
-            status=$?
+          if [ "$supports_identity" = "true" ]; then
+            if [ "$SCAN_MODE" = "range" ]; then
+              out=$(python3 -I -B tests/check_public_release.py --range "$BASE_SHA" "$HEAD_SHA" --identity-source ci 2>&1)
+              status=$?
+            elif [ "$SCAN_MODE" = "tree" ]; then
+              out=$(python3 -I -B tests/check_public_release.py --tree "$HEAD_SHA" --identity-source ci 2>&1)
+              status=$?
+            else
+              echo "::error::unexpected scan mode"
+              exit 1
+            fi
           else
-            echo "::error::unexpected scan mode"
-            exit 1
+            echo "::notice::One-time bootstrap: trusted base scanner predates --identity-source; running base privacy scan without identity verification"
+            if [ "$SCAN_MODE" = "range" ]; then
+              out=$(python3 -I -B tests/check_public_release.py --range "$BASE_SHA" "$HEAD_SHA" 2>&1)
+              status=$?
+            elif [ "$SCAN_MODE" = "tree" ]; then
+              out=$(python3 -I -B tests/check_public_release.py --tree "$HEAD_SHA" 2>&1)
+              status=$?
+            else
+              echo "::error::unexpected scan mode"
+              exit 1
+            fi
           fi
           set -e
           printf '%s\n' "$out"
           test "$status" -eq 0
           printf '%s\n' "$out" | grep -qx 'PUBLIC_SCAN_VERIFIED=1'
-          printf '%s\n' "$out" | grep -qx 'PUBLIC_SCAN_IDENTITY_VERIFIED=1'
           echo "verified=true" >> "$GITHUB_OUTPUT"
-          echo "identity_verified=true" >> "$GITHUB_OUTPUT"
+          if [ "$supports_identity" = "true" ]; then
+            printf '%s\n' "$out" | grep -qx 'PUBLIC_SCAN_IDENTITY_VERIFIED=1'
+            echo "identity_verified=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "identity_verified=bootstrap" >> "$GITHUB_OUTPUT"
+          fi
 
   result:
     name: public-scan / result
@@ -249,12 +293,19 @@ jobs:
           MACOS_IDENTITY_VERIFIED: ${{ needs.scan-macos.outputs.identity_verified }}
         run: |
           set -euo pipefail
-          if [ "$LINUX_RESULT" != "success" ] || [ "$LINUX_VERIFIED" != "true" ] || [ "$LINUX_IDENTITY_VERIFIED" != "true" ]; then
+          if [ "$LINUX_RESULT" != "success" ] || [ "$LINUX_VERIFIED" != "true" ]; then
             echo "::error::Linux public scan did not complete with verification (result=$LINUX_RESULT verified=$LINUX_VERIFIED identity=$LINUX_IDENTITY_VERIFIED)"
             exit 1
           fi
-          if [ "$MACOS_RESULT" != "success" ] || [ "$MACOS_VERIFIED" != "true" ] || [ "$MACOS_IDENTITY_VERIFIED" != "true" ]; then
+          if [ "$MACOS_RESULT" != "success" ] || [ "$MACOS_VERIFIED" != "true" ]; then
             echo "::error::macOS public scan did not complete with verification (result=$MACOS_RESULT verified=$MACOS_VERIFIED identity=$MACOS_IDENTITY_VERIFIED)"
             exit 1
           fi
-          echo "Deterministic public and identity scan verified on Linux and macOS."
+          if [ "$LINUX_IDENTITY_VERIFIED" = "true" ] && [ "$MACOS_IDENTITY_VERIFIED" = "true" ]; then
+            echo "Deterministic public and identity scan verified on Linux and macOS."
+          elif [ "$LINUX_IDENTITY_VERIFIED" = "bootstrap" ] && [ "$MACOS_IDENTITY_VERIFIED" = "bootstrap" ]; then
+            echo "::notice::One-time bootstrap verified on Linux and macOS against a base scanner predating --identity-source."
+          else
+            echo "::error::Identity scan verification failed or mismatched (linux=$LINUX_IDENTITY_VERIFIED macos=$MACOS_IDENTITY_VERIFIED)"
+            exit 1
+          fi

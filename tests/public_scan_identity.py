@@ -517,7 +517,7 @@ def collect_local_identity(
                 )
             raw_items.append(("scutil", proc.stdout.strip()))
 
-        # Optional when explicitly unset ("HostName: not set"); empty rc=0 or other error fails closed.
+        # Optional when explicitly unset ("HostName: not set") or empty; command errors/timeouts fail closed.
         host_proc = _exec_source(
             ["scutil", "--get", "HostName"],
             "scutil HostName",
@@ -525,11 +525,9 @@ def collect_local_identity(
             timeout=timeout,
         )
         if host_proc.returncode == 0:
-            if not host_proc.stdout.strip():
-                raise IdentityCollectionError(
-                    "macOS identity source 'scutil HostName' returned an empty value; failing closed"
-                )
-            raw_items.append(("scutil", host_proc.stdout.strip()))
+            host_val = host_proc.stdout.strip()
+            if host_val:
+                raw_items.append(("scutil", host_val))
         else:
             combined_msg = (host_proc.stderr + " " + host_proc.stdout).casefold()
             if "not set" not in combined_msg:
@@ -700,19 +698,46 @@ def _diff_against_parent(
                 f"{parent}:{old_path}",
                 f"{commit}:{new_path}",
             ]
-        dproc = _exec_source(
-            diff_cmd,
-            "git diff hunks",
-            cwd=root,
-            run_cmd=run_cmd,
-            timeout=timeout,
-        )
-        if dproc.returncode != 0:
-            raise IdentityCollectionError(
-                f"CI identity hunk inspection failed for commit {commit[:12]}; failing closed"
+        if run_cmd is _default_run_cmd:
+            try:
+                raw_proc = subprocess.run(
+                    diff_cmd,
+                    cwd=root,
+                    capture_output=True,
+                    text=False,
+                    check=False,
+                    timeout=timeout,
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise IdentityCollectionError("identity source 'git diff hunks' timed out; failing closed") from exc
+            except OSError as exc:
+                raise IdentityCollectionError("identity source 'git diff hunks' failed to run; failing closed") from exc
+            if raw_proc.returncode != 0:
+                raise IdentityCollectionError(
+                    f"CI identity hunk inspection failed for commit {commit[:12]}; failing closed"
+                )
+            diff_lines = [
+                raw_line[:-1] if raw_line.endswith("\r") else raw_line
+                for raw_line in raw_proc.stdout.decode("utf-8", "replace").split("\n")
+            ]
+        else:
+            dproc = _exec_source(
+                diff_cmd,
+                "git diff hunks",
+                cwd=root,
+                run_cmd=run_cmd,
+                timeout=timeout,
             )
+            if dproc.returncode != 0:
+                raise IdentityCollectionError(
+                    f"CI identity hunk inspection failed for commit {commit[:12]}; failing closed"
+                )
+            diff_lines = [
+                raw_line[:-1] if raw_line.endswith("\r") else raw_line
+                for raw_line in dproc.stdout.split("\n")
+            ]
         lines_set: set[int] = set()
-        for line in dproc.stdout.splitlines():
+        for line in diff_lines:
             if line.startswith("Binary files ") and line.endswith(" differ"):
                 added_lines[new_path] = None
                 break

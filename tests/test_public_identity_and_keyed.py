@@ -1173,6 +1173,43 @@ class CommitHookDocsAndContributorJourneyTests(unittest.TestCase):
                 shutil.copyfile(ROOT / "tests/check_public_release.py", repo / "tests/check_public_release.py")
                 shutil.copyfile(ROOT / "tests/public_scan_identity.py", repo / "tests/public_scan_identity.py")
                 shutil.copyfile(ROOT / "tests/public_scan_keyed.py", repo / "tests/public_scan_keyed.py")
+                # Isolate account (pwd/getlogin) and socket.gethostname in the temp repo copy
+                # so macOS/Linux CI runner hostnames or account names never pollute the journey.
+                ident_stub = (
+                    "\n\n# Test-only isolated identity source stub (temp repo copy only).\n"
+                    "def _wskit_install_test_identity_stubs() -> None:\n"
+                    "    import json as _json\n"
+                    "    import os as _os\n"
+                    "    import pwd as _pwd\n"
+                    "    import socket as _socket\n"
+                    "    from pathlib import Path as _Path\n"
+                    "    from types import SimpleNamespace as _NS\n"
+                    "    _cfg_path = _os.environ.get('_WSKIT_TEST_IDENTITY_JSON', '')\n"
+                    "    if not _cfg_path:\n"
+                    "        return\n"
+                    "    _data = _json.loads(_Path(_cfg_path).read_text(encoding='utf-8'))\n"
+                    "    _pwd.getpwuid = lambda _uid: _NS(pw_name=_data['user'], pw_gecos=_data['full_name'])\n"
+                    "    _os.getlogin = lambda: _data['user']\n"
+                    "    _socket.gethostname = lambda: _data['host']\n"
+                    "\n"
+                    "_wskit_install_test_identity_stubs()\n"
+                )
+                (repo / "tests/public_scan_identity.py").write_text(
+                    (repo / "tests/public_scan_identity.py").read_text(encoding="utf-8") + ident_stub,
+                    encoding="utf-8",
+                )
+                ident_json = base / "fake-identity.json"
+                ident_json.write_text(
+                    json.dumps(
+                        {
+                            "user": join("nholm", "dev"),
+                            "full_name": join("Nadia", " ", "Holm"),
+                            "host": fake_host,
+                        }
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
                 write_scan_configs(repo)
                 for req in scan.REQUIRED:
                     target = repo / req
@@ -1209,7 +1246,12 @@ class CommitHookDocsAndContributorJourneyTests(unittest.TestCase):
                 git(repo, "push", "-q", "origin", "main")
                 git(repo, "config", "core.hooksPath", ".codeflow/git-hooks")
 
-                hook_env = {"PATH": f"{fake_bin}:{os.environ.get('PATH', '/usr/bin:/bin')}"}
+                hook_env = {
+                    "PATH": f"{fake_bin}:{os.environ.get('PATH', '/usr/bin:/bin')}",
+                    "GIT_CONFIG_GLOBAL": "/dev/null",
+                    "GIT_CONFIG_NOSYSTEM": "1",
+                    "_WSKIT_TEST_IDENTITY_JSON": str(ident_json),
+                }
 
                 # Contributor adds their fake host name to a doc -> push refused.
                 git(repo, "checkout", "-q", "-b", "feat/host-note")
@@ -1490,19 +1532,20 @@ class Round1ReviewRegressionTests(unittest.TestCase):
                 raise AssertionError(f"unexpected cmd: {cmd}")
             return run_cmd
 
-        # 1) Empty scutil HostName with rc=0 MUST fail closed (only explicit "not set" is unset).
-        with self.assertRaises(ident.IdentityCollectionError):
-            ident.collect_local_identity(
-                ROOT,
-                normalize_fn=scan.normalize_text,
-                platform_name="darwin",
-                run_cmd=ok_runner("darwin", scutil_host_rc=0, scutil_host_out="  \n", scutil_host_err=""),
-                get_pwuid=lambda _uid: _fake_pwuid(join("zora", "dev"), join("Zora", " ", "Vance")),
-                get_login=lambda: join("zora", "dev"),
-                get_hostname=lambda: join("nordic", "-box-1"),
-                which=lambda _bin: None,
-                is_executable=lambda _p: False,
-            )
+        # 1) Optional empty scutil HostName with rc=0 is treated as unavailable (does not fail or add "").
+        profile_empty_host = ident.collect_local_identity(
+            ROOT,
+            normalize_fn=scan.normalize_text,
+            platform_name="darwin",
+            run_cmd=ok_runner("darwin", scutil_host_rc=0, scutil_host_out="  \n", scutil_host_err=""),
+            get_pwuid=lambda _uid: _fake_pwuid(join("zora", "dev"), join("Zora", " ", "Vance")),
+            get_login=lambda: join("zora", "dev"),
+            get_hostname=lambda: join("nordic", "-box-1"),
+            which=lambda _bin: None,
+            is_executable=lambda _p: False,
+        )
+        self.assertIn(join("zora", "dev"), profile_empty_host.tokens)
+        self.assertNotIn("", profile_empty_host.tokens)
 
         # 2) Linux hostnamectl with only Pretty/Transient (missing Static hostname) MUST fail closed.
         with self.assertRaises(ident.IdentityCollectionError):
@@ -1791,6 +1834,601 @@ class Round1ReviewRegressionTests(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
+
+
+class Round2ReviewRegressionTests(unittest.TestCase):
+    """Regression tests for PR #45 round 2 cross-family review findings (L1-L8) + executing H1/H2 tests."""
+
+    SYNTHETIC_KEY_BYTES = bytes(range(10, 42))
+
+    def _identity_mod(self):
+        return _load_module("public_scan_identity_r2", "tests/public_scan_identity.py")
+
+    def _keyed_mod(self):
+        return _load_module("public_scan_keyed_r2", "tests/public_scan_keyed.py")
+
+    def _extract_workflow_step_run(self, workflow_rel: str, step_name: str) -> str:
+        text = (ROOT / workflow_rel).read_text(encoding="utf-8")
+        marker = f"- name: {step_name}"
+        start = text.index(marker)
+        run_idx = text.index("run: |", start)
+        lines = text[run_idx:].splitlines()[1:]
+        body: list[str] = []
+        indent: int | None = None
+        for line in lines:
+            if not line.strip():
+                body.append("")
+                continue
+            leading = len(line) - len(line.lstrip(" "))
+            if indent is None:
+                indent = leading
+            if leading < indent:
+                break
+            body.append(line[indent:])
+        return "\n".join(body) + "\n"
+
+    def test_l1_bare_cr_does_not_shift_ci_range_identity_line_numbers(self) -> None:
+        author = join("Kestrel", " ", "Nolan")
+        email = join("knolan", "@", "northwind-lab", ".test")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_scan_configs(root)
+            git(root, "init", "-q", "-b", "main")
+            (root / "docs").mkdir()
+            # Bare CR inside line 1 MUST NOT count as an extra line break relative to git diff hunks.
+            (root / "docs/cr.txt").write_bytes(b"line1-left\rline1-right\nsecond line\n")
+            git(root, "add", "-A")
+            git(root, "commit", "-q", "-m", "chore: base with bare CR")
+            base = git(root, "rev-parse", "HEAD").stdout.strip()
+
+            git(root, "checkout", "-q", "-b", "feat/cr-line")
+            (root / "docs/cr.txt").write_bytes(
+                b"line1-left\rline1-right\nsecond line\nAuthor: " + author.encode("utf-8") + b"\n"
+            )
+            git(root, "add", "docs/cr.txt")
+            git(
+                root,
+                "commit",
+                "-q",
+                "-m",
+                "docs: add line after bare CR",
+                author_name=author,
+                author_email=email,
+            )
+            head = git(root, "rev-parse", "HEAD").stdout.strip()
+
+            code, out, err = run_main(["--root", str(root), "--range", base, head, "--identity-source", "ci"])
+            combined = out + err
+            self.assertEqual(1, code, combined)
+            self.assertIn("docs/cr.txt:3: matched rule 'identity'", combined)
+            self.assertNotIn(join("kestrel"), combined.casefold())
+
+    def test_l2_keyed_matcher_extracts_mailto_markdown_json_query_and_urls(self) -> None:
+        keyed = self._keyed_mod()
+        email_val = join("client", "@", "northwind-corp", ".test")
+        host_val = join("secret-box", ".", "northwind", ".test")
+        path_val = join("northwind", "/", "secret-team")
+        query_val = join("cobalt", "-", "nine")
+
+        cases = (
+            ("markdown_mailto", email_val, f"See [Support](mailto:{email_val}) for help."),
+            ("angle_mailto", email_val, f"Reply to <mailto:{email_val}> today."),
+            ("contact_colon", email_val, f"Contact:{email_val}"),
+            ("compact_json", email_val, f'{{"e":"{email_val}"}}'),
+            ("query_param", host_val, f"host={host_val}&x=1"),
+            ("url_host", host_val, f"https://{host_val}/{path_val}?ref={query_val}"),
+            ("url_path", path_val, f"https://{host_val}/{path_val}?ref={query_val}"),
+            ("url_query", query_val, f"https://{host_val}/{path_val}?ref={query_val}"),
+        )
+        for label, value, line in cases:
+            with self.subTest(shape=label):
+                digest = keyed.compute_keyed_digest(
+                    self.SYNTHETIC_KEY_BYTES,
+                    value,
+                    normalize_fn=scan.normalize_text,
+                )
+                matcher = keyed.KeyedListMatcher(
+                    self.SYNTHETIC_KEY_BYTES,
+                    frozenset({digest}),
+                    normalize_fn=scan.normalize_text,
+                )
+                hits = matcher.detect(scan.normalize_text(line))
+                self.assertIn(digest, hits, f"shape '{label}' missed keyed value")
+
+    def test_l3_journey_tests_isolate_every_live_identity_source(self) -> None:
+        hardening = _load_module("test_public_scan_hardening_l3", "tests/test_public_scan_hardening.py")
+        import pwd
+        import socket
+
+        live_user = pwd.getpwuid(os.getuid()).pw_name
+        live_host = socket.gethostname()
+
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            repo, public_remote = hardening.Round2ReviewRegressionTests()._make_pre_push_repo(base)
+
+            # Hostile global gitconfig (would match README "Version" if leaked) + hostile PATH.
+            hostile_cfg = base / "hostile.gitconfig"
+            hostile_email = join("version", "@", "hostile", ".invalid")
+            hostile_cfg.write_text(f"[user]\n\tname = Version\n\temail = {hostile_email}\n", encoding="utf-8")
+            hostile_bin = base / "hostile-bin"
+            hostile_bin.mkdir()
+            for tool in ("scutil", "hostnamectl", "tailscale"):
+                script = hostile_bin / tool
+                script.write_text("#!/bin/sh\nexit 99\n", encoding="utf-8")
+                script.chmod(script.stat().st_mode | stat.S_IXUSR)
+
+            hook_env = hardening._install_fake_identity_bin(base, repo=repo)
+            # Put hostile_bin AFTER fake_bin (so fake_bin shadows it) and set hostile GIT_CONFIG_GLOBAL
+            # BEFORE merging hook_env to verify hook_env neutralizes live global git config too.
+            merged_env = {
+                **os.environ,
+                "GIT_CONFIG_GLOBAL": str(hostile_cfg),
+                "PATH": f"{hostile_bin}:{os.environ.get('PATH', '/usr/bin:/bin')}",
+                **hook_env,
+            }
+
+            # Verify temp repo's collect_local_identity returns ONLY stubbed tokens, never live host/account.
+            probe = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    "-B",
+                    "-c",
+                    "import importlib.util, json, pathlib, sys; "
+                    "spec = importlib.util.spec_from_file_location('psi', 'tests/public_scan_identity.py'); "
+                    "mod = importlib.util.module_from_spec(spec); sys.modules['psi'] = mod; spec.loader.exec_module(mod); "
+                    "prof = mod.collect_local_identity(pathlib.Path('.'), normalize_fn=lambda s: s); "
+                    "print(json.dumps(sorted(prof.tokens)))",
+                ],
+                cwd=repo,
+                env=merged_env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(0, probe.returncode, probe.stdout + probe.stderr)
+            tokens = set(json.loads(probe.stdout))
+            self.assertIn("fixture-node-01", tokens)
+            if live_user.casefold() not in self._identity_mod().ALLOWED_HOME_USERS and len(live_user) >= 3:
+                self.assertNotIn(live_user.casefold(), tokens)
+            live_short = live_host.split(".", 1)[0].casefold()
+            if live_short not in self._identity_mod().ALLOWED_HOME_USERS and len(live_short) >= 3:
+                self.assertNotIn(live_short, tokens)
+
+            # Verify a real pre-push succeeds cleanly under hostile live env.
+            git(repo, "config", "core.hooksPath", ".codeflow/git-hooks")
+            git(repo, "checkout", "-q", "-b", "feat/l3-clean")
+            (repo / "docs").mkdir(exist_ok=True)
+            (repo / "docs/l3.md").write_text("Clean note.\n", encoding="utf-8")
+            git(repo, "add", "docs/l3.md")
+            git(repo, "commit", "-q", "-m", "docs: clean l3 note")
+            push_res = subprocess.run(
+                ["git", "push", "origin", "feat/l3-clean"],
+                cwd=repo,
+                env=merged_env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(0, push_res.returncode, push_res.stdout + push_res.stderr)
+
+    def test_l4_public_scan_workflow_handles_bootstrap_base_and_enforces_identity_when_supported(self) -> None:
+        run_scan_script = self._extract_workflow_step_run(
+            ".github/workflows/public-scan.yml",
+            "Run deterministic privacy and identity scan on every commit",
+        )
+        result_script = self._extract_workflow_step_run(
+            ".github/workflows/public-scan.yml",
+            "Require verified deterministic privacy and identity scan on Linux and macOS",
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "tests").mkdir()
+            gh_out = root / "gh_output.txt"
+            base_env = {
+                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                "SCAN_MODE": "range",
+                "BASE_SHA": "a" * 40,
+                "HEAD_SHA": "b" * 40,
+                "GITHUB_OUTPUT": str(gh_out),
+            }
+
+            # (a) Pre-TSK-008 base scanner lacking --identity-source -> runs without it, emits bootstrap notice.
+            (root / "tests/check_public_release.py").write_text(
+                "import sys\n"
+                "if '--help' in sys.argv:\n"
+                "    print('usage: check_public_release.py [--range BASE HEAD] [--tree SHA]')\n"
+                "    raise SystemExit(0)\n"
+                "if '--identity-source' in sys.argv:\n"
+                "    print('unrecognized arguments: --identity-source', file=sys.stderr)\n"
+                "    raise SystemExit(2)\n"
+                "print('PUBLIC_SCAN_VERIFIED=1')\n",
+                encoding="utf-8",
+            )
+            gh_out.write_text("", encoding="utf-8")
+            proc_boot = subprocess.run(
+                ["bash", "-c", run_scan_script],
+                cwd=root,
+                env=base_env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(0, proc_boot.returncode, proc_boot.stdout + proc_boot.stderr)
+            self.assertIn("bootstrap", (proc_boot.stdout + proc_boot.stderr).lower())
+            boot_outputs = gh_out.read_text(encoding="utf-8")
+            self.assertIn("verified=true", boot_outputs)
+            self.assertIn("identity_verified=bootstrap", boot_outputs)
+
+            # (b) Base scanner supporting --identity-source that omits PUBLIC_SCAN_IDENTITY_VERIFIED=1 -> FAILS CLOSED.
+            (root / "tests/check_public_release.py").write_text(
+                "import sys\n"
+                "if '--help' in sys.argv:\n"
+                "    print('usage: check_public_release.py [--identity-source {auto,local,ci}]')\n"
+                "    raise SystemExit(0)\n"
+                "print('PUBLIC_SCAN_VERIFIED=1')\n",
+                encoding="utf-8",
+            )
+            gh_out.write_text("", encoding="utf-8")
+            proc_missing = subprocess.run(
+                ["bash", "-c", run_scan_script],
+                cwd=root,
+                env=base_env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(0, proc_missing.returncode, proc_missing.stdout + proc_missing.stderr)
+            self.assertNotIn("identity_verified=true", gh_out.read_text(encoding="utf-8"))
+
+            # (c) Base scanner supporting --identity-source that emits both markers -> SUCCEEDS.
+            (root / "tests/check_public_release.py").write_text(
+                "import sys\n"
+                "if '--help' in sys.argv:\n"
+                "    print('usage: check_public_release.py [--identity-source {auto,local,ci}]')\n"
+                "    raise SystemExit(0)\n"
+                "assert '--identity-source' in sys.argv\n"
+                "print('PUBLIC_SCAN_VERIFIED=1')\n"
+                "print('PUBLIC_SCAN_IDENTITY_VERIFIED=1')\n",
+                encoding="utf-8",
+            )
+            gh_out.write_text("", encoding="utf-8")
+            proc_ok = subprocess.run(
+                ["bash", "-c", run_scan_script],
+                cwd=root,
+                env=base_env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(0, proc_ok.returncode, proc_ok.stdout + proc_ok.stderr)
+            ok_outputs = gh_out.read_text(encoding="utf-8")
+            self.assertIn("verified=true", ok_outputs)
+            self.assertIn("identity_verified=true", ok_outputs)
+
+            # (d) Result aggregator accepts matching bootstrap or matching true, rejects mismatch/missing.
+            for label, linux_id, macos_id, expected_rc in (
+                ("both_true", "true", "true", 0),
+                ("both_bootstrap", "bootstrap", "bootstrap", 0),
+                ("mismatch_true_bootstrap", "true", "bootstrap", 1),
+                ("missing_macos", "true", "", 1),
+            ):
+                with self.subTest(result_case=label):
+                    res_proc = subprocess.run(
+                        ["bash", "-c", result_script],
+                        env={
+                            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                            "LINUX_RESULT": "success",
+                            "LINUX_VERIFIED": "true",
+                            "LINUX_IDENTITY_VERIFIED": linux_id,
+                            "MACOS_RESULT": "success",
+                            "MACOS_VERIFIED": "true",
+                            "MACOS_IDENTITY_VERIFIED": macos_id,
+                        },
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    self.assertEqual(expected_rc, res_proc.returncode, res_proc.stdout + res_proc.stderr)
+
+    def test_l5_unchanged_identity_lines_do_not_exhaust_finding_cap_before_scoping(self) -> None:
+        author = join("Kestrel", " ", "Nolan")
+        email = join("knolan", "@", "northwind-lab", ".test")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_scan_configs(root)
+            git(root, "init", "-q", "-b", "main")
+            (root / "docs").mkdir()
+            # 25 pre-existing lines containing the author's name (exceeds patched MAX_FINDINGS=10).
+            pre_existing = "".join(f"History entry {i}: {author}\n" for i in range(1, 26))
+            (root / "docs/log.txt").write_text(pre_existing, encoding="utf-8")
+            git(root, "add", "-A")
+            git(root, "commit", "-q", "-m", "chore: pre-existing lines")
+            base = git(root, "rev-parse", "HEAD").stdout.strip()
+
+            git(root, "checkout", "-q", "-b", "feat/added-after-many")
+            (root / "docs/log.txt").write_text(pre_existing + f"New entry: {author}\n", encoding="utf-8")
+            git(root, "add", "docs/log.txt")
+            git(
+                root,
+                "commit",
+                "-q",
+                "-m",
+                "docs: add one new line",
+                author_name=author,
+                author_email=email,
+            )
+            head = git(root, "rev-parse", "HEAD").stdout.strip()
+
+            with mock.patch.object(scan, "MAX_FINDINGS", 10):
+                code, out, err = run_main(["--root", str(root), "--range", base, head, "--identity-source", "ci"])
+            combined = out + err
+            self.assertEqual(1, code, combined)
+            self.assertIn("docs/log.txt:26: matched rule 'identity'", combined)
+            self.assertNotIn("more than 10 matches", combined)
+            self.assertNotIn(join("kestrel"), combined.casefold())
+
+    def test_l6_collection_failure_redacts_tracked_paths_with_sensitive_tokens(self) -> None:
+        ident = self._identity_mod()
+        secret_host = join("uncollected", "-", "host77")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_scan_configs(
+                root,
+                exemptions=[
+                    {
+                        "path": f"docs/{secret_host}/note.md",
+                        "rule": "identity",
+                        "digest": scan.compute_exemption_digest("identity", secret_host),
+                        "reason": "expired fixture",
+                        "approved_by": "@owner",
+                        "expires": "2020-01-01",
+                    }
+                ],
+            )
+            git(root, "init", "-q", "-b", "main")
+            (root / "reports").mkdir()
+            (root / f"reports/{secret_host}.txt").write_text("clean\n", encoding="utf-8")
+            git(root, "add", "-f", "-A")
+            git(root, "commit", "-q", "-m", "chore: collection failure fixture")
+            head = git(root, "rev-parse", "HEAD").stdout.strip()
+
+            err_obj = scan._identity_mod.IdentityCollectionError("simulated local source failure")
+            for mode_name, argv in (
+                ("commits", ["--root", str(root), "--commits", head, "--identity-source", "local"]),
+                ("worktree", ["--root", str(root), "--allow-missing-license", "--identity-source", "local"]),
+            ):
+                with self.subTest(mode=mode_name):
+                    with mock.patch.object(scan, "_collect_identity_profile", side_effect=err_obj):
+                        code, out, err = run_main(argv)
+                    combined = out + err
+                    self.assertEqual(1, code, combined)
+                    self.assertIn("identity check failed", combined)
+                    self.assertIn("<redacted-", combined)
+                    self.assertNotIn(secret_host, combined.casefold())
+
+    def test_l7_optional_empty_macos_hostname_and_gecos_are_unavailable_not_errors(self) -> None:
+        ident = self._identity_mod()
+
+        def make_darwin_runner(*, host_rc: int = 0, host_out: str = "  \n", comp_out: str = "Maren-Mac\n"):
+            def run_cmd(cmd, *, cwd=None, timeout=5.0):
+                if cmd[:3] == ["git", "--no-optional-locks", "config"]:
+                    val = join("Zora", " ", "Vance") if cmd[-1] == "user.name" else join("zvance", "@", "northwind-lab", ".test")
+                    return subprocess.CompletedProcess(cmd, 0, val + "\n", "")
+                if cmd[:2] == ["scutil", "--get"]:
+                    if cmd[2] == "HostName":
+                        return subprocess.CompletedProcess(cmd, host_rc, host_out, "")
+                    if cmd[2] == "ComputerName":
+                        return subprocess.CompletedProcess(cmd, 0, comp_out, "")
+                    return subprocess.CompletedProcess(cmd, 0, join("Maren", "-Mac") + "\n", "")
+                raise AssertionError(f"unexpected cmd: {cmd}")
+            return run_cmd
+
+        # Optional empty scutil HostName (rc=0, whitespace/empty) + empty GECOS -> treated as unavailable, NOT error.
+        profile = ident.collect_local_identity(
+            ROOT,
+            normalize_fn=scan.normalize_text,
+            platform_name="darwin",
+            run_cmd=make_darwin_runner(host_rc=0, host_out="  \n"),
+            get_pwuid=lambda _uid: _fake_pwuid(join("zora", "dev"), ""),
+            get_login=lambda: "",
+            get_hostname=lambda: join("maren", "-mac"),
+            which=lambda _bin: None,
+            is_executable=lambda _p: False,
+        )
+        self.assertIn(join("zora", "dev"), profile.tokens)
+        self.assertNotIn("", profile.tokens)
+
+        # Required empty scutil ComputerName MUST still fail closed.
+        with self.assertRaises(ident.IdentityCollectionError):
+            ident.collect_local_identity(
+                ROOT,
+                normalize_fn=scan.normalize_text,
+                platform_name="darwin",
+                run_cmd=make_darwin_runner(host_rc=0, host_out="", comp_out="  \n"),
+                get_pwuid=lambda _uid: _fake_pwuid(join("zora", "dev"), ""),
+                get_login=lambda: "",
+                get_hostname=lambda: join("maren", "-mac"),
+                which=lambda _bin: None,
+                is_executable=lambda _p: False,
+            )
+
+        # Docs must align with optional empty HostName treated as unavailable.
+        checklist = (ROOT / "docs/13-public-release-checklist.md").read_text(encoding="utf-8").lower()
+        self.assertNotIn("an empty zero-exit response or other error fails closed", checklist)
+
+    def test_l8_ci_secret_scan_scopes_to_pr_range_ignoring_unrelated_branch_leaks(self) -> None:
+        ci_yml = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        secret_job = self._extract_workflow_step_run(".github/workflows/ci.yml", "Run pinned Gitleaks")
+        self.assertIn("--log-opts=", secret_job)
+        self.assertIn("PR_BASE_SHA", ci_yml)
+        self.assertIn("PR_HEAD_SHA", ci_yml)
+        self.assertIn("PUSH_BEFORE", ci_yml)
+
+        gitleaks_bin = shutil.which("gitleaks")
+        if gitleaks_bin is None and Path("/opt/homebrew/bin/gitleaks").is_file():
+            gitleaks_bin = "/opt/homebrew/bin/gitleaks"
+        if gitleaks_bin is not None:
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                git(root, "init", "-q", "-b", "main")
+                (root / "README.md").write_text("clean base\n", encoding="utf-8")
+                git(root, "add", "README.md")
+                git(root, "commit", "-q", "-m", "chore: base")
+                base_sha = git(root, "rev-parse", "HEAD").stdout.strip()
+
+                # Unrelated branch carries a synthetic GitLab token leak.
+                git(root, "checkout", "-q", "-b", "unrelated-leak")
+                fake_pat = join("glpat", "-", "kSaPeOD_-T0JxMi3p28B")
+                (root / "leak.txt").write_text(f"token={fake_pat}\n", encoding="utf-8")
+                git(root, "add", "leak.txt")
+                git(root, "commit", "-q", "-m", "chore: unrelated leak")
+
+                # Clean PR branch from base has no secret.
+                git(root, "checkout", "-q", "-b", "feat/clean-pr", base_sha)
+                (root / "clean.txt").write_text("clean pr change\n", encoding="utf-8")
+                git(root, "add", "clean.txt")
+                git(root, "commit", "-q", "-m", "docs: clean pr")
+                head_sha = git(root, "rev-parse", "HEAD").stdout.strip()
+
+                # PR-scoped gitleaks passes despite unrelated-leak branch existing in the repo.
+                scoped = subprocess.run(
+                    [gitleaks_bin, "git", "--redact", "--no-banner", "--exit-code", "1", f"--log-opts={base_sha}..{head_sha}", "."],
+                    cwd=root,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(0, scoped.returncode, scoped.stdout + scoped.stderr)
+
+                # Adding a leak on the PR branch itself MUST fail the PR-scoped scan.
+                (root / "pr-leak.txt").write_text(f"token={fake_pat}\n", encoding="utf-8")
+                git(root, "add", "pr-leak.txt")
+                git(root, "commit", "-q", "-m", "docs: accidental leak")
+                bad_head = git(root, "rev-parse", "HEAD").stdout.strip()
+                scoped_bad = subprocess.run(
+                    [gitleaks_bin, "git", "--redact", "--no-banner", "--exit-code", "1", f"--log-opts={base_sha}..{bad_head}", "."],
+                    cwd=root,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(1, scoped_bad.returncode, scoped_bad.stdout + scoped_bad.stderr)
+
+    def test_h1_executing_target_step_enforces_pr_base_and_push_before_semantics(self) -> None:
+        target_script = self._extract_workflow_step_run(
+            ".github/workflows/public-scan.yml",
+            "Fetch commit range to scan as git data",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            base_dir = Path(directory)
+            remote = base_dir / "origin.git"
+            work = base_dir / "work"
+            subprocess.run(["git", "init", "--bare", "-q", str(remote)], check=True)
+            git(base_dir, "init", "-q", "-b", "main", str(work))
+            (work / "README.md").write_text("root\n", encoding="utf-8")
+            git(work, "add", "README.md")
+            git(work, "commit", "-q", "-m", "chore: root")
+            c1 = git(work, "rev-parse", "HEAD").stdout.strip()
+
+            (work / "README.md").write_text("second\n", encoding="utf-8")
+            git(work, "add", "README.md")
+            git(work, "commit", "-q", "-m", "chore: second")
+            c2 = git(work, "rev-parse", "HEAD").stdout.strip()
+            git(work, "remote", "add", "origin", str(remote))
+            git(work, "push", "-q", "origin", "main")
+            # Simulate PR #7 head ref on remote.
+            git(work, "checkout", "-q", "-b", "feat/pr7", c1)
+            (work / "pr.txt").write_text("pr change\n", encoding="utf-8")
+            git(work, "add", "pr.txt")
+            git(work, "commit", "-q", "-m", "docs: pr7")
+            pr_head = git(work, "rev-parse", "HEAD").stdout.strip()
+            git(work, "push", "-q", "origin", f"{pr_head}:refs/pull/7/head")
+
+            local_script = target_script.replace('"https://github.com/${REPOSITORY}.git"', f'"{remote}"')
+            gh_out = base_dir / "target_out.txt"
+
+            # (a) pull_request_target checked out at BASE_SHA (c1) targeting main -> outputs mode=range, base=c1, head=pr_head.
+            git(work, "checkout", "-q", c1)
+            gh_out.write_text("", encoding="utf-8")
+            proc_pr = subprocess.run(
+                ["bash", "-c", local_script],
+                cwd=work,
+                env={
+                    "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                    "EVENT_NAME": "pull_request_target",
+                    "PR_NUMBER": "7",
+                    "BASE_REF": "main",
+                    "BASE_SHA": c1,
+                    "HEAD_SHA": pr_head,
+                    "PUSH_BEFORE": "",
+                    "PUSH_HEAD": "",
+                    "REPOSITORY": "example/repo",
+                    "GITHUB_OUTPUT": str(gh_out),
+                },
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(0, proc_pr.returncode, proc_pr.stdout + proc_pr.stderr)
+            pr_out = gh_out.read_text(encoding="utf-8")
+            self.assertIn("mode=range", pr_out)
+            self.assertIn(f"base={c1}", pr_out)
+            self.assertIn(f"head={pr_head}", pr_out)
+
+            # (b) push to main checked out at PUSH_BEFORE (c1) scanning c1..c2 -> outputs mode=range, base=c1, head=c2.
+            gh_out.write_text("", encoding="utf-8")
+            proc_push = subprocess.run(
+                ["bash", "-c", local_script],
+                cwd=work,
+                env={
+                    "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                    "EVENT_NAME": "push",
+                    "PR_NUMBER": "",
+                    "BASE_REF": "",
+                    "BASE_SHA": "",
+                    "HEAD_SHA": "",
+                    "PUSH_BEFORE": c1,
+                    "PUSH_HEAD": c2,
+                    "REPOSITORY": "example/repo",
+                    "GITHUB_OUTPUT": str(gh_out),
+                },
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(0, proc_push.returncode, proc_push.stdout + proc_push.stderr)
+            push_out = gh_out.read_text(encoding="utf-8")
+            self.assertIn("mode=range", push_out)
+            self.assertIn(f"base={c1}", push_out)
+            self.assertIn(f"head={c2}", push_out)
+
+            # (c) push with zero PUSH_BEFORE on non-root commit c2 -> FAILS CLOSED.
+            git(work, "checkout", "-q", c2)
+            gh_out.write_text("", encoding="utf-8")
+            proc_zero = subprocess.run(
+                ["bash", "-c", local_script],
+                cwd=work,
+                env={
+                    "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                    "EVENT_NAME": "push",
+                    "PR_NUMBER": "",
+                    "BASE_REF": "",
+                    "BASE_SHA": "",
+                    "HEAD_SHA": "",
+                    "PUSH_BEFORE": "0" * 40,
+                    "PUSH_HEAD": c2,
+                    "REPOSITORY": "example/repo",
+                    "GITHUB_OUTPUT": str(gh_out),
+                },
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(0, proc_zero.returncode, proc_zero.stdout + proc_zero.stderr)
+            self.assertIn("non-root", (proc_zero.stdout + proc_zero.stderr).lower())
 
 
 if __name__ == "__main__":

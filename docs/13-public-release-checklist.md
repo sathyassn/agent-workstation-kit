@@ -147,8 +147,9 @@ storing any personal value on disk or printing it to stdout or stderr:
   - **Optional sources** (unavailable when explicitly absent/unset; never emit
     an empty token; error, timeout, or malformed/incomplete output fails closed):
     - Account full name (`pwd.getpwuid` GECOS first field) and `os.getlogin`
-    - On macOS: `scutil --get HostName` (explicit `HostName: not set` is treated
-      as unset; an empty zero-exit response or other error fails closed)
+    - On macOS: `scutil --get HostName` (explicit `HostName: not set` or an
+      empty zero-exit response is treated as unavailable/unset and emits no
+      token; command errors or timeouts fail closed)
     - On Linux: `hostnamectl` `Pretty hostname:` and `Transient hostname:`
     - Tailscale node name, MagicDNS name, and tailnet name (`tailscale status
       --json`, checking both `PATH` and, on macOS,
@@ -298,15 +299,19 @@ Hash-bound binary exceptions live in `tests/public_scan_binary_exceptions.json`:
 - **One-time bootstrap and post-merge live verification**: because
   `pull_request_target` executes `.github/workflows/public-scan.yml` from the
   base branch, the pull request that first introduces the identity check
-  (`TSK-008`, PR #43) runs against the pre-TSK-008 base workflow (which checks
-  `PUBLIC_SCAN_VERIFIED=1` only). Once `TSK-008` lands on `main`, every later
-  pull request and push runs the updated workflow requiring both
-  `PUBLIC_SCAN_VERIFIED=1` and `PUBLIC_SCAN_IDENTITY_VERIFIED=1` in
-  `public-scan / result`. Live GitHub test pull requests verifying AC-3 (a PR
-  that weakens the identity check and still fails) and AC-4 (a PR whose commit
-  author name appears in a changed file and fails with only file, line, and
-  rule) remain an open post-merge live-verification acceptance step and are not
-  satisfied by local temporary-repository journeys alone.
+  (`TSK-008`) runs against the pre-TSK-008 base workflow (which checks
+  `PUBLIC_SCAN_VERIFIED=1` only). When that PR merges to `main`, the push run
+  checks out `github.event.before` (the pre-TSK-008 base scanner); the workflow
+  probes whether that checked-out base scanner supports `--identity-source` and
+  uses a one-time bootstrap fallback with a notice only when the trusted base
+  genuinely lacks `--identity-source`. On every subsequent pull request and
+  push, the trusted base supports `--identity-source` and both platform jobs
+  and `public-scan / result` strictly require both `PUBLIC_SCAN_VERIFIED=1` and
+  `PUBLIC_SCAN_IDENTITY_VERIFIED=1`. Live GitHub test pull requests verifying
+  AC-3 (a PR that weakens the identity check and still fails) and AC-4 (a PR
+  whose commit author name appears in a changed file and fails with only file,
+  line, and rule) remain an open post-merge live-verification acceptance step
+  and are not satisfied by local temporary-repository journeys alone.
 - Both platform jobs (`scan-linux` and `scan-macos`) run with
   `--identity-source ci` and require exit 0 plus both positive completion
   markers (`PUBLIC_SCAN_VERIFIED=1` and `PUBLIC_SCAN_IDENTITY_VERIFIED=1`)

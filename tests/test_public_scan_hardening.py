@@ -42,9 +42,55 @@ def join(*parts: str) -> str:
     return "".join(parts)
 
 
-def _install_fake_identity_bin(base: Path, *, host: str = "fixture-node-01") -> dict[str, str]:
-    """Create stubbed scutil, hostnamectl, and tailscale binaries so journey tests never depend on host state."""
+_TEST_IDENTITY_STUB = (
+    "\n\n# Test-only isolated identity source stub (installed in temp repos only).\n"
+    "def _wskit_install_test_identity_stubs() -> None:\n"
+    "    import json as _json\n"
+    "    import os as _os\n"
+    "    import pwd as _pwd\n"
+    "    import socket as _socket\n"
+    "    from pathlib import Path as _Path\n"
+    "    from types import SimpleNamespace as _NS\n"
+    "    _cfg_path = _os.environ.get('_WSKIT_TEST_IDENTITY_JSON', '')\n"
+    "    if not _cfg_path:\n"
+    "        return\n"
+    "    _data = _json.loads(_Path(_cfg_path).read_text(encoding='utf-8'))\n"
+    "    _pwd.getpwuid = lambda _uid: _NS(pw_name=_data['user'], pw_gecos=_data['full_name'])\n"
+    "    _os.getlogin = lambda: _data['user']\n"
+    "    _socket.gethostname = lambda: _data['host']\n"
+    "\n"
+    "_wskit_install_test_identity_stubs()\n"
+)
+
+
+def _install_temp_identity_stub(repo: Path) -> None:
+    """Append the test-only account/socket stub to a temp repo's copy of public_scan_identity.py."""
+    target = repo / "tests/public_scan_identity.py"
+    if not target.is_file():
+        return
+    existing = target.read_text(encoding="utf-8")
+    if "_WSKIT_TEST_IDENTITY_JSON" not in existing:
+        target.write_text(existing + _TEST_IDENTITY_STUB, encoding="utf-8")
+
+
+def _install_fake_identity_bin(
+    base: Path,
+    *,
+    repo: Path | None = None,
+    host: str = "fixture-node-01",
+    user: str = "fixtureuser",
+    full_name: str = "Fixture Operator",
+) -> dict[str, str]:
+    """Stub every local identity source (git, passwd/getlogin, socket, scutil, hostnamectl, tailscale)."""
     import stat
+
+    if repo is not None:
+        _install_temp_identity_stub(repo)
+    ident_json = base / "fake-identity.json"
+    ident_json.write_text(
+        json.dumps({"user": user, "full_name": full_name, "host": host}) + "\n",
+        encoding="utf-8",
+    )
 
     fake_bin = base / "fake-identity-bin"
     fake_bin.mkdir(parents=True, exist_ok=True)
@@ -83,7 +129,12 @@ def _install_fake_identity_bin(base: Path, *, host: str = "fixture-node-01") -> 
         path = fake_bin / name
         path.write_text(body, encoding="utf-8")
         path.chmod(path.stat().st_mode | stat.S_IXUSR)
-    return {"PATH": f"{fake_bin}:{os.environ.get('PATH', '/usr/bin:/bin')}"}
+    return {
+        "PATH": f"{fake_bin}:{os.environ.get('PATH', '/usr/bin:/bin')}",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "_WSKIT_TEST_IDENTITY_JSON": str(ident_json),
+    }
 
 
 def git(
@@ -511,13 +562,13 @@ class FailClosedNegativeTests(unittest.TestCase):
             root = Path(directory)
             write_scan_configs(root)
             # Non-git directory fails closed.
-            code, out, _ = run_main(["--root", str(root), "--allow-missing-license"])
+            code, out, _ = run_main(["--root", str(root), "--allow-missing-license", "--identity-source", "ci"])
             self.assertEqual(1, code)
             self.assertNotIn("passed", out.lower())
 
             # Empty git repo fails closed.
             git(root, "init", "-q", "-b", "main")
-            code2, out2, _ = run_main(["--root", str(root), "--allow-missing-license"])
+            code2, out2, _ = run_main(["--root", str(root), "--allow-missing-license", "--identity-source", "ci"])
             self.assertEqual(1, code2)
             self.assertIn("tracked file listing is empty", out2)
             self.assertNotIn("passed", out2.lower())
@@ -817,6 +868,7 @@ class TimingSelfScanAndJourneyTests(unittest.TestCase):
             (repo / "tests").mkdir()
             shutil.copyfile(ROOT / "tests/check_public_release.py", repo / "tests/check_public_release.py")
             shutil.copyfile(ROOT / "tests/public_scan_identity.py", repo / "tests/public_scan_identity.py")
+            _install_temp_identity_stub(repo)
             shutil.copyfile(ROOT / "tests/public_scan_keyed.py", repo / "tests/public_scan_keyed.py")
             write_scan_configs(repo)
             git(repo, "config", "user.name", "Test Contributor")
@@ -1157,6 +1209,7 @@ class Round2ReviewRegressionTests(unittest.TestCase):
         (repo / "tests").mkdir()
         shutil.copyfile(ROOT / "tests/check_public_release.py", repo / "tests/check_public_release.py")
         shutil.copyfile(ROOT / "tests/public_scan_identity.py", repo / "tests/public_scan_identity.py")
+        _install_temp_identity_stub(repo)
         shutil.copyfile(ROOT / "tests/public_scan_keyed.py", repo / "tests/public_scan_keyed.py")
         write_scan_configs(repo)
         git(repo, "config", "user.name", "Test Contributor")

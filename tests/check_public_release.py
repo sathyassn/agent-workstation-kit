@@ -1263,6 +1263,7 @@ def load_exemptions_inventory(
     *,
     today: datetime.date | None = None,
     extra_detectors: Sequence[tuple[str, Callable[..., list[str]]]] = (),
+    redact_all: bool = False,
 ) -> tuple[tuple[ExemptionRecord, ...], tuple[ExemptionInventoryEntry, ...], list[str]]:
     """Load tracked exemptions, returning (active_records, full_inventory, errors).
 
@@ -1353,7 +1354,7 @@ def load_exemptions_inventory(
                 record_error = f"exemption record #{index + 1} has an invalid calendar expires date"
             else:
                 if expires_date < current_date:
-                    shown = display_path(rel_path, extra_detectors=extra_detectors)
+                    shown = display_path(rel_path, extra_detectors=extra_detectors, redact_all=redact_all)
                     errors.append(
                         f"exemption record #{index + 1} for {shown} "
                         f"rule '{rule}' digest {digest[:12]} expired on {expires}"
@@ -1845,8 +1846,13 @@ def display_path(
     path: str,
     *,
     extra_detectors: Sequence[tuple[str, Callable[..., list[str]]]] = (),
+    redact_all: bool = False,
 ) -> str:
-    """Return a safe display path, redacting any path that matches any detector."""
+    """Return a safe display path, redacting any path that matches any detector (or all paths when collection failed)."""
+    if redact_all:
+        if path.startswith("<") and path.endswith(">"):
+            return escape_for_display(path)
+        return redacted_path_id(path)
     try:
         variants = _line_variants(path)
         for detector_fn in DETECTORS.values():
@@ -1861,6 +1867,11 @@ def display_path(
     except Exception:  # noqa: BLE001 - fail safe by redacting path on any error
         return redacted_path_id(path)
     return escape_for_display(path)
+
+
+def _split_git_lines(text: str) -> list[str]:
+    """Split text using Git's LF-only line model (strip trailing CR from CRLF; keep bare CR within the same line)."""
+    return [line[:-1] if line.endswith("\r") else line for line in text.split("\n")]
 
 
 # --- scanner engine ---------------------------------------------------------
@@ -1880,6 +1891,7 @@ class Scanner:
         keyed_matcher: object | None = None,
         require_identity: bool = False,
         require_keyed: bool = False,
+        redact_all_paths: bool = False,
     ) -> None:
         self.modes: dict[str, str] = dict(DEFAULT_MODES if modes is None else modes)
         if set(self.modes.keys()) != set(ALL_RULE_IDS):
@@ -1895,6 +1907,7 @@ class Scanner:
         self.keyed_matcher = keyed_matcher
         self.require_identity = require_identity
         self.require_keyed = require_keyed
+        self.redact_all_paths = redact_all_paths
         self.exemptions: tuple[ExemptionRecord, ...] = tuple(exemptions)
         self.exemption_index: dict[tuple[str, str], set[str]] = {}
         for record in self.exemptions:
@@ -2042,29 +2055,38 @@ class Scanner:
         text: str,
         *,
         path: str = "",
+        identity_scope: object | None = None,
     ) -> tuple[str | None, list[tuple[int, str, str, bool]], bool]:
         """Collect raw (line_no, rule_id, folded_value, is_wrapped) hits for text.
 
-        Runs each active detector once over the full file first; only detectors
-        that report hits resolve exact line numbers line-by-line (and across
-        adjacent wrapped lines for identity and keyed-list).
+        Uses Git's LF-only line model (stripping trailing CR from CRLF while
+        keeping bare CR inside the same line so diff hunk coordinates stay
+        aligned). When `identity_scope` is active, unchanged lines are filtered
+        before counting identity hits against MAX_FINDINGS.
         """
-        unified = text.replace("\r\n", "\n").replace("\r", "\n")
+        if not text:
+            return None, [], False
+        lines = [line.replace("\r", " ") for line in _split_git_lines(text)]
+        unified = "\n".join(lines)
         if not unified:
             return None, [], False
         try:
             file_variants = self._text_variants(unified)
         except ScanConfigError as exc:
             return f"decode failed ({exc}); failing closed", [], False
+        scoped_identity = identity_scope is not None and not identity_scope.all_content
         triggered: list[tuple[str, Callable[..., list[str]]]] = []
         executed: set[str] = set()
         for rule_id, _mode, detector_fn in self.active_detectors:
+            if rule_id == IDENTITY_RULE_ID and scoped_identity and path not in identity_scope.added_lines:
+                executed.add(rule_id)
+                continue
             det_hits, err = self._run_detector_checked(rule_id, detector_fn, file_variants, path=path)
             if err is not None:
                 return err, [], False
             executed.add(rule_id)
             if det_hits:
-                if len(det_hits) > MAX_FINDINGS:
+                if len(det_hits) > MAX_FINDINGS and not (rule_id == IDENTITY_RULE_ID and scoped_identity):
                     return None, [], True
                 triggered.append((rule_id, detector_fn))
         expected = {rule_id for rule_id, _mode, _fn in self.active_detectors}
@@ -2075,7 +2097,6 @@ class Scanner:
             return None, [], False
 
         raw_hits: list[tuple[int, str, str, bool]] = []
-        lines = unified.split("\n")
         phone_triggered = any(rule_id == "phone" for rule_id, _ in triggered)
         wrap_triggered = [
             (rule_id, fn)
@@ -2092,6 +2113,12 @@ class Scanner:
             except ScanConfigError as exc:
                 return f"decode failed ({exc}); failing closed", [], False
             for rule_id, detector_fn in triggered:
+                if (
+                    rule_id == IDENTITY_RULE_ID
+                    and scoped_identity
+                    and not identity_scope.includes_line(path, number)
+                ):
+                    continue
                 det_hits, err = self._run_detector_checked(rule_id, detector_fn, line_variants, path=path)
                 if err is not None:
                     return err, [], False
@@ -2148,12 +2175,23 @@ class Scanner:
                 if not cur_line or not nxt_line:
                     continue
                 number = idx + 1
+                pair_rules = [
+                    (rule_id, fn)
+                    for rule_id, fn in wrap_triggered
+                    if not (
+                        rule_id == IDENTITY_RULE_ID
+                        and scoped_identity
+                        and not identity_scope.includes_line(path, number, wrapped_next_line=True)
+                    )
+                ]
+                if not pair_rules:
+                    continue
                 pair_text = cur_line[-WRAP_WINDOW_CHARS:] + "\n" + nxt_line[:WRAP_WINDOW_CHARS]
                 try:
                     pair_variants = _line_variants(pair_text)
                 except ScanConfigError as exc:
                     return f"decode failed ({exc}); failing closed", [], False
-                for rule_id, detector_fn in wrap_triggered:
+                for rule_id, detector_fn in pair_rules:
                     det_hits, err = self._run_detector_checked(rule_id, detector_fn, pair_variants, path=path)
                     if err is not None:
                         return err, [], False
@@ -2198,9 +2236,13 @@ class Scanner:
             for rule_id, _mode, fn in self.active_detectors
             if rule_id in (IDENTITY_RULE_ID, KEYED_LIST_RULE_ID)
         ]
+        is_synthetic_ref = (
+            (source.path.startswith("commit:") or source.path.startswith("tag:"))
+            and source.path.endswith(":message")
+        )
         shown = (
             redacted_path_id(source.path)
-            if (path_hits or path_errors)
+            if (path_hits or path_errors or (self.redact_all_paths and not is_synthetic_ref))
             else display_path(source.path, extra_detectors=extra_for_path)
         )
 
@@ -2232,7 +2274,12 @@ class Scanner:
             if source.path in (".github/CODEOWNERS", "tests/public_scan_exemptions.json")
             else ""
         )
-        cache_key = f"{source.object_id}:{path_ctx}" if source.object_id else None
+        scoped_identity = identity_scope is not None and not identity_scope.all_content
+        cache_key = (
+            f"{source.object_id}:{path_ctx}"
+            if (source.object_id and not scoped_identity)
+            else None
+        )
         cached = self.object_findings.get(cache_key) if cache_key else None
         if cached is None:
             try:
@@ -2240,7 +2287,11 @@ class Scanner:
             except ScanConfigError as exc:
                 cached = (str(exc), [], False)
             else:
-                cached = self._scan_text_raw(text, path=source.path)
+                cached = self._scan_text_raw(
+                    text,
+                    path=source.path,
+                    identity_scope=identity_scope,
+                )
             if cache_key:
                 self.object_findings[cache_key] = cached
 
@@ -2291,6 +2342,7 @@ def scan_sources(
     keyed_matcher: object | None = None,
     require_identity: bool = False,
     require_keyed: bool = False,
+    redact_all_paths: bool = False,
 ) -> ScanResult:
     """Scan sources; an empty source list or exceeded finding cap fails closed."""
     scanner = Scanner(
@@ -2302,6 +2354,7 @@ def scan_sources(
         keyed_matcher=keyed_matcher,
         require_identity=require_identity,
         require_keyed=require_keyed,
+        redact_all_paths=redact_all_paths,
     )
     failures: list[str] = []
     warnings: list[str] = []
@@ -2348,6 +2401,7 @@ def scan_tracked_files(
     keyed_matcher: object | None = None,
     require_identity: bool = False,
     require_keyed: bool = False,
+    redact_all_paths: bool = False,
 ) -> ScanResult:
     """Scan every tracked worktree file; fail closed on gaps."""
     if not tracked:
@@ -2366,6 +2420,7 @@ def scan_tracked_files(
         keyed_matcher=keyed_matcher,
         require_identity=require_identity,
         require_keyed=require_keyed,
+        redact_all_paths=redact_all_paths,
     )
 
 
@@ -2377,6 +2432,7 @@ def tracked_path_failures(
     *,
     root: Path | None = None,
     extra_detectors: Sequence[tuple[str, Callable[..., list[str]]]] = (),
+    redact_all: bool = False,
 ) -> list[str]:
     """Fail closed on empty listings or tracked private, generated, or retired paths."""
     failures: list[str] = []
@@ -2391,11 +2447,11 @@ def tracked_path_failures(
             or name.startswith("artifacts/")
             or name.startswith(".secrets/")
         ):
-            shown = display_path(name, extra_detectors=extra_detectors)
+            shown = display_path(name, extra_detectors=extra_detectors, redact_all=redact_all)
             failures.append(f"private/generated path is tracked: {shown}")
         if name.startswith("skills/setup-agent-dev-machine/"):
             if root is None or (root / name).exists():
-                shown = display_path(name, extra_detectors=extra_detectors)
+                shown = display_path(name, extra_detectors=extra_detectors, redact_all=redact_all)
                 failures.append(f"retired skill path is tracked: {shown}")
     return failures
 
@@ -2406,6 +2462,7 @@ def deterministic_failures(
     require_license: bool,
     tracked: Iterable[str] | None,
     extra_detectors: Sequence[tuple[str, Callable[..., list[str]]]] = (),
+    redact_all: bool = False,
 ) -> list[str]:
     """Evaluate repository metadata without performing network operations."""
     failures: list[str] = []
@@ -2475,7 +2532,14 @@ def deterministic_failures(
         if any(fragment not in dependabot_text for fragment in DEPENDABOT_COMMIT_POLICY):
             failures.append("Dependabot must emit conventional build(scope) commit subjects")
 
-    failures.extend(tracked_path_failures(tracked, root=root, extra_detectors=extra_detectors))
+    failures.extend(
+        tracked_path_failures(
+            tracked,
+            root=root,
+            extra_detectors=extra_detectors,
+            redact_all=redact_all,
+        )
+    )
     return failures
 
 
@@ -2501,6 +2565,7 @@ def _print_exemptions(
     applied: frozenset[tuple[str, str, str]],
     *,
     extra_detectors: Sequence[tuple[str, Callable[..., list[str]]]] = (),
+    redact_all: bool = False,
 ) -> None:
     if not exemptions:
         print("Configured exemptions: none")
@@ -2512,13 +2577,13 @@ def _print_exemptions(
                 status = "applied" if item.record.key in applied else "unused"
             else:
                 status = item.status
-            shown = display_path(item.path, extra_detectors=extra_detectors)
+            shown = display_path(item.path, extra_detectors=extra_detectors, redact_all=redact_all)
             print(
                 f"- [{status}] {shown} rule={item.rule} digest={item.digest_prefix} expires={item.expires}"
             )
         else:
             status = "applied" if item.key in applied else "unused"
-            shown = display_path(item.path, extra_detectors=extra_detectors)
+            shown = display_path(item.path, extra_detectors=extra_detectors, redact_all=redact_all)
             print(
                 f"- [{status}] {shown} rule={item.rule} digest={item.digest[:12]} expires={item.expires}"
             )
@@ -2536,11 +2601,17 @@ def _report(
     emit_identity_verified_marker: bool = False,
     notes: Sequence[str] = (),
     extra_detectors: Sequence[tuple[str, Callable[..., list[str]]]] = (),
+    redact_all_paths: bool = False,
 ) -> int:
     for note in notes:
         print(note)
     _print_non_default_modes(modes)
-    _print_exemptions(exemptions, applied_exemptions, extra_detectors=extra_detectors)
+    _print_exemptions(
+        exemptions,
+        applied_exemptions,
+        extra_detectors=extra_detectors,
+        redact_all=redact_all_paths,
+    )
     if warnings:
         print("Public-safety scan warnings:")
         for warning in warnings:
@@ -2686,6 +2757,7 @@ def _scan_commit_trees(
     require_keyed: bool = False,
     scope_identity_to_commit_diff: bool = False,
     extra_detectors: Sequence[tuple[str, Callable[..., list[str]]]] = (),
+    redact_all_paths: bool = False,
 ) -> tuple[list[str], list[str], frozenset[tuple[str, str, str]]]:
     """Scan commits (trees and optionally commit messages) plus annotated tag messages."""
     failures: list[str] = []
@@ -2704,6 +2776,7 @@ def _scan_commit_trees(
             keyed_matcher=keyed_matcher,
             require_identity=require_identity,
             require_keyed=require_keyed,
+            redact_all_paths=redact_all_paths,
         )
         if modes is not None
         else None
@@ -2734,7 +2807,11 @@ def _scan_commit_trees(
         except ScanConfigError as exc:
             failures.append(f"tree listing failed: {exc}")
             continue
-        path_issues = tracked_path_failures(tree_paths, extra_detectors=extra_detectors)
+        path_issues = tracked_path_failures(
+            tree_paths,
+            extra_detectors=extra_detectors,
+            redact_all=redact_all_paths,
+        )
         if multi:
             failures.extend(f"{item} (commit {commit[:12]})" for item in path_issues)
         else:
@@ -2929,11 +3006,16 @@ def _run(args: argparse.Namespace) -> int:
         tracked_for_key, _ = tracked_files(root)
         keyed_matcher = resolve_keyed_matcher(tracked_for_key)
         extra_detectors = _build_extra_detectors(identity_matcher, keyed_matcher)
+        redact_all_paths = bool(
+            (modes is not None and modes[IDENTITY_RULE_ID] != "off" and identity_matcher is None)
+            or (modes is not None and modes[KEYED_LIST_RULE_ID] != "off" and keyed_matcher is None)
+        )
 
         try:
             exemptions, exemption_inventory, exemption_errors = load_exemptions_inventory(
                 exemptions_path,
                 extra_detectors=extra_detectors,
+                redact_all=redact_all_paths,
             )
         except ScanConfigError as exc:
             failures.append(str(exc))
@@ -2968,6 +3050,7 @@ def _run(args: argparse.Namespace) -> int:
                 require_keyed=req_keyed,
                 scope_identity_to_commit_diff=(effective_identity_source == "ci" and args.range is not None),
                 extra_detectors=extra_detectors,
+                redact_all_paths=redact_all_paths,
             )
             failures.extend(tree_failures)
             warnings.extend(tree_warnings)
@@ -2989,6 +3072,7 @@ def _run(args: argparse.Namespace) -> int:
             ),
             notes=notes,
             extra_detectors=extra_detectors,
+            redact_all_paths=redact_all_paths,
         )
 
     tracked, git_error = tracked_files(root)
@@ -3010,11 +3094,16 @@ def _run(args: argparse.Namespace) -> int:
 
     keyed_matcher = resolve_keyed_matcher(tracked)
     extra_detectors = _build_extra_detectors(identity_matcher, keyed_matcher)
+    redact_all_paths = bool(
+        (modes is not None and modes[IDENTITY_RULE_ID] != "off" and identity_matcher is None)
+        or (modes is not None and modes[KEYED_LIST_RULE_ID] != "off" and keyed_matcher is None)
+    )
 
     try:
         exemptions, exemption_inventory, exemption_errors = load_exemptions_inventory(
             exemptions_path,
             extra_detectors=extra_detectors,
+            redact_all=redact_all_paths,
         )
     except ScanConfigError as exc:
         failures.append(str(exc))
@@ -3027,6 +3116,7 @@ def _run(args: argparse.Namespace) -> int:
             require_license=not args.allow_missing_license,
             tracked=tracked,
             extra_detectors=extra_detectors,
+            redact_all=redact_all_paths,
         )
     )
     if git_error:
@@ -3052,6 +3142,7 @@ def _run(args: argparse.Namespace) -> int:
                 keyed_matcher=keyed_matcher,
                 require_identity=req_ident,
                 require_keyed=req_keyed,
+                redact_all_paths=redact_all_paths,
             )
         except ScanConfigError as exc:
             failures.append(f"worktree scan failed: {exc}")
@@ -3078,6 +3169,7 @@ def _run(args: argparse.Namespace) -> int:
         ),
         notes=notes,
         extra_detectors=extra_detectors,
+        redact_all_paths=redact_all_paths,
     )
 
 

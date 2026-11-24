@@ -45,6 +45,7 @@ COMPOUND_TOKEN_RE = re.compile(r"[^\W_][\w.-]*", re.UNICODE)
 WORD_RUN_RE = re.compile(r"[^\W_]+", re.UNICODE)
 CAMEL_RUN_RE = re.compile(r"[A-Z]+|[a-z]+|[0-9]+|[^\WA-Za-z0-9_]+", re.UNICODE)
 WHITESPACE_RE = re.compile(r"\s+")
+DELIM_SPLIT_RE = re.compile(r"[\s\[\]()<>\"'=&,;{}]+")
 PUNCTUATION_RE = re.compile(r"[^\w\s]|_", re.UNICODE)
 OUTER_WRAPPER_CHARS = "()[]{}<>\"'`,;:.!?*#~|\\"
 MAX_DOT_SLICE_LABELS = 6
@@ -379,6 +380,58 @@ def extract_candidates_from_normalized(text: str) -> set[str]:
 
     _add_phrase_windows(candidates, raw_stripped)
     _add_phrase_windows(candidates, cleaned_chunks)
+
+    # Linear delimiter pass catches Markdown links, mailto:, JSON values, query params,
+    # label:value tokens, and URLs without quadratic regex backtracking.
+    if not (len(text) > MAX_CANDIDATE_CHARS and text.isalnum()):
+        for raw_seg in DELIM_SPLIT_RE.split(text):
+            seg = raw_seg.strip(OUTER_WRAPPER_CHARS)
+            if not seg:
+                continue
+            if len(seg) <= MAX_CANDIDATE_CHARS:
+                _add_candidate(candidates, seg)
+            lower_seg = seg.casefold()
+            if lower_seg.startswith("mailto:"):
+                addr = seg[7:].strip(OUTER_WRAPPER_CHARS)
+                if addr:
+                    _add_candidate(candidates, addr)
+            elif "://" in seg:
+                _, _, after_scheme = seg.partition("://")
+                no_frag = after_scheme.split("#", 1)[0]
+                main_part, _, query_part = no_frag.partition("?")
+                authority, sep_slash, url_path = main_part.partition("/")
+                if authority:
+                    _add_candidate(candidates, authority)
+                    host_port = authority.rsplit("@", 1)[-1]
+                    if host_port:
+                        _add_candidate(candidates, host_port)
+                        host_only = host_port.split(":", 1)[0]
+                        if host_only:
+                            _add_candidate(candidates, host_only)
+                if sep_slash and url_path:
+                    cleaned_path = url_path.strip("/")
+                    if cleaned_path:
+                        _add_candidate(candidates, cleaned_path)
+                        for path_part in cleaned_path.split("/"):
+                            if path_part:
+                                _add_candidate(candidates, path_part)
+                if query_part:
+                    for q_item in query_part.split("&"):
+                        if "=" in q_item:
+                            _, _, q_val = q_item.partition("=")
+                            if q_val:
+                                _add_candidate(candidates, q_val.strip(OUTER_WRAPPER_CHARS))
+                        elif q_item:
+                            _add_candidate(candidates, q_item.strip(OUTER_WRAPPER_CHARS))
+            elif ":" in seg:
+                _, _, rhs = seg.partition(":")
+                rhs_clean = rhs.strip(OUTER_WRAPPER_CHARS)
+                if rhs_clean:
+                    _add_candidate(candidates, rhs_clean)
+                    if rhs_clean.casefold().startswith("mailto:"):
+                        addr = rhs_clean[7:].strip(OUTER_WRAPPER_CHARS)
+                        if addr:
+                            _add_candidate(candidates, addr)
 
     for match in COMPOUND_TOKEN_RE.finditer(text):
         raw_token = match.group(0).rstrip("._-")
