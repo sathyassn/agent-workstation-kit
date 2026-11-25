@@ -260,7 +260,7 @@ func checkOrder(t *testing.T, where string, got, sent []contract.Event) {
 // drainUI reads ui until it has seen every non-progress event of sent and
 // progress counts that add up to the progress events in sent, checks the
 // order with checkOrder, and returns what the UI got. It fails on a stall.
-func drainUI(t *testing.T, ui <-chan contract.Event, sent []contract.Event) []contract.Event {
+func drainUI(t *testing.T, s *events.Sink, ui <-chan contract.Event, sent []contract.Event) []contract.Event {
 	t.Helper()
 	var wantNonProgress int
 	var wantProgress uint64
@@ -274,21 +274,45 @@ func drainUI(t *testing.T, ui <-chan contract.Event, sent []contract.Event) []co
 	var got []contract.Event
 	var gotProgress uint64
 	gotNonProgress := 0
-	deadline := time.After(waitLong)
+	stall := time.NewTimer(waitLong)
+	defer stall.Stop()
+	poll := time.NewTicker(waitShort)
+	defer poll.Stop()
 	for gotNonProgress < wantNonProgress || gotProgress < wantProgress {
+		if len(got) == len(sent) {
+			t.Fatalf("UI received %d deliveries without accounting for all sent events", len(sent))
+		}
 		select {
-		case e := <-ui:
+		case e, ok := <-ui:
+			if !ok {
+				t.Fatal("UI channel closed before all sent events arrived")
+			}
 			got = append(got, e)
 			switch e.Kind {
 			case contract.EventProgress, contract.EventCoalesced:
-				gotProgress += count(t, e)
+				n := count(t, e)
+				if n > wantProgress-gotProgress {
+					t.Fatalf("UI progress count exceeds %d at seq %d", wantProgress, e.Seq)
+				}
+				gotProgress += n
 			default:
 				gotNonProgress++
+				if gotNonProgress > wantNonProgress {
+					t.Fatalf("UI non-progress count exceeds %d at seq %d", wantNonProgress, e.Seq)
+				}
 			}
-		case <-deadline:
-			t.Fatalf("UI got %d of %d non-progress events and %d of %d progress events",
+			stall.Reset(waitLong)
+		case <-poll.C:
+			if err := s.Err(); err != nil {
+				t.Fatalf("UI drain: %v", err)
+			}
+		case <-stall.C:
+			t.Fatalf("UI stalled after %d of %d non-progress events and %d of %d progress events",
 				gotNonProgress, wantNonProgress, gotProgress, wantProgress)
 		}
+	}
+	if err := s.Err(); err != nil {
+		t.Fatalf("UI drain: %v", err)
 	}
 	checkOrder(t, "UI", got, sent)
 	return got
@@ -359,21 +383,19 @@ func TestDeliverNeverBlocksOnStalledUI(t *testing.T) {
 	var sent []contract.Event
 	var want []uint64 // non-progress sequence numbers
 	var wantProgress uint64
-	within(t, "Deliver to a stalled UI", func() {
-		for seq := uint64(1); seq <= total; seq++ {
-			kind := contract.EventProgress
-			if seq%5 != 0 {
-				wantProgress++
-			} else {
-				kind = contract.EventOutput
-				want = append(want, seq)
-			}
-			e := event(seq, kind)
-			sent = append(sent, e)
-			s.Deliver(e)
+	for seq := uint64(1); seq <= total; seq++ {
+		kind := contract.EventProgress
+		if seq%5 != 0 {
+			wantProgress++
+		} else {
+			kind = contract.EventOutput
+			want = append(want, seq)
 		}
-	})
-	drainUI(t, ui, sent)
+		e := event(seq, kind)
+		sent = append(sent, e)
+		within(t, "Deliver to a stalled UI", func() { s.Deliver(e) })
+	}
+	drainUI(t, s, ui, sent)
 	if err := s.Close(context.Background()); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -478,7 +500,7 @@ func TestDeliverBlocksOnlyForNonProgressLogWrite(t *testing.T) {
 	within(t, "non-progress Deliver after the write", func() { <-returned })
 	// The change event must reach the UI before the progress that followed
 	// it, although that progress was delivered during its log write.
-	drainUI(t, ui, sent)
+	drainUI(t, s, ui, sent)
 	within(t, "Close", func() {
 		if err := s.Close(context.Background()); err != nil {
 			t.Errorf("Close: %v", err)
@@ -575,7 +597,7 @@ func TestUISequenceIncreases(t *testing.T) {
 			if concurrent {
 				go func() {
 					defer close(drained)
-					drainUI(t, ui, sent)
+					drainUI(t, s, ui, sent)
 				}()
 			}
 			within(t, "Deliver", func() {
@@ -586,7 +608,7 @@ func TestUISequenceIncreases(t *testing.T) {
 			if concurrent {
 				<-drained
 			} else {
-				drainUI(t, ui, sent)
+				drainUI(t, s, ui, sent)
 			}
 		})
 	}
@@ -746,17 +768,19 @@ func TestConcurrentDeliverKeepsLogOrder(t *testing.T) {
 		s.Deliver(sent[0])
 	}()
 	<-runLog.entered // event 1's write is in progress
+	sequencing := make(chan struct{})
 	go func() {
 		defer wg.Done()
-		s.Deliver(sent[1])
+		s.DeliverSequenced(sent[1], func(*contract.Event) { close(sequencing) })
 	}()
-	// Let event 2's Deliver start and wait behind event 1's write.
-	time.Sleep(50 * time.Millisecond)
+	// Event 2 holds the sink lock at this point. The next Deliver can
+	// acquire it only after event 2 registers and waits for its write turn.
+	within(t, "event 2 to begin sequencing", func() { <-sequencing })
 	within(t, "progress Deliver during two log writes", func() { s.Deliver(sent[2]) })
 	runLog.letThrough()
 	within(t, "non-progress Deliver", wg.Wait)
 
-	drainUI(t, ui, sent)
+	drainUI(t, s, ui, sent)
 	within(t, "Close", func() {
 		if err := s.Close(context.Background()); err != nil {
 			t.Errorf("Close: %v", err)
@@ -790,7 +814,7 @@ func TestCloseFlushesWaitingUI(t *testing.T) {
 
 	closed := make(chan error, 1)
 	go func() { closed <- s.Close(context.Background()) }()
-	drainUI(t, ui, sent)
+	drainUI(t, s, ui, sent)
 	select {
 	case err := <-closed:
 		if err != nil {
@@ -829,7 +853,7 @@ func TestProgressDuringLogWriteReachesUI(t *testing.T) {
 	within(t, "progress Deliver during the log write", func() { s.Deliver(sent[3]) })
 	runLog.letThrough()
 
-	drainUI(t, ui, sent)
+	drainUI(t, s, ui, sent)
 	within(t, "non-progress Deliver", func() { <-done })
 	if err := s.Err(); err != nil {
 		t.Fatalf("Err: %v", err)
@@ -875,7 +899,7 @@ func TestStalledUIBoundsWaitingProgress(t *testing.T) { //nolint:paralleltest //
 	// Every skipped marker is a valid run event.
 	schema := compileEventSchema(t)
 	markers := 0
-	for _, e := range drainUI(t, ui, sent) {
+	for _, e := range drainUI(t, s, ui, sent) {
 		if !isSkipped(e) {
 			continue
 		}
@@ -934,7 +958,7 @@ func TestUnitProgressCountIsNotASkip(t *testing.T) {
 		for _, e := range sent {
 			s.Deliver(e)
 		}
-		got := drainUI(t, ui, sent)
+		got := drainUI(t, s, ui, sent)
 		for i, e := range got {
 			if !sameEvent(e, sent[i]) {
 				t.Fatalf("UI event %d = %+v, want %+v unchanged", i, e, sent[i])
@@ -959,7 +983,7 @@ func TestUnitProgressCountIsNotASkip(t *testing.T) {
 			s.Deliver(e)
 		}
 		markers := 0
-		for _, e := range drainUI(t, ui, sent) {
+		for _, e := range drainUI(t, s, ui, sent) {
 			switch {
 			case e.Kind == contract.EventProgress:
 				if want, ok := given[e.Seq]; !ok || !sameEvent(e, want) {
