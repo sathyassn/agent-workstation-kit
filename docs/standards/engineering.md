@@ -31,6 +31,12 @@ practice, relayed by the supervisor and approved as a process change.
 - Small interfaces at the consumer; no package-level mutable state;
   `context.Context` through every long call.
 - `golangci-lint` with `.golangci.yml`, and `govulncheck`, in CI.
+- Go CI runs the engine race tests and lints the Go packages with the
+  `faultinject` tag on Linux and macOS. `make go-check` runs the tagged race
+  tests locally, and the full CodeFlow gate also runs tagged lint.
+- Go CI and `make go-check` cross-build the release binaries with cgo
+  disabled for Linux amd64, Linux arm64 and macOS arm64. They check the
+  symbol table and build settings of each binary for fault injection.
 - Units never print or call `os.Exit`; they emit events through
   `engine.Tx`. Only `cmd/` writes to the terminal or maps errors to exit
   codes.

@@ -61,7 +61,7 @@
       "runner": "custom",
       "modes": {
         "full": {
-          "command": "go tool golangci-lint run ./..."
+          "command": "go tool golangci-lint run ./... && go tool golangci-lint run --build-tags faultinject ./..."
         }
       }
     },
