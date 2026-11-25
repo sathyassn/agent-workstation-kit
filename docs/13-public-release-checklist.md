@@ -322,7 +322,8 @@ Hash-bound binary exceptions live in `tests/public_scan_binary_exceptions.json`:
   aggregator job publishes the exact GitHub check context
   `public-scan / result` (via `name: public-scan / result`) and fails closed
   unless both Linux and macOS succeeded and reported both verification outputs.
-- Required jobs in `.github/workflows/ci.yml` (`repository-validation`,
+- For pull requests, `.github/workflows/ci.yml` runs only when the target
+  branch is `main`. Its required jobs (`repository-validation`,
   `secret-scan`, `macos-host-lock`) run no head-controlled privacy or
   public-release scan steps (`repository-validation` runs `make repo-ci-check`,
   which runs only non-privacy unit tests via `unit-non-privacy-check` and

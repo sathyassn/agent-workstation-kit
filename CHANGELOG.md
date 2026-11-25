@@ -37,6 +37,7 @@ step is in [docs/maintenance/releasing.md](docs/maintenance/releasing.md).
 
 ### Changed
 
+- Run the repository and Go CI workflows only for pull requests targeting `main`, pushes to `main`, and manual dispatches.
 - Versions: the Python `0.2.0-rc` line is frozen and never released as a final 0.2.0; the Go `wskit` releases as `1.0.0-alpha.N`, `-beta.N`, `-rc.N`, then `1.0.0` (`docs/maintenance/releasing.md`).
 - `.codeflow/policy.json` sets `git.security_review` and `git.dep_audit` to `warn`, as CodeFlow 3.1.1 writes them for the full tier, so the CI security review stops failing closed on a missing key.
 - The branch policy allows the `codeflow/` prefix, so CodeFlow can publish its ID registry branch (`codeflow/registry`).

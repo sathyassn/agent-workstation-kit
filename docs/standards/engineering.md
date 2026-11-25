@@ -105,6 +105,9 @@ practice, relayed by the supervisor and approved as a process change.
 
 ## CI authority and scaffold updates
 
+- `ci.yml` and `go.yml` run on pull requests targeting `main`, pushes to
+  `main`, and manual dispatches. CodeFlow and the public-safety scan also
+  run for pull requests targeting integration branches.
 - CodeFlow 3.1.1's workflows use no secret: its policy workflow runs on
   `pull_request_target` and checks out only the base commit, so a pull
   request cannot change the job that judges it. When a later CodeFlow
