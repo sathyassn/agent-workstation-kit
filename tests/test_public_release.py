@@ -323,22 +323,12 @@ class DeterministicDetectorTests(unittest.TestCase):
             )
             self.assertEqual(["docs/sample.txt:1: matched rule 'private-dns'"], res.failures)
 
-    def test_private_dns_allows_go_and_code_member_local_access(self) -> None:
+    def test_private_dns_allows_only_the_exact_go_local_time_selector(self) -> None:
+        selector = join("time", ".Local")
         allowed_cases = (
-            join("time", ".Local"),
-            "t := time.Date(2026, 1, 1, 0, 0, 0, 0, " + join("time", ".Local") + ")",
-            join("now", ".Local()"),
-            join("cfg", ".local("),
-            join("foo", ".local(x)"),
-            join("foo", ".Local", ".String()"),
-            join("s", ".Local", ".String()"),
-            join("x", ".Local:"),
-            "case " + join("x", ".Local:"),
-            join("x", ".Local"),
-            join("a.b", ".Local"),
-            join("my_cfg", ".Local"),
-            join("my_cfg", ".local(arg)"),
-            join("v2", ".Local"),
+            selector,
+            "t := time.Date(2026, 1, 1, 0, 0, 0, 0, " + selector + ")",
+            "case " + selector + ":",
         )
         for sample in allowed_cases:
             with self.subTest(allowed=sample):
@@ -347,61 +337,57 @@ class DeterministicDetectorTests(unittest.TestCase):
                 )
                 self.assertEqual([], res.failures, (sample, res.failures))
 
-        # Allowing a Go member access on a line must never mask a real private DNS name on the same line.
-        mixed = "loc := " + join("time", ".Local") + " // host " + join("my-mac", ".local") + "\n"
-        mixed_res = public_release.scan_sources(
-            [public_release.SourceFile("internal/sample.go", mixed.encode("utf-8"))]
+        # The exact value must not cover longer names or another name on the line.
+        near_misses = (
+            join("x.", "time", ".Local"),
+            join("my-", "time", ".Local"),
+            join("time", "box", ".Local"),
+            join("time", ".Local", "host", ".internal"),
+            selector + " // host " + join("my-mac", ".local"),
         )
-        self.assertEqual(["internal/sample.go:1: matched rule 'private-dns'"], mixed_res.failures)
-
-    def test_private_dns_still_blocks_real_local_internal_and_ts_net_forms(self) -> None:
-        blocked_cases = (
-            join("my-mac", ".local"),
-            join("MY-MAC", ".LOCAL"),
-            join("my-mac", ".local", ":8080"),
-            join("mac-mini", ".local", ":22"),
-            join("https://", "box", ".local", "/api"),
-            join("https://", "printer", ".local", "/status"),
-            join("ssh admin@", "box", ".local"),
-            join("box", ".local", "."),
-            join("hostname", ".local"),
-            join("workstation", ".local"),
-            join("MyMac", ".local"),
-            join("BOX", ".LOCAL"),
-            join("my-mac", ".Local"),
-            join("https://", "Box", ".Local", "/api"),
-            join("ssh admin@", "Box", ".Local"),
-            join("box", ".Local", ":8080"),
-            join("box", ".Local", "."),
-            join("box", ".lOcAl"),
-            join("BOX", ".LOCAL", "(note)"),
-            join("my-mac", ".local", "(note)"),
-            join("https://", "box", ".local", "(x)"),
-            join("01", ".Local"),
-            # Homoglyph, lookalike, and escape-encoded forms must remain blocked.
-            join("mybox", "\u2024", "local"),
-            join("myb", "\u03bf", "x", ".local"),
-            join("mybox", ".l", "\u03bf", "cal"),
-            join("mybox", "%2e", "local"),
-            join("mybox", "\\u002e", "local"),
-            join("mybox", "\u2024", "ts", "\u3002", "net"),
-            join("myb", "\u03bf", "x", ".ts", ".net"),
-            join("mybox", "\u2024", "internal"),
-            join("myb", "\u03bf", "x", ".internal"),
-            # .internal and .ts.net detection must remain unchanged even with call/Title-case syntax.
-            join("foo", ".Internal"),
-            join("foo", ".internal(x)"),
-            join("foo", ".Ts.Net"),
-            join("foo", ".ts.net(x)"),
-        )
-        for sample in blocked_cases:
-            with self.subTest(blocked=sample):
+        for sample in near_misses:
+            with self.subTest(near_miss=sample):
                 res = public_release.scan_sources(
-                    [public_release.SourceFile("docs/sample.txt", (sample + "\n").encode("utf-8"))]
+                    [public_release.SourceFile("internal/sample.go", (sample + "\n").encode("utf-8"))]
+                )
+                self.assertEqual(["internal/sample.go:1: matched rule 'private-dns'"], res.failures)
+
+    def test_private_dns_blocks_every_other_local_spelling(self) -> None:
+        # Letter case, punctuation, code shape and file type never exempt a name.
+        mixed = join("labbox", ".Local")
+        lower = join("labbox", ".local")
+        blocked_cases = (
+            ("docs/sample.md", "Connect to " + mixed),
+            ("config/sample.toml", 'host = "' + mixed + '"'),
+            ("config/sample.yml", "host: " + mixed),
+            ("fixtures/sample.log", "resolver: " + lower + "(cached)"),
+            ("docs/sample.txt", "//" + mixed + "/a"),
+            ("docs/sample.txt", "scp " + mixed + ":/tmp/file ./"),
+            ("docs/sample.txt", "https://" + mixed + "/a"),
+            ("docs/sample.txt", "ssh admin@" + mixed),
+            ("docs/sample.txt", mixed + ":443"),
+            ("docs/sample.txt", mixed + "."),
+            ("docs/sample.txt", join("alpha.", "beta", ".Local")),
+            ("docs/sample.txt", join("labbox", "%2e", "Local")),
+            ("docs/sample.txt", join("labbox", "\\u002e", "Local")),
+            ("docs/sample.txt", join("labbox", "\u2024", "Local")),
+            ("docs/sample.txt", join("labbox", ".", "\uff2c", "ocal")),
+            ("internal/sample.go", "// connect to " + mixed),
+            ("internal/sample.go", 'h := "' + mixed + '"'),
+            ("internal/sample.go", "t := now" + join(".Local", "()")),
+            ("internal/sample.go", "v := cfg" + join(".local", "(x)")),
+            ("commit:fixture:message", "fix: reconnect to " + mixed),
+            ("docs/sample.txt", join("foo", ".internal", "(x)")),
+            ("docs/sample.txt", join("foo", ".Ts", ".Net")),
+        )
+        for path, sample in blocked_cases:
+            with self.subTest(path=path, blocked=sample):
+                res = public_release.scan_sources(
+                    [public_release.SourceFile(path, (sample + "\n").encode("utf-8"))]
                 )
                 self.assertTrue(
                     any("matched rule 'private-dns'" in f for f in res.failures),
-                    (sample, res.failures),
+                    (path, sample, res.failures),
                 )
 
     def test_cloud_id_detector(self) -> None:

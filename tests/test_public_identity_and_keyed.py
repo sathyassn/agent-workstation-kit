@@ -20,11 +20,11 @@ import stat
 import subprocess
 import sys
 import tempfile
-import time
 import unittest
-from collections.abc import Callable
 from pathlib import Path
 from unittest import mock
+
+import scan_deadline
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -46,57 +46,6 @@ scan = _load_module("check_public_release_tsk008", "tests/check_public_release.p
 
 def join(*parts: str) -> str:
     return "".join(parts)
-
-
-def assert_linear_scaling(
-    test_case: unittest.TestCase,
-    label: str,
-    run_n: Callable[[], object],
-    run_4n: Callable[[], object],
-    *,
-    max_ms: float = 1000.0,
-    fast_floor_ms: float = 50.0,
-    max_ratio: float = 8.0,
-    rounds: int = 3,
-) -> tuple[float, float]:
-    """Assert O(n) scaling (N vs 4N) with a generous absolute ceiling.
-
-    Warms up once and interleaves N and 4N over `rounds` runs (taking medians)
-    so host load or single scheduling blips do not cause false failures while
-    quadratic/ReDoS blowups fail either the ratio bound or the 1s ceiling.
-    """
-    run_n()
-    run_4n()
-    samples_n: list[float] = []
-    samples_4n: list[float] = []
-    for _ in range(rounds):
-        t0 = time.perf_counter()
-        run_n()
-        samples_n.append((time.perf_counter() - t0) * 1000.0)
-
-        t1 = time.perf_counter()
-        run_4n()
-        samples_4n.append((time.perf_counter() - t1) * 1000.0)
-
-    samples_n.sort()
-    samples_4n.sort()
-    t_n = samples_n[len(samples_n) // 2]
-    t_4n = samples_4n[len(samples_4n) // 2]
-
-    test_case.assertLess(
-        t_4n,
-        max_ms,
-        f"{label} took {t_4n:.1f}ms at 4N (ceiling {max_ms:.0f}ms; N took {t_n:.1f}ms)",
-    )
-    if t_4n >= fast_floor_ms:
-        ratio = t_4n / max(t_n, 1.0)
-        test_case.assertLessEqual(
-            ratio,
-            max_ratio,
-            f"{label} scaled super-linearly: 4N={t_4n:.1f}ms vs N={t_n:.1f}ms "
-            f"(ratio {ratio:.2f}x > {max_ratio:.1f}x)",
-        )
-    return t_n, t_4n
 
 
 def git(
@@ -433,19 +382,15 @@ class LocalIdentityCollectionAndMatchingTests(unittest.TestCase):
         self.assertEqual([], matcher.detect("alice uses host-a and ab with alice@example.com"))
         self.assertEqual([join("realbox", "-42")], matcher.detect("machine=" + join("realbox", "-42")))
 
-        # Linear-time guarantee (no ReDoS): 4x input scales linearly and stays under 1s.
+        # Linear-time guarantee (no ReDoS) on a million characters across 100 tokens.
         many_tokens = frozenset(f"identtoken{i:03d}" for i in range(100))
         big_matcher = ident.IdentityMatcher(many_tokens)
-        line_n = ("identtoken " * 1250) + "clean"
-        line_4n = ("identtoken " * 5000) + "clean"
-
-        def run_n() -> None:
-            self.assertEqual([], big_matcher.detect(line_n))
-
-        def run_4n() -> None:
-            self.assertEqual([], big_matcher.detect(line_4n))
-
-        assert_linear_scaling(self, "IdentityMatcher.detect(100 tokens)", run_n, run_4n)
+        big_line = ("identtoken " * (scan_deadline.LARGE_INPUT // 11)) + "clean"
+        scan_deadline.assert_finishes(
+            self,
+            "IdentityMatcher.detect(100 tokens)",
+            lambda: self.assertEqual([], big_matcher.detect(big_line)),
+        )
 
 
 class LocalIdentityFailClosedTests(unittest.TestCase):
@@ -1670,32 +1615,26 @@ class Round1ReviewRegressionTests(unittest.TestCase):
         )
         self.assertIn(join("tsnode", "-1"), profile_app.tokens)
 
-    def test_m4_linear_time_on_100k_char_adversarial_inputs(self) -> None:
+    def test_m4_linear_time_on_large_adversarial_inputs(self) -> None:
         ident = self._identity_mod()
         keyed = self._keyed_mod()
 
-        # 1) Exemption approval line with 25k vs 100k trailing spaces must scale O(n) and stay < 1s.
-        padded_n = '  "approved_by": "@owner"' + (" " * 25_000) + "x"
-        padded_4n = '  "approved_by": "@owner"' + (" " * 100_000) + "x"
-        assert_linear_scaling(
+        # 1) Exemption approval line with a million trailing spaces.
+        padded_approved = '  "approved_by": "@owner"' + (" " * scan_deadline.LARGE_INPUT) + "x"
+        scan_deadline.assert_finishes(
             self,
             "identity exemption masking (trailing spaces)",
             lambda: ident._mask_public_identifier_contexts(
-                padded_n, path="tests/public_scan_exemptions.json"
-            ),
-            lambda: ident._mask_public_identifier_contexts(
-                padded_4n, path="tests/public_scan_exemptions.json"
+                padded_approved, path="tests/public_scan_exemptions.json"
             ),
         )
 
-        # 2) Long uppercase identifier ending in a digit (25k vs 100k 'A's + '1') must scale O(n) and stay < 1s.
-        long_upper_n = ("A" * 25_000) + "1"
-        long_upper_4n = ("A" * 100_000) + "1"
-        assert_linear_scaling(
+        # 2) Long uppercase identifier ending in a digit.
+        long_upper = ("A" * scan_deadline.LARGE_INPUT) + "1"
+        scan_deadline.assert_finishes(
             self,
             "keyed candidate extraction (upper+digit)",
-            lambda: keyed.extract_candidates_from_normalized(long_upper_n),
-            lambda: keyed.extract_candidates_from_normalized(long_upper_4n),
+            lambda: keyed.extract_candidates_from_normalized(long_upper),
         )
 
     def test_m5_keyed_list_codeowners_off_mode_validation_and_prose_matching(self) -> None:
