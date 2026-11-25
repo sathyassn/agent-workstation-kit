@@ -592,6 +592,7 @@ def scan_repository_files(root: Path, *, include_privacy: bool = True) -> list[s
 
 CODEOWNERS_REQUIRED_PATHS = (
     "tests/check_public_release.py",
+    "tests/check_go_release.py",
     "tests/public_scan_identity.py",
     "tests/public_scan_keyed.py",
     "tests/public_scan_keyed_list.json",
@@ -622,7 +623,7 @@ def _codeowners_match(pattern: str, rel_path: str) -> bool:
 
 
 def codeowners_issues(root: Path) -> list[str]:
-    """Verify .github/CODEOWNERS covers every scan, config, workflow, and CODEOWNERS path."""
+    """Verify .github/CODEOWNERS covers every required path."""
     codeowners = root / ".github/CODEOWNERS"
     if not codeowners.is_file():
         return ["missing .github/CODEOWNERS covering public-safety scan and workflow files"]

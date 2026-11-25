@@ -24,7 +24,7 @@ public-draft-check:
 go-check:
 	go test ./...
 	go test -race -tags faultinject ./internal/engine/...
-	$(PYTHON) tests/check_go_release.py
+	$(PYTHON) -I tests/check_go_release.py
 
 python-check:
 	@$(PYTHON) -m py_compile scripts/*.py tests/*.py
