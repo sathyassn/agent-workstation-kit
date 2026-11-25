@@ -381,15 +381,10 @@ func TestDeliverNeverBlocksOnStalledUI(t *testing.T) {
 	s := newSink(t, events.Options{Log: log, OpenLog: open, UI: ui, PendingProgress: 8})
 
 	var sent []contract.Event
-	var want []uint64 // non-progress sequence numbers
-	var wantProgress uint64
 	for seq := uint64(1); seq <= total; seq++ {
 		kind := contract.EventProgress
-		if seq%5 != 0 {
-			wantProgress++
-		} else {
+		if seq%5 == 0 {
 			kind = contract.EventOutput
-			want = append(want, seq)
 		}
 		e := event(seq, kind)
 		sent = append(sent, e)
