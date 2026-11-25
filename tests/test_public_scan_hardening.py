@@ -1775,9 +1775,12 @@ class Round4ReviewRegressionTests(unittest.TestCase):
                 calls += 1
                 return real_re.finditer(text, *args)
 
-        with mock.patch.object(scan, "PHONE_KEY_RE", CountingPattern()):
-            self.assertEqual([], scan.detect_phone(PHONE_LONG_IDENTIFIER))
-        self.assertEqual(1, calls, "timing input must actually reach PHONE_KEY_RE.finditer")
+        def reaches_regex_once() -> None:
+            with mock.patch.object(scan, "PHONE_KEY_RE", CountingPattern()):
+                self.assertEqual([], scan.detect_phone(PHONE_LONG_IDENTIFIER))
+            self.assertEqual(1, calls, "timing input must actually reach PHONE_KEY_RE.finditer")
+
+        scan_deadline.assert_finishes(self, "detect_phone(reachability)", reaches_regex_once)
 
     def test_u4_multiple_fetch_urls_scan_full_history(self) -> None:
         leak_email = join("jdoe", "@", "acme-corp", ".com")
