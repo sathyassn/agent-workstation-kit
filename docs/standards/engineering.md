@@ -33,10 +33,11 @@ practice, relayed by the supervisor and approved as a process change.
 - `golangci-lint` with `.golangci.yml`, and `govulncheck`, in CI.
 - Go CI runs the engine race tests and lints the Go packages with the
   `faultinject` tag on Linux and macOS. `make go-check` runs the tagged race
-  tests locally, and the full CodeFlow gate also runs tagged lint.
-- Go CI and `make go-check` cross-build the release binaries with cgo
-  disabled for Linux amd64, Linux arm64 and macOS arm64. They check the
-  symbol table and build settings of each binary for fault injection.
+  tests locally and needs a C compiler for `-race`. The full CodeFlow gate
+  also runs tagged lint.
+- Go CI and `make go-check` build their own binaries for the release targets
+  Linux amd64, Linux arm64 and macOS arm64 with cgo disabled. The check scans
+  each binary's symbols, bytes and build settings for fault injection.
 - Units never print or call `os.Exit`; they emit events through
   `engine.Tx`. Only `cmd/` writes to the terminal or maps errors to exit
   codes.
