@@ -41,7 +41,7 @@ func TestFaultInjectBuildKillsAtNamedPoint(t *testing.T) {
 			t.Fatal("faultinject build has no hook")
 		}
 		fault(PointBackupEntry)
-		if err := os.WriteFile(os.Getenv(markerEnv), nil, 0o600); err != nil {
+		if err := os.WriteFile(os.Getenv(markerEnv), nil, 0o600); err != nil { //nolint:gosec // path set by the parent under t.TempDir
 			t.Fatalf("write marker: %v", err)
 		}
 		fault(PointIntent) // killed here
