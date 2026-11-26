@@ -276,8 +276,6 @@ func drainUI(t *testing.T, s *events.Sink, ui <-chan contract.Event, sent []cont
 	gotNonProgress := 0
 	stall := time.NewTimer(waitLong)
 	defer stall.Stop()
-	poll := time.NewTicker(waitShort)
-	defer poll.Stop()
 	for gotNonProgress < wantNonProgress || gotProgress < wantProgress {
 		if len(got) == len(sent) {
 			t.Fatalf("UI received %d deliveries without accounting for all sent events", len(sent))
@@ -302,20 +300,32 @@ func drainUI(t *testing.T, s *events.Sink, ui <-chan contract.Event, sent []cont
 				}
 			}
 			stall.Reset(waitLong)
-		case <-poll.C:
-			if err := s.Err(); err != nil {
-				t.Fatalf("UI drain: %v", err)
-			}
 		case <-stall.C:
-			t.Fatalf("UI stalled after %d of %d non-progress events and %d of %d progress events",
-				gotNonProgress, wantNonProgress, gotProgress, wantProgress)
+			t.Fatalf("UI stalled after %d of %d non-progress events and %d of %d progress events (sink error: %v)",
+				gotNonProgress, wantNonProgress, gotProgress, wantProgress, boundedErr(s))
 		}
 	}
-	if err := s.Err(); err != nil {
+	if err := boundedErr(s); err != nil {
 		t.Fatalf("UI drain: %v", err)
 	}
 	checkOrder(t, "UI", got, sent)
 	return got
+}
+
+// errSinkLocked reports that Sink.Err did not return within waitShort.
+var errSinkLocked = errors.New("sink Err blocked for 2s: the sink mutex is held")
+
+// boundedErr calls s.Err off the caller's goroutine and gives up after
+// waitShort, so a sink that holds its mutex fails the test instead of hanging it.
+func boundedErr(s *events.Sink) error {
+	errc := make(chan error, 1)
+	go func() { errc <- s.Err() }()
+	select {
+	case err := <-errc:
+		return err
+	case <-time.After(waitShort):
+		return errSinkLocked
+	}
 }
 
 func TestNewRejectsMissingOptions(t *testing.T) {
