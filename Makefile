@@ -24,7 +24,7 @@ public-draft-check:
 go-check:
 	go test ./...
 	go test -race -tags faultinject ./internal/engine/...
-	WSKIT_TEST_RELEASE_BINARIES=1 go test -count=1 -timeout 15m -v -run TestReleaseBinariesHaveNoFaultInjection ./tests/release/
+	WSKIT_TEST_RELEASE_BINARIES=1 go test -count=1 -timeout 15m -v ./tests/release/
 
 python-check:
 	@$(PYTHON) -m py_compile scripts/*.py tests/*.py
