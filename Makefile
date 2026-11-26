@@ -27,12 +27,14 @@ go-check:
 	@$(MAKE) --no-print-directory go-release-check
 
 # The release binary check. It fails when the test is missing, so deleting it
-# cannot leave the gate passing on the helper tests alone.
+# cannot leave the gate passing on the helper tests alone. The explicit -run
+# and -skip override any test filter in GOFLAGS; build flags such as -tags
+# still reach the builds the test inspects.
 RELEASE_TEST := TestReleaseBinariesHaveNoFaultInjection
 go-release-check:
 	@go test -list '^$(RELEASE_TEST)$$' ./tests/release/ | grep -qx '$(RELEASE_TEST)' || \
 		{ echo "tests/release has no $(RELEASE_TEST)" >&2; exit 1; }
-	WSKIT_TEST_RELEASE_BINARIES=1 go test -count=1 -timeout 15m -v ./tests/release/
+	WSKIT_TEST_RELEASE_BINARIES=1 go test -count=1 -run=. -skip='^$$' -timeout 15m -v ./tests/release/
 
 python-check:
 	@$(PYTHON) -m py_compile scripts/*.py tests/*.py
