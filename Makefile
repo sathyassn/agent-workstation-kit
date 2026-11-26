@@ -3,7 +3,7 @@ PYTHON ?= python3
 BASH_BIN ?= bash
 IDENTITY_SOURCE ?= $(if $(filter true,$(GITHUB_ACTIONS)),ci,local)
 
-.PHONY: bash-check check ci-check git-discipline-check go-check public-check public-draft-check repo-check repo-ci-check repo-non-privacy-check skill-check shell-check unit-check unit-non-privacy-check unit-public-scan-check python-check
+.PHONY: bash-check check ci-check git-discipline-check go-check go-release-check public-check public-draft-check repo-check repo-ci-check repo-non-privacy-check skill-check shell-check unit-check unit-non-privacy-check unit-public-scan-check python-check
 
 check: bash-check shell-check python-check unit-check skill-check repo-check git-discipline-check public-draft-check
 
@@ -24,6 +24,14 @@ public-draft-check:
 go-check:
 	go test ./...
 	go test -race -tags faultinject ./internal/engine/...
+	@$(MAKE) --no-print-directory go-release-check
+
+# The release binary check. It fails when the test is missing, so deleting it
+# cannot leave the gate passing on the helper tests alone.
+RELEASE_TEST := TestReleaseBinariesHaveNoFaultInjection
+go-release-check:
+	@go test -list '^$(RELEASE_TEST)$$' ./tests/release/ | grep -qx '$(RELEASE_TEST)' || \
+		{ echo "tests/release has no $(RELEASE_TEST)" >&2; exit 1; }
 	WSKIT_TEST_RELEASE_BINARIES=1 go test -count=1 -timeout 15m -v ./tests/release/
 
 python-check:
