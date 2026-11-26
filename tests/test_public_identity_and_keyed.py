@@ -20,10 +20,11 @@ import stat
 import subprocess
 import sys
 import tempfile
-import time
 import unittest
 from pathlib import Path
 from unittest import mock
+
+import scan_deadline
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -381,14 +382,15 @@ class LocalIdentityCollectionAndMatchingTests(unittest.TestCase):
         self.assertEqual([], matcher.detect("alice uses host-a and ab with alice@example.com"))
         self.assertEqual([join("realbox", "-42")], matcher.detect("machine=" + join("realbox", "-42")))
 
-        # Linear-time guarantee (no ReDoS): 50k chars across 100 tokens finishes well under 50ms.
+        # Linear-time guarantee (no ReDoS) on a million characters across 100 tokens.
         many_tokens = frozenset(f"identtoken{i:03d}" for i in range(100))
         big_matcher = ident.IdentityMatcher(many_tokens)
-        big_line = ("identtoken " * 4500) + "clean"
-        t0 = time.perf_counter()
-        self.assertEqual([], big_matcher.detect(big_line))
-        elapsed_ms = (time.perf_counter() - t0) * 1000.0
-        self.assertLess(elapsed_ms, 50.0, f"IdentityMatcher took {elapsed_ms:.1f}ms on 50k line")
+        big_line = ("identtoken " * (scan_deadline.LARGE_INPUT // 11)) + "clean"
+        scan_deadline.assert_finishes(
+            self,
+            "IdentityMatcher.detect(100 tokens)",
+            lambda: self.assertEqual([], big_matcher.detect(big_line)),
+        )
 
 
 class LocalIdentityFailClosedTests(unittest.TestCase):
@@ -1613,30 +1615,26 @@ class Round1ReviewRegressionTests(unittest.TestCase):
         )
         self.assertIn(join("tsnode", "-1"), profile_app.tokens)
 
-    def test_m4_linear_time_on_100k_char_adversarial_inputs(self) -> None:
+    def test_m4_linear_time_on_large_adversarial_inputs(self) -> None:
         ident = self._identity_mod()
         keyed = self._keyed_mod()
 
-        # 1) Exemption approval line with 100,000 trailing spaces must stay O(n) (< 50ms).
-        padded_approved = '  "approved_by": "@owner"' + (" " * 100_000) + "x"
-        t0 = time.perf_counter()
-        _ = ident._mask_public_identifier_contexts(padded_approved, path="tests/public_scan_exemptions.json")
-        elapsed_ident_ms = (time.perf_counter() - t0) * 1000.0
-        self.assertLess(
-            elapsed_ident_ms,
-            50.0,
-            f"identity exemption masking took {elapsed_ident_ms:.1f}ms on 100k spaces (expected < 50ms)",
+        # 1) Exemption approval line with a million trailing spaces.
+        padded_approved = '  "approved_by": "@owner"' + (" " * scan_deadline.LARGE_INPUT) + "x"
+        scan_deadline.assert_finishes(
+            self,
+            "identity exemption masking (trailing spaces)",
+            lambda: ident._mask_public_identifier_contexts(
+                padded_approved, path="tests/public_scan_exemptions.json"
+            ),
         )
 
-        # 2) Long uppercase identifier ending in a digit (100,000 'A's + '1') must stay O(n) (< 50ms).
-        long_upper = ("A" * 100_000) + "1"
-        t1 = time.perf_counter()
-        _ = keyed.extract_candidates_from_normalized(long_upper)
-        elapsed_keyed_ms = (time.perf_counter() - t1) * 1000.0
-        self.assertLess(
-            elapsed_keyed_ms,
-            50.0,
-            f"keyed candidate extraction took {elapsed_keyed_ms:.1f}ms on 100k upper+digit (expected < 50ms)",
+        # 2) Long uppercase identifier ending in a digit.
+        long_upper = ("A" * scan_deadline.LARGE_INPUT) + "1"
+        scan_deadline.assert_finishes(
+            self,
+            "keyed candidate extraction (upper+digit)",
+            lambda: keyed.extract_candidates_from_normalized(long_upper),
         )
 
     def test_m5_keyed_list_codeowners_off_mode_validation_and_prose_matching(self) -> None:

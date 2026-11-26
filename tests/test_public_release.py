@@ -323,6 +323,73 @@ class DeterministicDetectorTests(unittest.TestCase):
             )
             self.assertEqual(["docs/sample.txt:1: matched rule 'private-dns'"], res.failures)
 
+    def test_private_dns_allows_only_the_exact_go_local_time_selector(self) -> None:
+        selector = join("time", ".Local")
+        allowed_cases = (
+            selector,
+            "t := time.Date(2026, 1, 1, 0, 0, 0, 0, " + selector + ")",
+            "case " + selector + ":",
+        )
+        for sample in allowed_cases:
+            with self.subTest(allowed=sample):
+                res = public_release.scan_sources(
+                    [public_release.SourceFile("internal/sample.go", (sample + "\n").encode("utf-8"))]
+                )
+                self.assertEqual([], res.failures, (sample, res.failures))
+
+        # The exact value must not cover longer names or another name on the line.
+        near_misses = (
+            join("x.", "time", ".Local"),
+            join("my-", "time", ".Local"),
+            join("time", "box", ".Local"),
+            join("time", ".Local", "host", ".internal"),
+            selector + " // host " + join("my-mac", ".local"),
+        )
+        for sample in near_misses:
+            with self.subTest(near_miss=sample):
+                res = public_release.scan_sources(
+                    [public_release.SourceFile("internal/sample.go", (sample + "\n").encode("utf-8"))]
+                )
+                self.assertEqual(["internal/sample.go:1: matched rule 'private-dns'"], res.failures)
+
+    def test_private_dns_blocks_every_other_local_spelling(self) -> None:
+        # Letter case, punctuation, code shape and file type never exempt a name.
+        mixed = join("labbox", ".Local")
+        lower = join("labbox", ".local")
+        blocked_cases = (
+            ("docs/sample.md", "Connect to " + mixed),
+            ("config/sample.toml", 'host = "' + mixed + '"'),
+            ("config/sample.yml", "host: " + mixed),
+            ("fixtures/sample.log", "resolver: " + lower + "(cached)"),
+            ("docs/sample.txt", "//" + mixed + "/a"),
+            ("docs/sample.txt", "scp " + mixed + ":/tmp/file ./"),
+            ("docs/sample.txt", "https://" + mixed + "/a"),
+            ("docs/sample.txt", "ssh admin@" + mixed),
+            ("docs/sample.txt", mixed + ":443"),
+            ("docs/sample.txt", mixed + "."),
+            ("docs/sample.txt", join("alpha.", "beta", ".Local")),
+            ("docs/sample.txt", join("labbox", "%2e", "Local")),
+            ("docs/sample.txt", join("labbox", "\\u002e", "Local")),
+            ("docs/sample.txt", join("labbox", "\u2024", "Local")),
+            ("docs/sample.txt", join("labbox", ".", "\uff2c", "ocal")),
+            ("internal/sample.go", "// connect to " + mixed),
+            ("internal/sample.go", 'h := "' + mixed + '"'),
+            ("internal/sample.go", "t := now" + join(".Local", "()")),
+            ("internal/sample.go", "v := cfg" + join(".local", "(x)")),
+            ("commit:fixture:message", "fix: reconnect to " + mixed),
+            ("docs/sample.txt", join("foo", ".internal", "(x)")),
+            ("docs/sample.txt", join("foo", ".Ts", ".Net")),
+        )
+        for path, sample in blocked_cases:
+            with self.subTest(path=path, blocked=sample):
+                res = public_release.scan_sources(
+                    [public_release.SourceFile(path, (sample + "\n").encode("utf-8"))]
+                )
+                self.assertTrue(
+                    any("matched rule 'private-dns'" in f for f in res.failures),
+                    (path, sample, res.failures),
+                )
+
     def test_cloud_id_detector(self) -> None:
         self.assertRuleOutcome(
             "cloud-id",
