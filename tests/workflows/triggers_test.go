@@ -18,6 +18,9 @@ var (
 	jobHeader    = regexp.MustCompile(`(?m)^  ([a-z0-9_-]+):\n`)
 	jobName      = regexp.MustCompile(`(?m)^    name: (.+)$`)
 	jobOSMatrix  = regexp.MustCompile(`(?m)^        os:\n((?:          - [^\n]+\n)+)`)
+	// include and exclude change which matrix jobs GitHub reports; this test
+	// does not model them, so it refuses them rather than miss a dropped job.
+	matrixModifier = regexp.MustCompile(`(?m)^\s+(include|exclude):`)
 )
 
 // workflowSection returns the lines under the top-level key, up to the next
@@ -150,6 +153,9 @@ func TestReportedJobNames(t *testing.T) {
 					end = headers[i+1][0]
 				}
 				body := jobs[header[1]:end]
+				if modifier := matrixModifier.FindStringSubmatch(body); modifier != nil {
+					t.Fatalf("%s: job %s uses matrix %s, which this test does not support", filename, jobID, modifier[1])
+				}
 				template := jobID
 				if name := jobName.FindStringSubmatch(body); name != nil {
 					template = name[1]
