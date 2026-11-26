@@ -592,7 +592,6 @@ def scan_repository_files(root: Path, *, include_privacy: bool = True) -> list[s
 
 CODEOWNERS_REQUIRED_PATHS = (
     "tests/check_public_release.py",
-    "tests/release/release_test.go",
     "tests/public_scan_identity.py",
     "tests/public_scan_keyed.py",
     "tests/public_scan_keyed_list.json",
@@ -603,6 +602,8 @@ CODEOWNERS_REQUIRED_PATHS = (
     ".github/workflows/ci.yml",
     ".github/CODEOWNERS",
 )
+# Every tracked file under these folders needs an owner, not just one of them.
+CODEOWNERS_REQUIRED_DIRS = ("tests/release/",)
 CODEOWNER_TOKEN = re.compile(r"^@[A-Za-z0-9](?:[A-Za-z0-9-]|/[A-Za-z0-9_-])*$")
 
 
@@ -637,7 +638,15 @@ def codeowners_issues(root: Path) -> list[str]:
         owners = [token for token in parts[1:] if not token.startswith("#")]
         rules.append((pattern, owners))
     issues: list[str] = []
-    for required in CODEOWNERS_REQUIRED_PATHS:
+    required_paths = list(CODEOWNERS_REQUIRED_PATHS)
+    for folder in CODEOWNERS_REQUIRED_DIRS:
+        listed = _git(root, "ls-files", "-z", "--", folder)
+        tracked = [path for path in listed.stdout.split("\0") if path]
+        if listed.returncode or not tracked:
+            issues.append(f"cannot list tracked files under {folder} to check their CODEOWNERS owner")
+            continue
+        required_paths.extend(sorted(tracked))
+    for required in required_paths:
         matched_owners: list[str] | None = None
         for pattern, owners in rules:
             if _codeowners_match(pattern, required):

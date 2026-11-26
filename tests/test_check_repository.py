@@ -347,6 +347,33 @@ class WorkflowActionPinTests(unittest.TestCase):
         self.assertEqual(scan.workflow_action_pin_issues(scan.ROOT), [])
 
 
+class CodeownersFolderTests(unittest.TestCase):
+    def _issues(self, codeowners: str, files: tuple[str, ...]) -> list[str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _init_git_repo(root)
+            for rel in files:
+                (root / rel).parent.mkdir(parents=True, exist_ok=True)
+                (root / rel).write_text("x\n", encoding="utf-8")
+            (root / ".github").mkdir(exist_ok=True)
+            (root / ".github/CODEOWNERS").write_text(codeowners, encoding="utf-8")
+            subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+            return [issue for issue in scan.codeowners_issues(root) if "tests/release/" in issue]
+
+    def test_folder_rule_covers_every_tracked_file(self) -> None:
+        files = ("tests/release/a_test.go", "tests/release/b_test.go")
+        self.assertEqual(self._issues("/tests/release/ @owner\n", files), [])
+
+    def test_ownerless_override_for_one_file_fails(self) -> None:
+        files = ("tests/release/a_test.go", "tests/release/b_test.go")
+        issues = self._issues("/tests/release/ @owner\n/tests/release/b_test.go\n", files)
+        self.assertEqual(issues, [".github/CODEOWNERS does not assign an owner to tests/release/b_test.go"])
+
+    def test_missing_folder_fails_closed(self) -> None:
+        issues = self._issues("/tests/release/ @owner\n", ("README.md",))
+        self.assertEqual(issues, ["cannot list tracked files under tests/release/ to check their CODEOWNERS owner"])
+
+
 class FormatterGateTests(unittest.TestCase):
     def _load_go_format_modes(self) -> dict[str, dict[str, str]]:
         config = json.loads((scan.ROOT / ".codeflow/test-config.json").read_text(encoding="utf-8"))
