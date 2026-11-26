@@ -18,10 +18,36 @@ var (
 	jobHeader    = regexp.MustCompile(`(?m)^  ([a-z0-9_-]+):\n`)
 	jobName      = regexp.MustCompile(`(?m)^    name: (.+)$`)
 	jobOSMatrix  = regexp.MustCompile(`(?m)^        os:\n((?:          - [^\n]+\n)+)`)
-	// include and exclude change which matrix jobs GitHub reports; this test
-	// does not model them, so it refuses them rather than miss a dropped job.
-	matrixModifier = regexp.MustCompile(`(?m)^\s+(include|exclude):`)
+	// A job's strategy may only be the shape this test models: fail-fast and
+	// a plain os list. Anything else (include or exclude in any spelling, flow
+	// style, anchors, expressions) could change which jobs GitHub reports, so
+	// the test refuses it instead of parsing it.
+	strategyKey  = regexp.MustCompile(`^    ["']?strategy["']?\s*:`)
+	strategyLine = regexp.MustCompile(`^(?:      fail-fast: (?:true|false)|      matrix:|        os:|          - [A-Za-z0-9._-]+)$`)
 )
+
+// checkStrategy fails unless every strategy line in the job body matches
+// strategyLine.
+func checkStrategy(t *testing.T, filename, jobID, body string) {
+	t.Helper()
+	lines := strings.Split(body, "\n")
+	for i, line := range lines {
+		if !strategyKey.MatchString(line) {
+			continue
+		}
+		if line != "    strategy:" {
+			t.Fatalf("%s: job %s has an unsupported strategy line %q", filename, jobID, line)
+		}
+		for _, inner := range lines[i+1:] {
+			if !strings.HasPrefix(inner, "      ") {
+				break
+			}
+			if !strategyLine.MatchString(inner) {
+				t.Fatalf("%s: job %s has an unsupported strategy line %q", filename, jobID, inner)
+			}
+		}
+	}
+}
 
 // workflowSection returns the lines under the top-level key, up to the next
 // top-level line, without blank and comment lines. It fails unless the key
@@ -153,9 +179,7 @@ func TestReportedJobNames(t *testing.T) {
 					end = headers[i+1][0]
 				}
 				body := jobs[header[1]:end]
-				if modifier := matrixModifier.FindStringSubmatch(body); modifier != nil {
-					t.Fatalf("%s: job %s uses matrix %s, which this test does not support", filename, jobID, modifier[1])
-				}
+				checkStrategy(t, filename, jobID, body)
 				template := jobID
 				if name := jobName.FindStringSubmatch(body); name != nil {
 					template = name[1]
