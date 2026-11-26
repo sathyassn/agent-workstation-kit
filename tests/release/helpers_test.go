@@ -69,6 +69,15 @@ func TestCheckBuildTags(t *testing.T) {
 		{"faultinject", `{"Settings":[{"Key":"-tags","Value":"netgo,faultinject"}]}`, true, true},
 		{"prefix only", `{"Settings":[{"Key":"-tags","Value":"faultinjectx"}]}`, false, false},
 		{"bad json", `{`, true, false},
+		{"empty object", `{}`, true, false},
+		{"null", `null`, true, false},
+		{"settings null", `{"Settings":null}`, true, false},
+		{"settings empty", `{"Settings":[]}`, true, false},
+		{"entry null", `{"Settings":[null]}`, true, false},
+		{"missing key", `{"Settings":[{"Value":"faultinject"}]}`, true, false},
+		{"missing value", `{"Settings":[{"Key":"-tags"}]}`, true, false},
+		{"null value", `{"Settings":[{"Key":"-tags","Value":null}]}`, true, false},
+		{"settings not array", `{"Settings":{}}`, true, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

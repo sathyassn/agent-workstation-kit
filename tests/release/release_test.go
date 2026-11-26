@@ -72,17 +72,25 @@ func checkSymbols(nm []byte, label string) error {
 // checkBuildTags reads `go version -m -json` output and refuses a binary the
 // linker was given a faultinject build for.
 func checkBuildTags(info []byte, label string) error {
-	var parsed struct {
-		Settings []struct{ Key, Value string }
+	// Pointers tell a missing field or a JSON null from an empty one, so
+	// malformed build info fails closed instead of reading as "no tags".
+	var parsed *struct {
+		Settings *[]*struct{ Key, Value *string }
 	}
 	if err := json.Unmarshal(info, &parsed); err != nil {
 		return fmt.Errorf("%s: read build info: %w", label, err)
 	}
-	for _, setting := range parsed.Settings {
-		if setting.Key != "-tags" {
+	if parsed == nil || parsed.Settings == nil || len(*parsed.Settings) == 0 {
+		return fmt.Errorf("%s: build info has no settings", label)
+	}
+	for i, setting := range *parsed.Settings {
+		if setting == nil || setting.Key == nil || setting.Value == nil {
+			return fmt.Errorf("%s: build setting %d has no key or value", label, i)
+		}
+		if *setting.Key != "-tags" {
 			continue
 		}
-		for _, tag := range strings.Split(setting.Value, ",") {
+		for _, tag := range strings.Split(*setting.Value, ",") {
 			if tag == "faultinject" {
 				return fmt.Errorf("%w: %s was built with the faultinject tag", errFaultInjection, label)
 			}
