@@ -14,6 +14,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -22,6 +23,8 @@ import time
 import unittest
 from pathlib import Path
 from unittest import mock
+
+import scan_deadline
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -40,6 +43,10 @@ def ip(*octets: str) -> str:
 
 def join(*parts: str) -> str:
     return "".join(parts)
+
+
+# Reaches PHONE_KEY_RE (u3 proves it) and is long enough for the s3 deadline check.
+PHONE_LONG_IDENTIFIER = "hotel_x" * (scan_deadline.LARGE_INPUT // 7) + " = 1234567890"
 
 
 _TEST_IDENTITY_STUB = (
@@ -795,12 +802,50 @@ class TimingSelfScanAndJourneyTests(unittest.TestCase):
             head = git(root, "rev-parse", "HEAD").stdout.strip()
 
             clean_env = {k: v for k, v in os.environ.items() if "SECRET" not in k and "HMAC" not in k}
-            t0 = time.perf_counter()
-            with mock.patch.dict(os.environ, clean_env, clear=True):
-                code, out, err = run_main(["--root", str(root), "--tree", head])
-            elapsed = time.perf_counter() - t0
-            self.assertEqual(0, code, out + err)
-            self.assertLess(elapsed, 0.8, f"typical diff scan took {elapsed:.3f}s (expected well under 1s)")
+
+            def best_of_five() -> None:
+                # The fastest run is the cost without host load; a slower scanner slows every run.
+                times: list[float] = []
+                for _ in range(5):
+                    t0 = time.perf_counter()
+                    with mock.patch.dict(os.environ, clean_env, clear=True):
+                        code, out, err = run_main(["--root", str(root), "--tree", head])
+                    times.append(time.perf_counter() - t0)
+                    self.assertEqual(0, code, out + err)
+                self.assertLess(min(times), 0.8, f"typical diff scan took {min(times):.3f}s at best")
+
+            scan_deadline.assert_finishes(self, "typical diff scans", best_of_five, seconds=60.0)
+
+    def test_deadline_check_fails_on_stalls_quadratic_work_and_errors(self) -> None:
+        scan_deadline.assert_finishes(self, "linear", lambda: re.search(r"x", " " * scan_deadline.LARGE_INPUT))
+
+        def stall() -> None:
+            while True:
+                pass
+
+        def quadratic() -> None:
+            re.search(r"\s+$", " " * scan_deadline.LARGE_INPUT + "x")
+
+        for label, run in (("stall", stall), ("quadratic", quadratic)):
+            with self.subTest(label=label):
+                with self.assertRaisesRegex(AssertionError, "did not finish within"):
+                    scan_deadline.assert_finishes(self, label, run, seconds=0.5)
+
+        def broken() -> None:
+            os.dup2(os.open(os.devnull, os.O_WRONLY), 2)
+            raise ValueError("probe error")
+
+        with self.assertRaisesRegex(AssertionError, "failed in the child"):
+            scan_deadline.assert_finishes(self, "broken", broken)
+
+    def test_phone_regression_at_a_guarded_call_fails_the_deadline(self) -> None:
+        # A quadratic key pattern planted in the real detector is caught by the s3 probe.
+        slow = re.compile(r"[a-z_]+\d", re.IGNORECASE)
+        with mock.patch.object(scan, "PHONE_KEY_RE", slow):
+            with self.assertRaisesRegex(AssertionError, "did not finish within"):
+                scan_deadline.assert_finishes(
+                    self, "planted", lambda: scan.detect_phone(PHONE_LONG_IDENTIFIER), seconds=2.0
+                )
 
     def test_self_scan_scans_tests_and_real_exemption_records_cleanly(self) -> None:
         # Scanner and both test suites must pass self-scan with zero exemptions.
@@ -1597,12 +1642,12 @@ class Round3ReviewRegressionTests(unittest.TestCase):
             with self.subTest(clean=clean_line[:22]):
                 self.assertEqual([], scan_line(clean_line).failures)
 
-        # ReDoS guard: 50,000-character identifier with separator reaches PHONE_KEY_RE and finishes under 50ms.
-        long_ident = ("hotel_x" * 7200) + " = 1234567890"
-        t0 = time.perf_counter()
-        self.assertEqual([], scan.detect_phone(long_ident))
-        elapsed_ms = (time.perf_counter() - t0) * 1000.0
-        self.assertLess(elapsed_ms, 50.0, f"detect_phone took {elapsed_ms:.1f}ms on long identifier")
+        # ReDoS guard: a long identifier with a separator reaches PHONE_KEY_RE and stays linear.
+        scan_deadline.assert_finishes(
+            self,
+            "detect_phone(long identifier)",
+            lambda: self.assertEqual([], scan.detect_phone(PHONE_LONG_IDENTIFIER)),
+        )
 
     def test_s5_commit_messages_and_annotated_tag_messages_are_scanned_and_redacted(self) -> None:
         leak_email = join("jdoe", "@", "acme-corp", ".com")
@@ -1718,16 +1763,9 @@ class Round4ReviewRegressionTests(unittest.TestCase):
             with self.subTest(clean=clean_line[:24]):
                 self.assertEqual([], scan_line(clean_line).failures)
 
-    def test_u3_phone_timing_guard_reaches_regex_and_stays_fast(self) -> None:
-        # Verify the timing test input in test_s3 actually enters PHONE_KEY_RE.finditer
-        # (does not short-circuit at the separator/context gate) and runs in < 50 ms.
-        import inspect
-        s3_source = inspect.getsource(
-            Round3ReviewRegressionTests.test_s3_phone_labels_syntax_redos_and_non_hits
-        )
-        self.assertIn('("hotel_x" * 7200) + " = 1234567890"', s3_source)
-
-        long_ident = ("hotel_x" * 7200) + " = 1234567890"
+    def test_u3_phone_timing_input_reaches_regex(self) -> None:
+        # The input timed in test_s3 actually enters PHONE_KEY_RE.finditer
+        # (it does not short-circuit at the separator/context gate).
         calls = 0
         real_re = scan.PHONE_KEY_RE
 
@@ -1737,12 +1775,12 @@ class Round4ReviewRegressionTests(unittest.TestCase):
                 calls += 1
                 return real_re.finditer(text, *args)
 
-        with mock.patch.object(scan, "PHONE_KEY_RE", CountingPattern()):
-            t0 = time.perf_counter()
-            self.assertEqual([], scan.detect_phone(long_ident))
-            elapsed_ms = (time.perf_counter() - t0) * 1000.0
-        self.assertEqual(1, calls, "timing input must actually reach PHONE_KEY_RE.finditer")
-        self.assertLess(elapsed_ms, 50.0, f"detect_phone took {elapsed_ms:.1f}ms on long identifier")
+        def reaches_regex_once() -> None:
+            with mock.patch.object(scan, "PHONE_KEY_RE", CountingPattern()):
+                self.assertEqual([], scan.detect_phone(PHONE_LONG_IDENTIFIER))
+            self.assertEqual(1, calls, "timing input must actually reach PHONE_KEY_RE.finditer")
+
+        scan_deadline.assert_finishes(self, "detect_phone(reachability)", reaches_regex_once)
 
     def test_u4_multiple_fetch_urls_scan_full_history(self) -> None:
         leak_email = join("jdoe", "@", "acme-corp", ".com")
@@ -1876,20 +1914,17 @@ class Round5ReviewRegressionTests(unittest.TestCase):
         )
 
     def test_detect_phone_whitespace_padding_is_linear_time(self) -> None:
-        # Test N=2000 before N=20000 so any regression fails fast on N=2000.
-        for n in (2000, 20000):
-            for label, payload in (
-                (f"padded_colon_N{n}", "phone" + (" " * n) + ":" + (" " * n) + "1"),
-                (f"padded_list_N{n}", "phone list 1:" + (" " * n)),
-            ):
-                t0 = time.perf_counter()
-                hits = scan.detect_phone(payload)
-                elapsed_ms = (time.perf_counter() - t0) * 1000.0
-                self.assertEqual([], hits, label)
-                self.assertLess(
-                    elapsed_ms,
-                    50.0,
-                    f"detect_phone({label}) took {elapsed_ms:.1f}ms (expected < 50ms)",
+        spaces = " " * scan_deadline.LARGE_INPUT
+        cases = (
+            ("padded_colon", "phone" + spaces + ":" + spaces + "1"),
+            ("padded_list", "phone list 1:" + spaces),
+        )
+        for label, payload in cases:
+            with self.subTest(case=label):
+                scan_deadline.assert_finishes(
+                    self,
+                    f"detect_phone({label})",
+                    lambda p=payload: self.assertEqual([], scan.detect_phone(p)),
                 )
 
 

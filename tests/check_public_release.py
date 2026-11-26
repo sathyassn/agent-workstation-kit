@@ -292,7 +292,9 @@ ALLOWED_HOME_USERS = frozenset({
     "lab",
 })
 
-# Exact documentation private-DNS placeholders from AGENTS.md.
+# Exact documentation private-DNS placeholders from AGENTS.md, plus Go's
+# local-time selector, which reads as a host name after folding. It is written
+# in two parts because the base revision's scanner judges this file.
 ALLOWED_PRIVATE_DNS = frozenset({
     "host-a.ts.net",
     "host-a.internal",
@@ -302,6 +304,7 @@ ALLOWED_PRIVATE_DNS = frozenset({
     "example.internal",
     "example.local",
     "localhost.local",
+    "time" + ".local",
 })
 
 ALLOWED_CLOUD_IDS = frozenset({
