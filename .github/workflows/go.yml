@@ -46,7 +46,9 @@ jobs:
           go mod verify
 
       - name: Check release binaries for fault injection
-        run: python3 -I tests/check_go_release.py
+        env:
+          WSKIT_TEST_RELEASE_BINARIES: "1"
+        run: go test -count=1 -timeout 15m -v -run TestReleaseBinariesHaveNoFaultInjection ./tests/release/
 
       - name: Check gofmt
         run: |

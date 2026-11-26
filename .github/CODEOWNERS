@@ -6,7 +6,7 @@
 /.github/workflows/ci.yml @sathyassn
 /.github/ @sathyassn
 /tests/check_public_release.py @sathyassn
-/tests/check_go_release.py @sathyassn
+/tests/release/ @sathyassn
 /tests/public_scan_identity.py @sathyassn
 /tests/public_scan_keyed.py @sathyassn
 /tests/public_scan_keyed_list.json @sathyassn

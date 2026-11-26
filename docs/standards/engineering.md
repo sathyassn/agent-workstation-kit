@@ -36,8 +36,9 @@ practice, relayed by the supervisor and approved as a process change.
   tests locally and needs a C compiler for `-race`. The full CodeFlow gate
   also runs tagged lint.
 - Go CI and `make go-check` build their own binaries for the release targets
-  Linux amd64, Linux arm64 and macOS arm64 with cgo disabled. The check scans
-  each binary's symbols, bytes and build settings for fault injection.
+  Linux amd64, Linux arm64 and macOS arm64 with cgo disabled. The check, a Go
+  test in `tests/release/` that runs only with `WSKIT_TEST_RELEASE_BINARIES=1`,
+  scans each binary's symbols, bytes and build settings for fault injection.
 - Units never print or call `os.Exit`; they emit events through
   `engine.Tx`. Only `cmd/` writes to the terminal or maps errors to exit
   codes.

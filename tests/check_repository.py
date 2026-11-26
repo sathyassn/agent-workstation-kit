@@ -592,7 +592,7 @@ def scan_repository_files(root: Path, *, include_privacy: bool = True) -> list[s
 
 CODEOWNERS_REQUIRED_PATHS = (
     "tests/check_public_release.py",
-    "tests/check_go_release.py",
+    "tests/release/release_test.go",
     "tests/public_scan_identity.py",
     "tests/public_scan_keyed.py",
     "tests/public_scan_keyed_list.json",
