@@ -408,6 +408,22 @@
       "reason": "OpenSSH authorized_keys key-type identifier fixture",
       "approved_by": "@sathyassn",
       "expires": "2027-06-01"
+    },
+    {
+      "path": "tests/test_workflow_triggers.py",
+      "rule": "ipv6",
+      "digest": "a7e2023a4d4bdd4755a6214da239185d0b4b9cabd6c686142902b3cd8208a04f",
+      "reason": "Python extended-slice syntax on line 68 of a test file removed in 1ddcf65, still in the TSK-042 push range; approved via Orca Chief on the owner's instruction, 27 Nov",
+      "approved_by": "@sathyassn",
+      "expires": "2027-01-31"
+    },
+    {
+      "path": "tests/test_workflow_triggers.py",
+      "rule": "ipv6",
+      "digest": "943981de0bad4c73d18682959ce759d5cdc7ff09b0834411e637cbcf8dbc14c1",
+      "reason": "Python extended-slice syntax on line 68 of a test file removed in 1ddcf65, still in the TSK-042 push range; approved via Orca Chief on the owner's instruction, 27 Nov",
+      "approved_by": "@sathyassn",
+      "expires": "2027-01-31"
     }
   ]
 }
