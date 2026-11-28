@@ -602,6 +602,8 @@ CODEOWNERS_REQUIRED_PATHS = (
     ".github/workflows/ci.yml",
     ".github/CODEOWNERS",
 )
+# Every tracked file under these folders needs an owner, not just one of them.
+CODEOWNERS_REQUIRED_DIRS = ("tests/release/",)
 CODEOWNER_TOKEN = re.compile(r"^@[A-Za-z0-9](?:[A-Za-z0-9-]|/[A-Za-z0-9_-])*$")
 
 
@@ -622,7 +624,7 @@ def _codeowners_match(pattern: str, rel_path: str) -> bool:
 
 
 def codeowners_issues(root: Path) -> list[str]:
-    """Verify .github/CODEOWNERS covers every scan, config, workflow, and CODEOWNERS path."""
+    """Verify .github/CODEOWNERS covers every required path."""
     codeowners = root / ".github/CODEOWNERS"
     if not codeowners.is_file():
         return ["missing .github/CODEOWNERS covering public-safety scan and workflow files"]
@@ -636,7 +638,15 @@ def codeowners_issues(root: Path) -> list[str]:
         owners = [token for token in parts[1:] if not token.startswith("#")]
         rules.append((pattern, owners))
     issues: list[str] = []
-    for required in CODEOWNERS_REQUIRED_PATHS:
+    required_paths = list(CODEOWNERS_REQUIRED_PATHS)
+    for folder in CODEOWNERS_REQUIRED_DIRS:
+        listed = _git(root, "ls-files", "-z", "--", folder)
+        tracked = [path for path in listed.stdout.split("\0") if path]
+        if listed.returncode or not tracked:
+            issues.append(f"cannot list tracked files under {folder} to check their CODEOWNERS owner")
+            continue
+        required_paths.extend(sorted(tracked))
+    for required in required_paths:
         matched_owners: list[str] | None = None
         for pattern, owners in rules:
             if _codeowners_match(pattern, required):

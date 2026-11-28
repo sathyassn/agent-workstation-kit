@@ -31,6 +31,15 @@ practice, relayed by the supervisor and approved as a process change.
 - Small interfaces at the consumer; no package-level mutable state;
   `context.Context` through every long call.
 - `golangci-lint` with `.golangci.yml`, and `govulncheck`, in CI.
+- Go CI runs the engine race tests and lints the Go packages with the
+  `faultinject` tag on Linux and macOS. `make go-check` runs the tagged race
+  tests locally and needs a C compiler for `-race`. The full CodeFlow gate
+  also runs tagged lint.
+- Go CI and `make go-check` build their own binaries for the release targets
+  Linux amd64, Linux arm64 and macOS arm64 with cgo disabled. The check, a Go
+  test in `tests/release/` that runs only with `WSKIT_TEST_RELEASE_BINARIES=1`,
+  scans each binary's symbols, bytes and build settings for fault injection.
+  `make go-release-check` runs it, and fails if the test is missing.
 - Units never print or call `os.Exit`; they emit events through
   `engine.Tx`. Only `cmd/` writes to the terminal or maps errors to exit
   codes.
@@ -98,6 +107,9 @@ practice, relayed by the supervisor and approved as a process change.
 
 ## CI authority and scaffold updates
 
+- `ci.yml` and `go.yml` run on pull requests targeting `main`, pushes to
+  `main`, and manual dispatches. CodeFlow and the public-safety scan also
+  run for pull requests targeting integration branches.
 - CodeFlow 3.1.1's workflows use no secret: its policy workflow runs on
   `pull_request_target` and checks out only the base commit, so a pull
   request cannot change the job that judges it. When a later CodeFlow

@@ -3,6 +3,7 @@ name: Go CI
 on:
   workflow_dispatch:
   pull_request:
+    branches: [main]
   push:
     branches:
       - main
@@ -39,8 +40,13 @@ jobs:
           # go mod verify checks module zips against go.sum.
           cache: true
 
-      - name: Verify Go modules
-        run: go mod verify
+      - name: Download and verify Go modules
+        run: |
+          go mod download
+          go mod verify
+
+      - name: Check release binaries for fault injection
+        run: make go-release-check
 
       - name: Check gofmt
         run: |
@@ -78,9 +84,46 @@ jobs:
       - name: Run govulncheck
         run: go tool govulncheck ./...
 
-      - name: Build release targets (make go-check)
-        run: make go-check
+      - name: Run tests without race instrumentation
+        run: go test ./...
 
       - name: Verify workflow action pins
         if: matrix.os == 'ubuntu-24.04'
         run: python3 tests/verify_action_pins.py
+
+  fault-injection:
+    name: Go fault injection (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - macos-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go from go.mod
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          # Keep the tagged job's build cache under a separate key.
+          cache-dependency-path: |
+            go.mod
+            go.sum
+
+      - name: Verify Go modules
+        run: go mod verify
+
+      - name: Run fault-injection tests with race detector
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: go test -race -tags faultinject ./internal/engine/...
+
+      - name: Run golangci-lint with fault injection
+        run: go tool golangci-lint run --build-tags faultinject ./...
